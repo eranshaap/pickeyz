@@ -1,3 +1,3 @@
 export const BRAND = {
-  name: "findCar",
+  name: "findCar 🚗",
 } as const;
