@@ -1,7 +1,6 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// Inventory tables — see findCar-schema.md, part D (fields) and part E (translation rules).
+// Names are snake_case everywhere: document = database = code. No @map.
+// Required only where a row without the value is meaningless (part E, rule 3).
 
 generator client {
   provider = "prisma-client"
@@ -12,8 +11,126 @@ datasource db {
   provider = "postgresql"
 }
 
-model health_check {
-  id         Int      @id @default(autoincrement())
-  message    String
-  created_at DateTime @default(now())
+// 1. models — one row per variant (degem_code). Filled once, used by thousands of cars.
+model models {
+  id               Int       @id @default(autoincrement())
+  degem_code       String?   @unique // "tozeret_cd-degem_cd", e.g. "588-53". May be empty (personal import).
+  comparison_group String? // starts identical to degem_code; the engine's unit of comparison
+  make             String?
+  model            String?
+  sub_model        String?
+  year             Int?
+  engine_size      Int? // cc
+  fuel_type        String?
+  transmission     String?
+  drive_type       String?
+  body_type        String?
+  seats            Int?
+  import_type      String?
+  trunk_liters     Int?
+  length_mm        Int?
+  width_mm         Int?
+  height_mm        Int?
+  horsepower       Int?
+  fuel_consumption Float? // km per liter
+  safety_rating    Int?
+  created_at       DateTime  @default(now())
+
+  cars cars[]
+}
+
+// 2. cars — the physical car, one row per license plate. No price, no seller, no declared km.
+model cars {
+  id                 Int       @id @default(autoincrement())
+  license_plate      String?   @unique // external id, the anchor. Digits only, kept as text.
+  model_id           Int // required: without a variant there is no comparison group
+  hand               Int? // count of rows in ownership history (file 2)
+  ownership_type     String? // code: private | company | rental | leasing | taxi
+  color              String? // from the ad; Ministry as fallback. A listing fills empty, never overwrites.
+  test_expiry        DateTime? @db.Date
+  mivchan_acharon_dt DateTime? @db.Date // date of last test (snapshot at import)
+  km_at_last_test    Int? // odometer at last test (snapshot at import)
+  first_registration DateTime? @db.Date
+  // Future sources (leasing companies, disclosure form). Empty for now; null = unknown.
+  had_accident       Boolean?
+  damage_severity    String?
+  service_history    String?
+  authorized_garage  Boolean?
+  previous_owners    Int?
+  is_original        Boolean?
+  warranty_until     DateTime? @db.Date
+  test_failures      Int?
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @default(now()) @updatedAt
+
+  model    models     @relation(fields: [model_id], references: [id])
+  listings listings[]
+}
+
+// 3. listings — one row per offer to sell a specific car. The score lives here.
+model listings {
+  id                  Int       @id @default(autoincrement())
+  car_id              Int // required: an offer without a car is not an offer
+  dealer_id           Int // required: decides where the lead goes and who is billed
+  source              String // code: yad2 | albar | ... Derived from the link at import.
+  external_id         String // the listing's id in the source system, without the "?" tail
+  price               Int // required: asking price, NIS
+  region              String?
+  image_urls          String[] // addresses of images, not images. Empty in the manual phase.
+  km_declared         Int? // what THIS ad says. Another ad for the same car may say otherwise.
+  hand_declared       Int? // hand per the ad. Empty if the ad does not state it.
+  disclosure_provided Boolean   @default(false) // data came from a disclosure form
+  is_active           Boolean   @default(true)
+  first_seen_at       DateTime // required: the one value that cannot be recovered later
+  last_verified_at    DateTime?
+  delisted_at         DateTime?
+  delisted_price      Int?
+  // Stage A — precomputed against the comparison group's median
+  score               Float?
+  score_breakdown     Json?
+  confidence          Float?
+  scored_at           DateTime?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @default(now()) @updatedAt
+
+  car    cars    @relation(fields: [car_id], references: [id])
+  dealer dealers @relation(fields: [dealer_id], references: [id])
+
+  @@unique([source, external_id])
+}
+
+// 4. dealers — whoever offers cars: lots, leasing and rental companies, importers, private sellers.
+model dealers {
+  id                 Int       @id @default(autoincrement())
+  trade_license_no   String?   @unique // external id, from the socharim registry. Empty if not found / private.
+  name               String // required
+  dealer_type        String // required. code: lot | leasing | rental | importer | private
+  region             String?
+  phone              String?
+  email              String?
+  license_checked_at DateTime?
+  feed_updated_at    DateTime? // empty until there is a feed
+  created_at         DateTime  @default(now())
+
+  listings   listings[]
+  commercial dealer_commercial?
+}
+
+// 5. dealer_commercial — the agreement. One row per dealer, only when there is one.
+// The engine never reads this table.
+model dealer_commercial {
+  id                 Int       @id @default(autoincrement())
+  dealer_id          Int       @unique // one row per dealer
+  agreement_status   String // required. code: none | trial | active | suspended
+  price_per_lead     Decimal?  @db.Decimal(10, 2) // snapshot of the signed price, NIS
+  price_locked_until DateTime? @db.Date
+  free_until         DateTime? @db.Date
+  dedup_window_days  Int?
+  terms_version      Int?
+  agreement_start    DateTime? @db.Date
+  agreement_end      DateTime? @db.Date
+  billing_contact    String?
+  notes              String?
+
+  dealer dealers @relation(fields: [dealer_id], references: [id])
 }
