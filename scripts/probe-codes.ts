@@ -1,5 +1,5 @@
 import { makeDegemCode } from "../src/lib/mot/degem-code";
-import { ownershipCode, originCode } from "../src/lib/mot/codes";
+import { ownershipCode, originCode } from "../src/lib/mot/translator";
 
 console.log(makeDegemCode(588, 182));      // the Mazda from the API
 console.log(makeDegemCode("778", "343"));  // strings, the way a CSV gives them

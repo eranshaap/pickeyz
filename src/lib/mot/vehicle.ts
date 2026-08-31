@@ -1,6 +1,6 @@
 import { fetchRows } from "./fetch";
 import { makeDegemCode } from "./degem-code";
-import { ownershipCode, originCode, type OwnershipCode, type OriginCode } from "./codes";
+import { ownershipCode, originCode, type OwnershipCode, type OriginCode } from "./translator";
 
 // ---- the ministry's rows, with its field names (only what we read) ----
 type RegistryRow = {
