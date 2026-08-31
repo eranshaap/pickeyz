@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { parse } from "csv-parse/sync";
+import { parsePipeCsv } from "./pipe-csv";
 import { RAW_DIR } from "./resources";
 
 // One row of data/raw/dealers.csv, with the ministry's own field names.
@@ -24,15 +24,7 @@ let rows: DealerRow[] | null = null;
 function loadRows(): DealerRow[] {
   if (rows) return rows;
   const file = path.join(process.cwd(), RAW_DIR, "dealers.csv");
-  const text = readFileSync(file, "utf8");
-  rows = parse(text, {
-    delimiter: "|",
-    quote: '"',
-    columns: true,
-    bom: true,
-    skip_empty_lines: true,
-    trim: true,
-  }) as DealerRow[];
+  rows = parsePipeCsv<DealerRow>(readFileSync(file, "utf8"));
   return rows;
 }
 

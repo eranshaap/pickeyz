@@ -37,3 +37,19 @@ export async function fetchRows<T>(key: ApiResource, plate: string, refresh = fa
   writeFileSync(file, text, "utf8");
   return body.result.records;
 }
+
+
+// A one-off sample of plates from the registry, for coverage probes. Not cached.
+export async function samplePlates(
+  filters: Record<string, unknown>,
+  limit: number,
+): Promise<string[]> {
+  const q = encodeURIComponent(JSON.stringify(filters));
+  const url = `${MOT_API}?resource_id=${RESOURCES.registry}&filters=${q}&limit=${limit}&fields=mispar_rechev`;
+  const res = await fetch(url, { headers: { "User-Agent": "vehicle-research-script/0.1" } });
+  const body = (await res.json()) as ApiBody<{ mispar_rechev: number }>;
+  if (!res.ok || body.success !== true || !body.result?.records) {
+    throw new Error(`MoT sample: HTTP ${res.status}`);
+  }
+  return body.result.records.map((r) => String(r.mispar_rechev));
+}
