@@ -4,7 +4,7 @@ import { ownershipCode, originCode, type OwnershipCode, type OriginCode } from "
 
 // ---- the ministry's rows, with its field names (only what we read) ----
 type RegistryRow = {
-  tozeret_cd: number; degem_cd: number; tozeret_nm: string; degem_nm: string;
+  sug_degem: string; tozeret_cd: number; degem_cd: number; tozeret_nm: string; degem_nm: string;
   ramat_gimur: string; shnat_yitzur: number; kinuy_mishari: string; sug_delek_nm: string;
   baalut: string; tzeva_rechev: string; mivchan_acharon_dt: string; tokef_dt: string;
   moed_aliya_lakvish: string;
@@ -16,7 +16,9 @@ type CancelledRow = { bitul_dt: string };
 // ---- what the rest of the code receives; names match the cars table where they map ----
 export type VehicleData = {
   license_plate: string;
+  vehicle_class: string;                                 // registry sug_degem: "P" | "M" — with degem_code and year, picks the models row
   degem_code: string | null;
+  year: number;                                          // registry shnat_yitzur — the car's own year
   hand: number | null;                                   // null = history incomplete, not zero
   ownership_history: { ym: string; type: OwnershipCode }[]; // all rows, dealers included, oldest first
   ownership_current: OwnershipCode;                      // registry value now; not stored
@@ -26,7 +28,7 @@ export type VehicleData = {
   km_at_last_test: number | null;
   first_registration: string | null;
   color: string | null;
-  registry: { make: string; model_name: string; year: number; sub_model: string; degem_nm: string; fuel: string };
+  registry: { make: string; model_name: string; sub_model: string; degem_nm: string; fuel: string };
 };
 
 export type VehicleLookup =
@@ -64,7 +66,9 @@ export async function getVehicleData(rawPlate: string, refresh = false): Promise
 
   const data: VehicleData = {
     license_plate: plate,
+    vehicle_class: (reg.sug_degem ?? "").trim(),
     degem_code: makeDegemCode(reg.tozeret_cd, reg.degem_cd),
+    year: reg.shnat_yitzur,
     hand: history.length > 0 && !truncated ? history.filter((h) => h.type !== "dealer").length : null,
     ownership_history: history,
     ownership_current: ownershipCode(reg.baalut),
@@ -77,7 +81,6 @@ export async function getVehicleData(rawPlate: string, refresh = false): Promise
     registry: {
       make: reg.tozeret_nm,
       model_name: reg.kinuy_mishari,
-      year: reg.shnat_yitzur,
       sub_model: reg.ramat_gimur,
       degem_nm: reg.degem_nm,
       fuel: reg.sug_delek_nm,

@@ -18,7 +18,7 @@ for (const r of gen4) {
 }
 
 console.log("distinct pair codes:", groups.size, "\n");
-console.log("code | years | degem_nm | trim | kinuy | body | cc | hp | seats | auto | horaat");
+console.log("code | years | degem_nm | trim | kinuy | body | cc | hp | seats | auto");
 for (const [code, rs] of [...groups.entries()].sort()) {
   const u = (f: (r: (typeof rs)[0]) => string) => [...new Set(rs.map(f))].join(",");
   console.log(
@@ -32,7 +32,6 @@ for (const [code, rs] of [...groups.entries()].sort()) {
     "|", u((r) => r.koah_sus),
     "|", u((r) => r.mispar_moshavim),
     "|", u((r) => r.automatic_ind),
-    "|", u((r) => r.horaat_rishum ?? "-"),
   );
 }
 

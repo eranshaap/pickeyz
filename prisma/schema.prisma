@@ -12,12 +12,14 @@ datasource db {
   provider = "postgresql"
 }
 
-// 1. models — one row per variant (degem_code), WITHOUT year: the same code repeats across
-// production years with identical spec; the year belongs to the physical car (cars.year).
+// 1. models — one row per catalog entry. The ministry's key is (vehicle_class, tozeret_cd, degem_cd, year):
+// degem numbers are counted separately for private (P) and commercial (M) vehicles, and reused across years.
 model models {
   id               Int      @id @default(autoincrement())
-  degem_code       String?  @unique // "tozeret_cd-degem_cd", e.g. "588-182". Normalized by makeDegemCode. May be empty.
-  comparison_group String? // level-1 group key computed from the catalog (make|model|body|fuel|cc|hp|gearbox|drive|trim); versioned
+  vehicle_class    String? // catalog/registry sug_degem: "P" private | "M" commercial. Part of the identity.
+  degem_code       String? // "tozeret_cd-degem_cd", e.g. "588-182". Normalized by makeDegemCode. May be empty.
+  year             Int? // production year — part of the identity. cars.year is the car's own year, used to pick this row.
+  comparison_group String? // level-1 group key computed from the catalog (make|model|body|fuel|cc|hp|gearbox|drive|trim); year is NOT part of it
   make             String? // catalog: tozar
   model            String? // catalog: kinuy_mishari, normalized ("MAZDA 3" / "MAZDA3" -> one spelling)
   sub_model        String? // catalog: ramat_gimur
@@ -38,6 +40,8 @@ model models {
   created_at       DateTime @default(now())
 
   cars cars[]
+
+  @@unique([vehicle_class, degem_code, year])
 }
 
 // 2. cars — the physical car, one row per license plate. No price, no seller, no declared km.
@@ -45,7 +49,7 @@ model cars {
   id                 Int       @id @default(autoincrement())
   license_plate      String?   @unique // external id, the anchor. Digits only, kept as text.
   model_id           Int // required: without a variant there is no comparison group
-  year               Int? // production year, registry shnat_yitzur (moved here from models on Day 5)
+  year               Int? // production year, registry shnat_yitzur. Picks the models row and slices the medians.
   hand               Int? // non-dealer rows in ownership history; null when history is empty or truncated
   ownership_history  Json? // [{ ym: "2018-03", type: "leasing" }, ...] all rows incl. dealer, oldest first
   color              String? // from the ad; Ministry as fallback. A listing fills empty, never overwrites.
