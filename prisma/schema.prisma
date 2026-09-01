@@ -13,7 +13,8 @@ datasource db {
 }
 
 // 1. models — one row per catalog entry. The ministry's key is (vehicle_class, tozeret_cd, degem_cd, year):
-// degem numbers are counted separately for private (P) and commercial (M) vehicles, and reused across years.
+// degem numbers are counted separately for private (P) and commercial (M) vehicles — never reused within a class.
+// Within a class, a pair is one fixed spec across all its years (0/52,257 conflicts); the year is the catalog's grain.
 model models {
   id               Int      @id @default(autoincrement())
   vehicle_class    String? // catalog/registry sug_degem: "P" private | "M" commercial. Part of the identity.
