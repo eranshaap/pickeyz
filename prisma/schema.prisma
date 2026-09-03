@@ -167,4 +167,6 @@ model market_stats {
   computed_at      DateTime @default(now())
 
   listings listings[]
+
+  @@index([comparison_group, year, computed_at])
 }
