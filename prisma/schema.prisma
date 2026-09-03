@@ -94,18 +94,20 @@ model listings {
   delisted_at         DateTime?
   delisted_price      Int?
   // Stage A — precomputed against the comparison group's median.
-  // market_stats_id (which median row the score used) arrives with market_stats on Days 8–9.
   score               Float?
   score_breakdown     Json?
   confidence          Float?
   scored_at           DateTime?
+  market_stats_id     Int? // which median row the current score was computed against. Empty until the first score.
   created_at          DateTime  @default(now())
   updated_at          DateTime  @default(now()) @updatedAt
 
-  car    cars    @relation(fields: [car_id], references: [id])
-  dealer dealers @relation(fields: [dealer_id], references: [id])
+  car          cars          @relation(fields: [car_id], references: [id])
+  dealer       dealers       @relation(fields: [dealer_id], references: [id])
+  market_stats market_stats? @relation(fields: [market_stats_id], references: [id])
 
   @@unique([source, external_id])
+  @@index([market_stats_id])
 }
 
 // 4. dealers — whoever offers cars: lots, leasing and rental companies, importers, private sellers.
@@ -146,4 +148,23 @@ model dealer_commercial {
   notes              String?
 
   dealer dealers @relation(fields: [dealer_id], references: [id])
+}
+
+// 6. market_stats — the market norm: median price and km per (comparison group × year).
+// Computed from listings, never from cars: a car has no price, a listing has one.
+// Rows are appended, never overwritten — the current norm is the newest row per group,
+// which is what keeps a January score reconstructable through listings.market_stats_id.
+model market_stats {
+  id               Int      @id @default(autoincrement())
+  comparison_group String // the group key AT the level group_level names
+  year             Int // the production year this row was computed for — the market prices years separately
+  median_price     Int // an active listing contributes price, a delisted one delisted_price
+  median_km        Int? // over km_declared of the same listings; empty when no ad in the pool states km
+  sample_size      Int // how many listings the medians rest on — this is what sets the score's confidence
+  window_days      Int // length of the window this row was computed in. 90 normally; a thin group gets a wider one
+  group_level      Int // 1 = full key | 2 = no trim | 3 = no body | 4 = make+model+fuel. A thin group drops a level
+  group_version    Int // which definition of the key and of the levels this row was computed under
+  computed_at      DateTime @default(now())
+
+  listings listings[]
 }
