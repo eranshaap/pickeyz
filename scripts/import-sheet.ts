@@ -6,7 +6,8 @@
 // - The sheet is the first-seen observation: an existing listing is never updated here.
 // - Unknown values stop the run. Only "not in the registry" is counted and skipped.
 // - Ads without an asking price are counted, not imported — same reason as auctions.
-// - dealers: private = one row per listing; business = corp_id -> normalized name -> same phone -> create.
+// - dealers: private = one row per listing; business = normalized name -> same phone -> create.
+//   No registry lookup here: corp_id / in_dealer_registry / registry_checked_at are set at onboarding.
 // - cars: a listing fills an empty color, never overwrites; official snapshot fields are refreshed.
 
 import "dotenv/config";
@@ -16,7 +17,7 @@ import { parse } from "csv-parse/sync";
 import { db } from "@/lib/db";
 import type { Prisma } from "@/generated/prisma/client";
 import { getVehicleData, type VehicleData } from "@/lib/mot/vehicle";
-import { getDealerData, normalizeName } from "@/lib/mot/dealers";
+import { normalizeName } from "@/lib/names";
 
 const DRY = process.argv.includes("--dry-run");
 const FILE = process.argv.find((a) => a.endsWith(".csv")) ?? "data/raw/sheet.csv";
@@ -124,7 +125,7 @@ function readSheet(file: string): Row[] {
 
 // ---------- 2. writing, with a memory of what a dry run "would" have created ----------
 type Tx = Prisma.TransactionClient;
-type DealerLike = { id: number; name: string; dealer_type: string; phone: string | null; corp_id: string | null };
+type DealerLike = { id: number; name: string; dealer_type: string; phone: string | null };
 const pendingDealers: DealerLike[] = [];
 const pendingCars = new Map<string, { id: number; color: string | null }>();
 let fakeId = -1;
@@ -135,7 +136,7 @@ function nameKey(s: string): string {
 
 async function createDealer(tx: Tx, data: Prisma.dealersCreateInput): Promise<number> {
   if (DRY) {
-    const d = { id: fakeId--, name: data.name, dealer_type: data.dealer_type, phone: data.phone ?? null, corp_id: data.corp_id ?? null };
+    const d = { id: fakeId--, name: data.name, dealer_type: data.dealer_type, phone: data.phone ?? null };
     pendingDealers.push(d);
     return d.id;
   }
@@ -149,16 +150,10 @@ async function resolveDealer(tx: Tx, row: Row): Promise<{ id: number; how: strin
     });
     return { id, how: "private:new" };
   }
-  const reg = getDealerData(row.seller_name); // licensed-dealers list, exact normalized name
-  const corp_id = reg?.corp_id ?? null;
   const businesses: DealerLike[] = [
     ...(await tx.dealers.findMany({ where: { dealer_type: { not: "private" } } })),
     ...pendingDealers.filter((d) => d.dealer_type !== "private"),
   ];
-  if (corp_id) {
-    const d = businesses.find((b) => b.corp_id === corp_id);
-    if (d) return { id: d.id, how: "corp_id" };
-  }
   const key = nameKey(row.seller_name);
   const byName = businesses.find((b) => nameKey(b.name) === key);
   if (byName) return { id: byName.id, how: "name" };
@@ -168,9 +163,8 @@ async function resolveDealer(tx: Tx, row: Row): Promise<{ id: number; how: strin
   }
   const id = await createDealer(tx, {
     name: row.seller_name, dealer_type: row.seller_type, region: row.region, phone: row.phone,
-    corp_id, in_dealer_registry: reg !== null, registry_checked_at: new Date(),
   });
-  return { id, how: reg ? "new:in_registry" : "new:not_in_registry" };
+  return { id, how: "new" };
 }
 
 function dateOrNull(s: string | null): Date | null {
