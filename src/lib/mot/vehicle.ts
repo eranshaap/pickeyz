@@ -33,8 +33,40 @@ export type VehicleData = {
 
 export type VehicleLookup =
   | { status: "active"; data: VehicleData }
+  | { status: "inactive"; data: VehicleData }   // found only in the inactive-vehicles dataset
   | { status: "cancelled"; bitul_dt: string }
   | { status: "not_found" };
+
+// The active registry record's field names, verified 02/09. The inactive dataset is documented as
+// carrying the same fields; per our rule we do not take that on trust — the first inactive record
+// of a run prints its keys and is compared against this list, and any difference stops the run.
+const REGISTRY_FIELDS = [
+  "_id", "mispar_rechev", "tozeret_cd", "sug_degem", "tozeret_nm", "degem_cd", "degem_nm",
+  "ramat_gimur", "ramat_eivzur_betihuty", "kvutzat_zihum", "shnat_yitzur", "degem_manoa",
+  "mivchan_acharon_dt", "tokef_dt", "baalut", "misgeret", "tzeva_cd", "tzeva_rechev",
+  "zmig_kidmi", "zmig_ahori", "sug_delek_nm", "horaat_rishum", "moed_aliya_lakvish",
+  "kinuy_mishari",
+] as const;
+
+let inactiveFieldsPrinted = false;
+
+// Stops the run if the inactive record does not carry exactly the active record's fields.
+function checkInactiveFields(plate: string, row: object): void {
+  const keys = Object.keys(row);
+  if (!inactiveFieldsPrinted) {
+    inactiveFieldsPrinted = true;
+    console.log(`mot inactive ${plate}: keys = ${keys.join(", ")}`);
+  }
+  const missing = REGISTRY_FIELDS.filter((f) => !keys.includes(f));
+  const extra = keys.filter((k) => !(REGISTRY_FIELDS as readonly string[]).includes(k));
+  if (missing.length || extra.length) {
+    throw new Error(
+      `MoT inactive ${plate}: fields differ from the active registry record — ` +
+        `missing: [${missing.join(", ")}], unexpected: [${extra.join(", ")}]. ` +
+        `Re-check the mapping before importing anything from this dataset.`,
+    );
+  }
+}
 
 export async function getVehicleData(rawPlate: string, refresh = false): Promise<VehicleLookup> {
   const plate = rawPlate.replace(/\D/g, "");
@@ -42,12 +74,20 @@ export async function getVehicleData(rawPlate: string, refresh = false): Promise
     throw new Error(`plate: expected 6-8 digits, got ${JSON.stringify(rawPlate)}`);
   }
 
-  // Sequential on purpose — four quick requests in a row, not four at once.
+  // Sequential on purpose — a few quick requests in a row, not all at once.
+  // active -> cancelled -> inactive: a finally-cancelled car may also sit in the inactive
+  // file, and cancelled is the stronger fact, so it is asked first.
   const registry = await fetchRows<RegistryRow>("registry", plate, refresh);
-  const reg = registry[0];
+  let reg = registry[0];
+  let status: "active" | "inactive" = "active";
   if (!reg) {
     const cancelled = await fetchRows<CancelledRow>("cancelled", plate, refresh);
-    return cancelled[0] ? { status: "cancelled", bitul_dt: cancelled[0].bitul_dt } : { status: "not_found" };
+    if (cancelled[0]) return { status: "cancelled", bitul_dt: cancelled[0].bitul_dt };
+    const inactive = await fetchRows<RegistryRow>("inactive", plate, refresh);
+    if (!inactive[0]) return { status: "not_found" };
+    checkInactiveFields(plate, inactive[0]);
+    reg = inactive[0];
+    status = "inactive";
   }
   const km = await fetchRows<HistoryKmRow>("history_km", plate, refresh);
   const hand = await fetchRows<HistoryHandRow>("history_hand", plate, refresh);
@@ -86,7 +126,7 @@ export async function getVehicleData(rawPlate: string, refresh = false): Promise
       fuel: reg.sug_delek_nm,
     },
   };
-  return { status: "active", data };
+  return { status, data };
 }
 
 // 201809 -> "2018-09"

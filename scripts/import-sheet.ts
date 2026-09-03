@@ -4,7 +4,8 @@
 //
 // Rules (Day 6):
 // - The sheet is the first-seen observation: an existing listing is never updated here.
-// - Unknown values stop the run. Only "not in the registry" is counted and skipped.
+// - Unknown values stop the run. Only cancelled and not_found plates are counted and skipped;
+//   a plate found in the inactive-vehicles dataset is imported like an active one (counted as car:inactive).
 // - Ads without an asking price are counted, not imported — same reason as auctions.
 // - dealers: private = one row per listing; business = normalized name -> same phone -> create.
 //   No registry lookup here: corp_id / in_dealer_registry / registry_checked_at are set at onboarding.
@@ -217,7 +218,10 @@ async function main() {
     if (row.price === null) { bump("skipped:no_price"); console.log(`${tag} skipped — no asking price`); continue; }
 
     const lookup = await getVehicleData(row.plate);
-    if (lookup.status !== "active") { bump(`skipped:${lookup.status}`); console.log(`${tag} skipped — ${lookup.status}`); continue; }
+    if (lookup.status !== "active" && lookup.status !== "inactive") {
+      bump(`skipped:${lookup.status}`); console.log(`${tag} skipped — ${lookup.status}`); continue;
+    }
+    // An inactive car carries the same registry fields; its expired tokef_dt is data, not a reason to skip.
     const v = lookup.data;
     if (EXPECT_MODEL !== null && modelKey(v.registry.model_name) !== modelKey(EXPECT_MODEL)) {
       fail(row.n, `${row.plate}: expected model ${JSON.stringify(EXPECT_MODEL)}, registry says ${v.registry.make} ${v.registry.model_name}`);
@@ -251,6 +255,7 @@ async function main() {
     const r = DRY ? await work(db as unknown as Tx) : await db.$transaction(work);
 
     bump(`car:${r.car.created ? "new" : "existing"}`);
+    if (lookup.status === "inactive") bump("car:inactive");
     bump(`listing:${r.listing}`);
     bump(`dealer:${r.dealer.how}`);
     console.log(`${tag} ${v.degem_code} ${v.year} | car:${r.car.created ? "new" : "existing"} dealer:${r.dealer.how} listing:${r.listing}`);

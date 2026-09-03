@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { MOT_API, RESOURCES, RAW_DIR } from "./resources";
 
-// The four resources we query by plate ("dealers" is a file, not an API resource).
+// The resources we query by plate ("dealers" is a file, not an API resource).
 export type ApiResource = Exclude<keyof typeof RESOURCES, "dealers">;
 
 type ApiBody<T> = { success?: boolean; result?: { records?: T[] } };
