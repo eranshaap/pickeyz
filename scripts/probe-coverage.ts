@@ -18,7 +18,7 @@ async function main() {
     }
     const d = r.data;
     if (d.km_at_last_test !== null) km++;
-    if (d.ownership_history.length > 0) hist++;
+    if ((d.ownership_history?.length ?? 0) > 0) hist++;
     if (d.hand !== null) handKnown++;
     if (d.origin) origins.set(d.origin, (origins.get(d.origin) ?? 0) + 1);
     console.log(plate, "hand:", d.hand, "km:", d.km_at_last_test, "origin:", d.origin);

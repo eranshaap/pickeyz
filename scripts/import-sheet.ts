@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { db } from "@/lib/db";
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import { getVehicleData, type VehicleData } from "@/lib/mot/vehicle";
 import { normalizeName } from "@/lib/names";
 
@@ -176,7 +176,7 @@ async function upsertCar(tx: Tx, row: Row, v: VehicleData, model_id: number): Pr
   const official = {
     year: v.year,
     hand: v.hand,
-    ownership_history: v.ownership_history as unknown as Prisma.InputJsonValue,
+    ownership_history: (v.ownership_history ?? Prisma.DbNull) as unknown as Prisma.InputJsonValue,
     test_expiry: dateOrNull(v.test_expiry),
     mivchan_acharon_dt: dateOrNull(v.mivchan_acharon_dt),
     km_at_last_test: v.km_at_last_test,
@@ -269,7 +269,7 @@ async function main() {
       densityCode.set(ckey, (densityCode.get(ckey) ?? 0) + 1);
     }
     if (row.hand !== null && v.hand !== null && row.hand !== v.hand) {
-      handMismatch.push({ plate: row.plate, declared: row.hand, official: v.hand, test_dt: null, note: v.ownership_history.map((h) => `${h.ym}:${h.type}`).join(" → ") });
+      handMismatch.push({ plate: row.plate, declared: row.hand, official: v.hand, test_dt: null, note: (v.ownership_history ?? []).map((h) => `${h.ym}:${h.type}`).join(" → ") });
     }
     if (row.km !== null && v.km_at_last_test !== null && row.km < v.km_at_last_test) {
       kmBelowTest.push({ plate: row.plate, declared: row.km, official: v.km_at_last_test, test_dt: v.mivchan_acharon_dt, note: row.seller_name });

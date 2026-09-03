@@ -20,7 +20,7 @@ export type VehicleData = {
   degem_code: string | null;
   year: number;                                          // registry shnat_yitzur — the car's own year
   hand: number | null;                                   // null = history incomplete, not zero
-  ownership_history: { ym: string; type: OwnershipCode }[]; // all rows, dealers included, oldest first
+  ownership_history: { ym: string; type: OwnershipCode }[] | null; // all rows, dealers included, oldest first; null = unknown, never []
   ownership_current: OwnershipCode;                      // registry value now; not stored
   origin: OriginCode | null;                             // history 1; not stored
   test_expiry: string | null;
@@ -110,7 +110,7 @@ export async function getVehicleData(rawPlate: string, refresh = false): Promise
     degem_code: makeDegemCode(reg.tozeret_cd, reg.degem_cd),
     year: reg.shnat_yitzur,
     hand: history.length > 0 && !truncated ? history.filter((h) => h.type !== "dealer").length : null,
-    ownership_history: history,
+    ownership_history: history.length > 0 ? history : null,
     ownership_current: ownershipCode(reg.baalut),
     origin: k ? originCode(k.mkoriut_nm) : null,
     test_expiry: reg.tokef_dt || null,
