@@ -92,7 +92,6 @@ model listings {
   first_seen_at       DateTime // required: the one value that cannot be recovered later
   last_verified_at    DateTime?
   delisted_at         DateTime?
-  delisted_price      Int?
   // Stage A — precomputed against the comparison group's median.
   score               Float?
   score_breakdown     Json?
@@ -158,7 +157,7 @@ model market_stats {
   id               Int      @id @default(autoincrement())
   comparison_group String // the group key AT the level group_level names
   year             Int // the production year this row was computed for — the market prices years separately
-  median_price     Int // an active listing contributes price, a delisted one delisted_price
+  median_price     Int // every listing in the pool contributes price
   median_km        Int? // over km_declared of the same listings; empty when no ad in the pool states km
   sample_size      Int // how many listings the medians rest on — this is what sets the score's confidence
   window_days      Int // length of the window this row was computed in. 90 normally; a thin group gets a wider one
