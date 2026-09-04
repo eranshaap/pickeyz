@@ -1,5 +1,7 @@
 // Our concept, not the ministry's: which listings are "the same product" in the buyer's eyes.
-// A ladder of keys — level 1 is the full key; each level drops one component (schema, part D, models).
+// One key (schema, part D, models): make|model|body|fuel|cc|hp|gearbox|drive|trim. Year is NOT part of it.
+// A thin (group × year) cell is never merged into a coarser group — it keeps its own row and its
+// true sample_size; the scoring step treats a small sample as "no price comparison".
 // GROUP_VERSION changes only when this definition changes; then models.comparison_group and
 // every market median are recomputed.
 
@@ -17,15 +19,10 @@ export type GroupFields = {
   sub_model: string | null;
 };
 
-export const GROUP_LEVELS: (keyof GroupFields)[][] = [
-  ["make", "model", "body_type", "fuel_type", "engine_size", "horsepower", "transmission", "drive_type", "sub_model"],
-  ["make", "model", "body_type", "fuel_type", "engine_size", "horsepower", "transmission", "drive_type"],
-  ["make", "model", "fuel_type", "engine_size", "horsepower", "transmission", "drive_type"],
-  ["make", "model", "fuel_type"],
+export const GROUP_FIELDS: (keyof GroupFields)[] = [
+  "make", "model", "body_type", "fuel_type", "engine_size", "horsepower", "transmission", "drive_type", "sub_model",
 ];
 
-export function groupKey(f: GroupFields, level = 1): string {
-  const fields = GROUP_LEVELS[level - 1];
-  if (!fields) throw new Error(`group level ${level} is not defined`);
-  return fields.map((k) => String(f[k] ?? "")).join("|");
+export function groupKey(f: GroupFields): string {
+  return GROUP_FIELDS.map((k) => String(f[k] ?? "")).join("|");
 }

@@ -155,14 +155,13 @@ model dealer_commercial {
 // which is what keeps a January score reconstructable through listings.market_stats_id.
 model market_stats {
   id               Int      @id @default(autoincrement())
-  comparison_group String // the group key AT the level group_level names
+  comparison_group String // the group key (groupKey in src/lib/comparison-group.ts); year is not part of it
   year             Int // the production year this row was computed for — the market prices years separately
   median_price     Int // every listing in the pool contributes price
   median_km        Int? // over km_declared of the same listings; empty when no ad in the pool states km
   sample_size      Int // how many listings the medians rest on — this is what sets the score's confidence
-  window_days      Int // length of the window this row was computed in. 90 normally; a thin group gets a wider one
-  group_level      Int // 1 = full key | 2 = no trim | 3 = no body | 4 = make+model+fuel. A thin group drops a level
-  group_version    Int // which definition of the key and of the levels this row was computed under
+  window_days      Int // length of the window this row was computed in. 90 normally; a thin cell is widened to 180
+  group_version    Int // which definition of the key this row was computed under
   computed_at      DateTime @default(now())
 
   listings listings[]
