@@ -95,6 +95,7 @@ async function main() {
     if (l.car.year === null) throw new Error(`listing ${l.id} (car ${l.car_id}): cars.year is null - cannot place it in a (group, year) cell`);
     const m = l.car.model;
     const fields: GroupFields = {
+      vehicle_class: m.vehicle_class,
       make: m.make, model: m.model, body_type: m.body_type, fuel_type: m.fuel_type,
       engine_size: m.engine_size, horsepower: m.horsepower, transmission: m.transmission,
       drive_type: m.drive_type, sub_model: m.sub_model,

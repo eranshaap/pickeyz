@@ -108,7 +108,7 @@ export function buildModelRows(): { rows: ModelRow[]; report: BuildReport } {
       vehicle_class: cls,
       degem_code: code,
       year,
-      comparison_group: groupKey(fields),
+      comparison_group: groupKey({ vehicle_class: cls, ...fields }),
       ...fields,
       seats: num(r.mispar_moshavim),
       height_mm: num(r.gova),
