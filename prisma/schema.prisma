@@ -70,8 +70,9 @@ model cars {
   created_at         DateTime  @default(now())
   updated_at         DateTime  @default(now()) @updatedAt
 
-  model    models     @relation(fields: [model_id], references: [id])
-  listings listings[]
+  model         models              @relation(fields: [model_id], references: [id])
+  listings      listings[]
+  test_readings car_test_readings[]
 }
 
 // 3. listings — one row per offer to sell a specific car. The score lives here.
@@ -93,17 +94,22 @@ model listings {
   last_verified_at    DateTime?
   delisted_at         DateTime?
   // Stage A — precomputed against the comparison group's median.
-  score               Float?
-  score_breakdown     Json?
-  confidence          Float?
-  scored_at           DateTime?
-  market_stats_id     Int? // which median row the current score was computed against. Empty until the first score.
+  score                Float? // the deal score (Day 11: price_advantage + condition_vs_typical)
+  score_breakdown      Json? // the whole ScoreResult of src/lib/scoring
+  confidence           ConfidenceLevel? // Day 11: from the engine's item count (0 high, 1 medium, 2+ low)
+  condition_score      Float? // Day 11: history row + km row, % of value
+  engine_version       Int? // Day 11: null until first scored
+  owners_at_first_seen Int? // Day 11: rows in the car's ownership_history when the listing was first seen
+  scored_at            DateTime?
+  market_stats_id      Int? // which median row the current score was computed against. Empty until the first score.
   created_at          DateTime  @default(now())
   updated_at          DateTime  @default(now()) @updatedAt
 
-  car          cars          @relation(fields: [car_id], references: [id])
-  dealer       dealers       @relation(fields: [dealer_id], references: [id])
-  market_stats market_stats? @relation(fields: [market_stats_id], references: [id])
+  car           cars                    @relation(fields: [car_id], references: [id])
+  dealer        dealers                 @relation(fields: [dealer_id], references: [id])
+  market_stats  market_stats?           @relation(fields: [market_stats_id], references: [id])
+  scores        listing_scores[]
+  price_history listing_price_history[]
 
   @@unique([source, external_id])
   @@index([market_stats_id])
@@ -160,11 +166,68 @@ model market_stats {
   median_price     Int // every listing in the pool contributes price
   median_km        Int? // over km_declared of the same listings; empty when no ad in the pool states km
   sample_size      Int // how many listings the medians rest on — this is what sets the score's confidence
+  median_condition Float? // Day 11: median condition_score of the pool; null when thin or no listing has a history
   window_days      Int // length of the window this row was computed in. 90 normally; a thin cell is widened to 180
   group_version    Int // which definition of the key this row was computed under
+  engine_version   Int // which engine computed median_condition; 0 = computed before any engine existed
   computed_at      DateTime @default(now())
 
-  listings listings[]
+  listings       listings[]
+  listing_scores listing_scores[]
 
   @@index([comparison_group, year, computed_at])
+}
+
+// 7. listing_scores — one row per listing per scoring run (Day 11, §19.1). listings keeps the latest
+// score; this table keeps all of them. Append-only (forbid_change trigger: no UPDATE, no DELETE).
+model listing_scores {
+  id              Int             @id @default(autoincrement())
+  listing_id      Int
+  scored_at       DateTime // the run's `now`
+  engine_version  Int
+  market_stats_id Int?
+  deal_score      Float?
+  condition_score Float?
+  confidence      ConfidenceLevel
+  breakdown       Json // the full ScoreResult
+
+  listing      listings      @relation(fields: [listing_id], references: [id])
+  market_stats market_stats? @relation(fields: [market_stats_id], references: [id])
+
+  @@index([listing_id, scored_at])
+}
+
+// 8. listing_price_history — one row per observed price (Day 11, §19.2). The first row is written at
+// import with first_seen_at; every later price change goes through recordPrice() in src/lib/price-history.ts,
+// which inserts here and then updates listings.price. Append-only (forbid_change trigger).
+model listing_price_history {
+  id          Int      @id @default(autoincrement())
+  listing_id  Int
+  price       Int
+  observed_at DateTime
+
+  listing listings @relation(fields: [listing_id], references: [id])
+
+  @@index([listing_id, observed_at])
+}
+
+// 9. car_test_readings — the tester's odometer readings over time (Day 11, §21). cars keeps the latest
+// reading; this table keeps every (car, test date) pair ever read. Append-only (forbid_change trigger).
+model car_test_readings {
+  id          Int      @id @default(autoincrement())
+  car_id      Int
+  test_date   DateTime @db.Date // mivchan_acharon_dt as read
+  km          Int // km_at_last_test as read
+  observed_at DateTime // when we read it
+
+  car cars @relation(fields: [car_id], references: [id])
+
+  @@unique([car_id, test_date])
+}
+
+// Day 11: the scoring engine's confidence level (src/lib/scoring/confidence.ts).
+enum ConfidenceLevel {
+  high
+  medium
+  low
 }

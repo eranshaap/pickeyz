@@ -10,6 +10,8 @@
 // - dealers: private = one row per listing; business = normalized name -> same phone -> create.
 //   No registry lookup here: corp_id / in_dealer_registry / registry_checked_at are set at onboarding.
 // - cars: a listing fills an empty color, never overwrites; official snapshot fields are refreshed.
+// - Day 11: a new listing writes its first listing_price_history row (price, first_seen_at); a car's
+//   (mivchan_acharon_dt, km_at_last_test) reading is appended to car_test_readings when that test date is new.
 
 import "dotenv/config";
 import { readFileSync } from "node:fs";
@@ -185,7 +187,10 @@ async function upsertCar(tx: Tx, row: Row, v: VehicleData, model_id: number): Pr
   const existing = (await tx.cars.findUnique({ where: { license_plate: v.license_plate } })) ?? pendingCars.get(v.license_plate) ?? null;
   if (existing) {
     const patch = { ...official, ...(existing.color ? {} : { color: row.color ?? v.color }) };
-    if (!DRY) await tx.cars.update({ where: { id: existing.id }, data: patch });
+    if (!DRY) {
+      await tx.cars.update({ where: { id: existing.id }, data: patch });
+      await recordTestReading(tx, existing.id, official.mivchan_acharon_dt, official.km_at_last_test);
+    }
     return { id: existing.id, created: false };
   }
   const color = row.color ?? v.color;
@@ -195,7 +200,16 @@ async function upsertCar(tx: Tx, row: Row, v: VehicleData, model_id: number): Pr
     return { id, created: true };
   }
   const c = await tx.cars.create({ data: { license_plate: v.license_plate, model_id, color, ...official } });
+  await recordTestReading(tx, c.id, official.mivchan_acharon_dt, official.km_at_last_test);
   return { id: c.id, created: true };
+}
+
+// Day 11 (§21): keep every (car, test date) reading. cars keeps the latest; this appends when the date is new.
+async function recordTestReading(tx: Tx, car_id: number, test_date: Date | null, km: number | null): Promise<void> {
+  if (test_date === null || km === null) return;
+  const seen = await tx.car_test_readings.findUnique({ where: { car_id_test_date: { car_id, test_date } } });
+  if (seen) return;
+  await tx.car_test_readings.create({ data: { car_id, test_date, km, observed_at: new Date() } });
 }
 
 // ---------- 3. the run ----------
@@ -241,13 +255,17 @@ async function main() {
       if (!exists) {
         listing = "new";
         if (!DRY) {
-          await tx.listings.create({
+          const first_seen_at = new Date(`${row.first_seen}T00:00:00.000Z`);
+          const created = await tx.listings.create({
             data: {
               car_id: car.id, dealer_id: dealer.id, source: row.source, external_id: row.external_id,
               price: row.price!, region: row.region, image_urls: [], km_declared: row.km, hand_declared: row.hand,
-              first_seen_at: new Date(`${row.first_seen}T00:00:00.000Z`),
+              first_seen_at,
+              owners_at_first_seen: v.ownership_history?.length ?? null, // Day 11: the record's size at first sight
             },
           });
+          // Day 11 (§19.2): the first observed price, at first sight. Later changes go through recordPrice().
+          await tx.listing_price_history.create({ data: { listing_id: created.id, price: row.price!, observed_at: first_seen_at } });
         }
       }
       return { dealer, car, listing };

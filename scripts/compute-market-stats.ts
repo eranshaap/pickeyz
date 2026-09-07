@@ -14,14 +14,20 @@
 // - One row per cell. Keys come only from groupKey() in src/lib/comparison-group.ts;
 //   group_version = GROUP_VERSION.
 // - Touches market_stats only. listings.market_stats_id is written by the scoring step.
+// - Day 11 (§10): per cell with sample_size >= MIN_SAMPLE, median_condition = median over the pool of
+//   history.value + km.value (history alone when km is unavailable; listings whose history row is
+//   unavailable contribute nothing), computed with the engine's historyRow / kmRow against this cell's
+//   median_km and the run's `now`. Thin cells: null. engine_version = ENGINE_VERSION is written explicitly.
 
 import "dotenv/config";
 import { db } from "@/lib/db";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
+import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
+import { historyRow, kmRow, type ScoringInput } from "@/lib/scoring";
+import { scoringSubject } from "@/lib/scoring-input";
 
 const DRY = process.argv.includes("--dry-run");
 
-const MIN_SAMPLE = 5;
 const WINDOWS = [90, 180] as const;
 type Window = (typeof WINDOWS)[number];
 
@@ -36,6 +42,7 @@ type PoolListing = {
   dealer_type: string;
   delisted_at: Date | null;
   key: string; // groupKey(fields)
+  subject: Omit<ScoringInput, "market">; // the listing and car as the engine sees them (§10)
 };
 
 function median(values: number[]): number {
@@ -64,13 +71,34 @@ type Row = {
   year: number;
   median_price: number;
   median_km: number | null;
+  median_condition: number | null;
   sample_size: number;
   window_days: Window;
   group_version: number;
+  engine_version: number;
   computed_at: Date;
   // printed, not stored
   pool: PoolListing[];
+  conditions: number; // how many listings contributed to median_condition
 };
+
+// §10: the condition of every listing in the pool whose history row is scored, against this cell's median_km.
+function poolConditions(pool: PoolListing[], cell: { median_price: number; median_km: number | null; sample_size: number; window_days: Window }, now: Date): number[] {
+  const out: number[] = [];
+  for (const l of pool) {
+    const input: ScoringInput = {
+      ...l.subject,
+      // §22.4: this row is not written yet, so it has no id. The km row never reads `id`; priceRow must
+      // NOT be called with this object — its raw.market_stats_id would be wrong.
+      market: { id: 0, median_price: cell.median_price, median_km: cell.median_km, median_condition: null, sample_size: cell.sample_size, window_days: cell.window_days },
+    };
+    const history = historyRow(input);
+    if (history.status !== "scored" || typeof history.value !== "number") continue;
+    const km = kmRow(input, now);
+    out.push(history.value + (km.status === "scored" && typeof km.value === "number" ? km.value : 0));
+  }
+  return out;
+}
 
 async function main() {
   const now = new Date();
@@ -104,6 +132,7 @@ async function main() {
       id: l.id, car_id: l.car_id, year: l.car.year, price: l.price, km: l.km_declared,
       dealer_type: l.dealer.dealer_type, delisted_at: l.delisted_at,
       key: groupKey(fields),
+      subject: scoringSubject(l, l.car, l.dealer.dealer_type),
     };
   });
   const pool90 = pool.filter((l) => inWindow(l, now, 90));
@@ -138,24 +167,33 @@ async function main() {
     }
     if (cellPool.length < MIN_SAMPLE) thin++;
     const kms = cellPool.map((l) => l.km).filter((k): k is number => k !== null);
+    const median_price = Math.round(median(cellPool.map((l) => l.price)));
+    const median_km = kms.length ? Math.round(median(kms)) : null;
+    const sample_size = cellPool.length;
+    const conditions = sample_size < MIN_SAMPLE ? [] : poolConditions(cellPool, { median_price, median_km, sample_size, window_days: window }, now);
     rowList.push({
       comparison_group: c.key,
       year: c.year,
-      median_price: Math.round(median(cellPool.map((l) => l.price))),
-      median_km: kms.length ? Math.round(median(kms)) : null,
-      sample_size: cellPool.length,
+      median_price,
+      median_km,
+      median_condition: conditions.length ? median(conditions) : null,
+      sample_size,
       window_days: window,
       group_version: GROUP_VERSION,
+      engine_version: ENGINE_VERSION,
       computed_at: now,
       pool: cellPool,
+      conditions: conditions.length,
     });
   }
 
   console.log(`\n===== ROWS TO WRITE (${rowList.length}) =====`);
-  console.log("comparison_group | year | window | sample_size | median_price | median_km");
+  console.log("comparison_group | year | window | sample_size | median_price | median_km | median_condition (n) | engine_version");
   for (const r of rowList) {
     const flag = r.sample_size < MIN_SAMPLE ? " THIN" : "";
-    console.log(`\n${r.comparison_group} | ${r.year} | ${r.window_days} | ${r.sample_size} | ${r.median_price} | ${r.median_km ?? "-"}${flag}`);
+    const cond = r.median_condition === null ? "-" : `${r.median_condition} (${r.conditions})`;
+    console.log(`
+${r.comparison_group} | ${r.year} | ${r.window_days} | ${r.sample_size} | ${r.median_price} | ${r.median_km ?? "-"} | ${cond} | ${r.engine_version}${flag}`);
     console.log(`  dealer_type mix: ${mix(r.pool)}`);
   }
 
@@ -170,6 +208,8 @@ async function main() {
   console.log(`rows to write                       ${rowList.length}`);
   console.log(`rows widened to 180                 ${widened}`);
   console.log(`thin rows (sample_size < ${MIN_SAMPLE})         ${thin}`);
+  console.log(`rows with median_condition          ${rowList.filter((r) => r.median_condition !== null).length}`);
+  console.log(`engine_version                      ${ENGINE_VERSION}`);
 
   // ---------- 5. write ----------
   if (DRY) {
@@ -183,9 +223,11 @@ async function main() {
         year: r.year,
         median_price: r.median_price,
         median_km: r.median_km,
+        median_condition: r.median_condition,
         sample_size: r.sample_size,
         window_days: r.window_days,
         group_version: r.group_version,
+        engine_version: r.engine_version,
         computed_at: r.computed_at,
       })),
     });
