@@ -42,6 +42,7 @@ type Scored = {
   price: number;
   market_stats_id: number | null;
   result: ScoreResult;
+  stored: { score: number | null; condition_score: number | null; confidence: string | null }; // Day 12 §6: what listings holds now, for the regression count
 };
 type Failed = { listing_id: number; plate: string; error: string };
 
@@ -112,7 +113,7 @@ async function main() {
         }
       }
       const result = scoreListing({ ...subject, market }, now);
-      scored.push({ listing_id: l.id, plate, year: subject.car.year, price: l.price, market_stats_id: market?.id ?? null, result });
+      scored.push({ listing_id: l.id, plate, year: subject.car.year, price: l.price, market_stats_id: market?.id ?? null, result, stored: { score: l.score, condition_score: l.condition_score, confidence: l.confidence } });
     } catch (e) {
       failed.push({ listing_id: l.id, plate, error: (e as Error).message });
     }
@@ -151,6 +152,28 @@ async function main() {
   log("deal_score present");
   log(`  ${scored.filter((s) => s.result.deal_score !== null).length.toString().padStart(4)}  scored`);
   log(`  ${scored.filter((s) => s.result.deal_score === null).length.toString().padStart(4)}  null`);
+
+  // ---------- Day 12 §6: regression against listings, and the reality delta ----------
+  log(`\n===== REGRESSION vs listings (score, condition_score, confidence) =====`);
+  const regressed = scored.filter(
+    (s) => s.result.deal_score !== s.stored.score || s.result.condition_score !== s.stored.condition_score || s.result.confidence.level !== s.stored.confidence,
+  );
+  log(`regression count: ${regressed.length} (must be 0)`);
+  for (const s of regressed) {
+    log(`listing ${s.listing_id} (${s.plate}): score ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)}; condition_score ${fmt(s.stored.condition_score)} -> ${fmt(s.result.condition_score)}; confidence ${s.stored.confidence ?? "-"} -> ${s.result.confidence.level}`);
+  }
+
+  log(`\n===== REALITY DELTA (condition_by_reality !== condition_score) =====`);
+  const historyOf = (s: Scored) => s.result.rows.find((r) => r.row === "history")!;
+  const zeroKm = scored.filter((s) => historyOf(s).raw.zero_km_deal === true);
+  const delta = scored.filter((s) => s.result.condition_by_reality !== s.result.condition_score);
+  log(`zero-km cars in the pool: ${zeroKm.length}; listings with a reality delta: ${delta.length}`);
+  log("listing | plate | history paper | history reality | delta (reality - paper)");
+  for (const s of delta) {
+    const h = historyOf(s);
+    const d = typeof h.value === "number" && typeof h.value_by_reality === "number" ? Math.round((h.value_by_reality - h.value) * 10) / 10 : null;
+    log(`${s.listing_id} | ${s.plate} | ${fmt(h.value)} | ${fmt(h.value_by_reality)} | ${fmt(d)}`);
+  }
 
   if (PLATES.length) {
     log(`\n===== FULL RESULTS FOR --plates (${PLATES.length}) =====`);

@@ -1,7 +1,9 @@
 // Stage A scoring engine — every table and threshold (BRIEF Day 11, §3).
 // Every constant carries its source in a comment and must not be changed in code without changing the comment.
 
-export const ENGINE_VERSION = 1;
+export const ENGINE_VERSION = 2;
+// 1 — Day 11 — first engine
+// 2 — Day 12 — no number changed; the invoice gained value_by_reality (history row) and condition_by_reality (sum)
 export const MIN_SAMPLE = 5;              // source: Day 9 decision, guess; revisit with volume
 export const ROUND_DECIMALS = 1;
 

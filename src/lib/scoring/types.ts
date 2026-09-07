@@ -2,6 +2,7 @@
 // Pure TypeScript: no Prisma, no database, no I/O. Inputs are plain objects.
 
 import type { OwnershipCode } from "../mot/translator";
+import type { ENGINE_VERSION } from "./constants";
 
 // The brief calls this OwnershipType; the existing union in the repo is OwnershipCode (src/lib/mot/translator.ts).
 export type OwnershipType = OwnershipCode;
@@ -50,6 +51,7 @@ export type Row = {
   status: "scored" | "unavailable";
   source?: RowSource;
   value?: number;
+  value_by_reality?: number; // history row only (Day 12 §2): the reality reading; absent exactly when value is absent
   reason?: string; // when unavailable
   partial?: string[]; // what could not be included
   raw: Record<string, unknown>;
@@ -79,10 +81,11 @@ export type ConfidenceItemKind = "missing_row" | "counted_mismatch" | "unverifie
 export type ConfidenceItem = { kind: ConfidenceItemKind; ref: string };
 
 export type ScoreResult = {
-  engine_version: 1;
+  engine_version: typeof ENGINE_VERSION;
   unit: "pct_of_value";
   rows: Row[]; // price, history, km — always all three, scored or unavailable
   condition_score: number | null;
+  condition_by_reality: number | null; // Day 12 §2: history value_by_reality + km, same formula as condition_score; null whenever condition_score is null
   typical_condition: number | null;
   condition_vs_typical: number | null;
   price_advantage: number | null;

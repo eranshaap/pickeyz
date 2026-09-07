@@ -16,6 +16,11 @@
 // Combination (LY): sort deductions by magnitude, largest first; the first in full, every other one
 // at half; sum; floor at HISTORY_DEDUCTION_CAP; then add the bonus if any. The owner-count entry is a
 // deduction when negative, a bonus when positive, and nothing when 0 (first hand, §18.13).
+//
+// Two readings of the same lines (BRIEF Day 12, §1). `value` is the paper reading — what the market
+// prices. `value_by_reality` is the same lines with the zero-km leasing line dropped (that row is a
+// holder, not an owner), combined by the same rule; identical to `value` whenever there is no
+// zero-km deal. users, every other line and the bonus are shared by both readings.
 
 import {
   HISTORY_DEDUCTION_CAP,
@@ -154,6 +159,7 @@ export function historyRow(input: ScoringInput): Row {
       status: "scored",
       source: "ad",
       value: round(value),
+      value_by_reality: round(value), // no zero-km line without a record: reality == paper (§1.4)
       partial: ["owner_types"],
       raw: {
         owners: null,
@@ -179,12 +185,15 @@ export function historyRow(input: ScoringInput): Row {
     else entries.push({ for: r.type, pct: ownerTypeDeduction(r.type) });
   }
   const { value, deductions, sum_before_cap } = combineWithCount(entries, a.users);
+  // Reality reading (Day 12 §1): drop the zero-km leasing line, re-run the same rule over the rest.
+  const reality = combineWithCount(entries.filter((e) => e.for !== "zero_km_leasing"), a.users);
 
   return {
     row: "history",
     status: "scored",
     source: "mot",
     value: round(value),
+    value_by_reality: round(reality.value),
     raw: {
       owners: history,
       users: a.users,

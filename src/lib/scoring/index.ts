@@ -6,6 +6,7 @@
 //
 // Sums (§5):
 //   condition_score      = history + km              (null if history unavailable; history alone, partial ['km'], if km unavailable)
+//   condition_by_reality = history.value_by_reality + km   (Day 12 §2: same formula, the reality history in place of the paper one; null whenever condition_score is null)
 //   typical_condition    = market.median_condition   (only when the price row is available and the value is not null)
 //   condition_vs_typical = condition_score - typical_condition
 //   price_advantage      = price row value
@@ -54,6 +55,14 @@ export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
       partial.push("km");
     }
   }
+  // Day 12 §2: the reality sum follows condition_score exactly — same km handling, null when it is null.
+  let condition_by_reality: number | null = null;
+  if (condition_score !== null) {
+    if (typeof history.value_by_reality !== "number") {
+      throw new Error(`scoreListing: history row is scored (value ${historyValue}) but has no value_by_reality`);
+    }
+    condition_by_reality = kmValue !== null ? round(history.value_by_reality + kmValue) : round(history.value_by_reality);
+  }
   const price_advantage = valueOf(price);
   const typical_condition =
     price_advantage !== null && input.market !== null && input.market.median_condition !== null ? round(input.market.median_condition) : null;
@@ -76,6 +85,7 @@ export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
     unit: "pct_of_value",
     rows,
     condition_score,
+    condition_by_reality,
     typical_condition,
     condition_vs_typical,
     price_advantage,

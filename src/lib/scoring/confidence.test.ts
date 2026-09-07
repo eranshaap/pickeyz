@@ -4,6 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { confidence, confidenceLevel } from "./confidence";
+import { ENGINE_VERSION } from "./constants";
 import { scoreListing } from "./index";
 import type { Check, Row, SoldSignal } from "./types";
 import { input, NOW, rows } from "./fixtures";
@@ -95,7 +96,7 @@ describe("scoreListing (§5, §9)", () => {
       }),
       NOW,
     );
-    assert.equal(r.engine_version, 1);
+    assert.equal(r.engine_version, ENGINE_VERSION);
     assert.equal(r.unit, "pct_of_value");
     assert.deepEqual(r.rows.map((x) => [x.row, x.status, x.value]), [["price", "scored", 10], ["history", "scored", -10], ["km", "scored", 6]]);
     assert.equal(r.price_advantage, 10);
