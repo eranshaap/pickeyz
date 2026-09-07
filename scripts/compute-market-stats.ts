@@ -1,6 +1,7 @@
 // scripts/compute-market-stats.ts
 // Computes the market norm - median price and km per (comparison_group x year) - from listings
-// and appends rows to market_stats. `--dry-run` computes and prints everything, writes nothing.
+// and appends rows to market_stats. Default is a dry run: computes and prints everything, writes nothing.
+// `--write` appends the rows.
 //
 // Rules (Day 9, revised Day 9c - no descent ladder):
 // - One `now` for the run: it bounds the pool and is the computed_at of every row.
@@ -26,7 +27,7 @@ import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
 import { historyRow, kmRow, type ScoringInput } from "@/lib/scoring";
 import { scoringSubject } from "@/lib/scoring-input";
 
-const DRY = process.argv.includes("--dry-run");
+const DRY = !process.argv.includes("--write");
 
 const WINDOWS = [90, 180] as const;
 type Window = (typeof WINDOWS)[number];
