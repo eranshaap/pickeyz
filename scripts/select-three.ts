@@ -25,7 +25,10 @@
 //   RUNNER-UP for cheapest     the recorded cheapest_runner_up entry, then every cheapest-eligible shown listing priced above
 //                              the cheapest pick by up to RUNNER_UP_TUNING_WINDOW_PCT, for tuning the band and the gap.
 //   CHEAPEST BAR tuning        who would win cheapest under each bar in CHEAPEST_BAR_TUNING (the constant in force is -5).
-//   PEACE OF MIND FLOOR tuning who would win peace_of_mind under each floor in PEACE_FLOOR_TUNING (in force: -10).
+//   PEACE OF MIND FLOOR tuning who would win peace_of_mind under each floor in PEACE_FLOOR_TUNING (in force: -10), then the
+//                              listings whose recorded `overpriced` entry is triggered, with their place in the peace_of_mind order.
+// Rules v3 (part 4 §1): peace_of_mind is condition alone; the deal floor is recorded (`overpriced`, effect PEACE_OF_MIND_FLOOR_EFFECT)
+// and does not bar, so ELIGIBILITY reports it as its own count line, not as a reason.
 // The finish test (§3 of part 3) keeps three lines; distinct cars and double wins are reported, not failed.
 
 import "dotenv/config";
@@ -38,6 +41,7 @@ import {
   CHEAPEST_CONDITION_FLOOR,
   DOUBLE_WINNER_EFFECT,
   PEACE_OF_MIND_DEAL_FLOOR,
+  PEACE_OF_MIND_FLOOR_EFFECT,
   RULES_VERSION,
   RUNNER_UP_DEAL_GAP,
   RUNNER_UP_PRICE_BAND_PCT,
@@ -98,6 +102,12 @@ function count(items: string[]): [string, number][] {
   for (const it of items) m.set(it, (m.get(it) ?? 0) + 1);
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
+function cmpDealAsc(a: number | null, b: number | null): number {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return a - b;
+}
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
@@ -114,10 +124,11 @@ type Loaded = {
   cell: string; // "comparison_group year"
 };
 
-// The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c), for the eligibility counts.
+// The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c, part 4 §1), for the
+// eligibility counts. The deal floor blocks peace_of_mind only under floor effect 'excluded'; under 'none' it is recorded.
 const REASONS_OF: Record<Category, string[]> = {
   best_value: ["thin_cell", "no_deal_score"],
-  peace_of_mind: ["thin_cell", "no_condition_by_reality", "no_deal_score", "overpriced"],
+  peace_of_mind: ["thin_cell", "no_condition_by_reality", ...(PEACE_OF_MIND_FLOOR_EFFECT === "excluded" ? ["no_deal_score", "overpriced"] : [])],
   cheapest: ["thin_cell", "no_condition_vs_typical", "below_floor"],
 };
 
@@ -193,7 +204,7 @@ async function main() {
   const openRows = await db.dealer_commercial.count({ where: { OR: [{ agreement_end: null }, { agreement_end: { gt: now } }] } });
 
   log(
-    `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}`,
+    `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}, peace_of_mind_floor_effect = ${PEACE_OF_MIND_FLOOR_EFFECT}`,
   );
   log(`constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}`);
   log(`filters: ${filters}; live listings: ${rows.length}; pool after filters: ${pool.length}`);
@@ -356,6 +367,22 @@ async function main() {
       if (w === undefined) log(`  ${floorText} | no eligible listing | - | - | -`);
       else log(`  ${floorText} | ${P(w).plate} (listing ${w}) | ${fmt(bd(w).condition_by_reality)} | ${fmt(bd(w).deal_score)} | ${w === current ? "= current winner" : "different"}`);
     }
+    // part 4 §2: the listings whose recorded overpriced entry is triggered (deal_score under the floor), by name, with their
+    // place in the peace_of_mind order among the shown listings eligible for it (the pick loop's candidate set).
+    const peaceCands = shown.filter((x) => x.eligibility.peace_of_mind).map((x) => x.listing_id).sort(peaceOrder);
+    const triggered = res.results
+      .filter((r) => r.trace.some((t) => t.rule === "overpriced" && t.triggered))
+      .map((r) => r.listing_id)
+      .sort((a, b) => cmpDealAsc(bd(a).deal_score, bd(b).deal_score) || a - b);
+    log(`  overpriced recorded and triggered (deal_score < ${PEACE_OF_MIND_DEAL_FLOOR}; effect in force: ${PEACE_OF_MIND_FLOOR_EFFECT}): ${triggered.length} of ${res.results.length}`);
+    if (triggered.length) log(`  plate | listing | year | price | deal_score | condition_by_reality | status | place in the peace_of_mind order (of ${peaceCands.length})`);
+    for (const id of triggered) {
+      const r = R(id);
+      const place = peaceCands.indexOf(id);
+      log(
+        `  ${P(id).plate} | ${id} | ${P(id).candidate.year} | ${P(id).candidate.price} | ${fmt(bd(id).deal_score)} | ${fmt(bd(id).condition_by_reality)} | ${r.status}${r.excluded_by ? ` (${r.excluded_by})` : ""} | ${place < 0 ? "not shown" : `${place + 1}${r.categories.includes("peace_of_mind") ? " — the winner" : ""}`}`,
+      );
+    }
   }
 
   // ---------- 5. EXCLUDED and MERGED ----------
@@ -380,6 +407,12 @@ async function main() {
     const not = res.results.filter((r) => !r.eligibility[c]);
     log(`${c}: eligible ${eligible}, not ${not.length}`);
     for (const [k, n] of count(not.flatMap((r) => r.eligibility.reasons.filter((x) => REASONS_OF[c].includes(x))))) log(`  ${n.toString().padStart(4)}  ${k}`);
+    if (c === "peace_of_mind") {
+      // part 4 §1/§2: the deal floor is a measurement — its own count line, not a reason
+      const recorded = res.results.filter((r) => r.trace.some((t) => t.rule === "overpriced")).length;
+      const trig = res.results.filter((r) => r.trace.some((t) => t.rule === "overpriced" && t.triggered)).length;
+      log(`  overpriced (recorded): ${trig} triggered of ${recorded} recorded (effect ${PEACE_OF_MIND_FLOOR_EFFECT})`);
+    }
   }
 
   // ---------- 7. FINISH TEST ----------

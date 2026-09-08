@@ -1,6 +1,8 @@
 // BRIEF Day 12 part 2, §7 tests 1–11 and 13–15, plus §11.2 test 16 (best_value is rank 1): selectThree() end to end on hand-built inputs.
 // Part 3 (rules v2): tests 8, 10, 14, 15 updated for the double-win and floor decisions; test 11 pins double_winner_effect
 // 'recategorized' so that the too_similar examination it tests still happens; new: 2c (peace_of_mind floor), 17 (cheapest_runner_up).
+// Part 4 (rules v3): peace_of_mind is condition alone — 2c flips (the deal floor records `overpriced`, it does not bar; the
+// part-3 behaviour is reachable with { peace_of_mind_floor_effect: 'excluded' }); test 2 "deal_score null" is eligible again.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -9,6 +11,8 @@ import {
   BELOW_THRESHOLD_FLOOR_PCT,
   CHEAPEST_CONDITION_FLOOR,
   PEACE_OF_MIND_DEAL_FLOOR,
+  PEACE_OF_MIND_FLOOR_EFFECT,
+  RULES_VERSION,
   RUNNER_UP_DEAL_GAP,
   RUNNER_UP_PRICE_BAND_PCT,
   SIMILARITY_THRESHOLD,
@@ -59,14 +63,27 @@ describe("1. gate (§4.1)", () => {
 });
 
 describe("2. eligibility (§2)", () => {
-  it("deal_score null -> not best_value, and not peace_of_mind either (part 3 §2c needs a deal_score); one no_deal_score reason", () => {
+  it("deal_score null -> not best_value; peace_of_mind stays (part 4 §1: condition alone), its overpriced entry not evaluated; one no_deal_score reason", () => {
     const l = cand({ id: 1, history: 2 });
     l.breakdown.deal_score = null;
-    const e = byId(selectThree({ listings: [l] }), 1).eligibility;
+    const r = byId(selectThree({ listings: [l] }), 1);
+    const e = r.eligibility;
     assert.equal(e.best_value, false);
-    assert.equal(e.peace_of_mind, false);
+    assert.equal(e.peace_of_mind, true);
     assert.equal(e.cheapest, true);
     assert.deepEqual(e.reasons, ["no_deal_score"]);
+    const op = entries(r, "overpriced");
+    assert.equal(op.length, 1);
+    assert.deepEqual(op[0], { rule: "overpriced", type: "eligibility", value: null, threshold: PEACE_OF_MIND_DEAL_FLOOR, triggered: false, effect: "none", context: { evaluated: false } });
+  });
+
+  it("under { peace_of_mind_floor_effect: 'excluded' } a null deal_score is not eligible for peace_of_mind (part 3 §2c restored), no overpriced entry", () => {
+    const l = cand({ id: 1, history: 2 });
+    l.breakdown.deal_score = null;
+    const r = byId(selectThree({ listings: [l] }, { peace_of_mind_floor_effect: "excluded" }), 1);
+    assert.equal(r.eligibility.peace_of_mind, false);
+    assert.deepEqual(r.eligibility.reasons, ["no_deal_score"]);
+    assert.equal(entries(r, "overpriced").length, 0);
   });
 
   it("condition_by_reality null -> not peace_of_mind", () => {
@@ -102,25 +119,59 @@ describe("2. eligibility (§2)", () => {
   });
 });
 
-describe("2c. peace_of_mind deal floor (part 3 §2c)", () => {
-  it("the best reality condition has deal_score -12 -> not eligible (overpriced), the next best condition wins; exactly -10 is eligible", () => {
+describe("2c. peace_of_mind deal floor, tracking only (part 3 §2c, part 4 §1)", () => {
+  const pool = () => [
+    cand({ id: 1, price: 120000, history: 8 }), // price_v -20, cvt 8 -> deal -12; reality 8: the best condition, under the floor
+    cand({ id: 2, price: 115000, history: 5 }), // price_v -15, cvt 5 -> deal -10 exactly; reality 5
+    cand({ id: 3, price: 100000, history: 2 }), // deal 2, reality 2
+  ];
+
+  it("the best reality condition has deal_score -12 -> eligible, overpriced recorded (triggered, effect none), and it wins peace_of_mind", () => {
     assert.equal(PEACE_OF_MIND_DEAL_FLOOR, -10);
-    const res = selectThree({
-      listings: [
-        cand({ id: 1, price: 120000, history: 8 }), // price_v -20, cvt 8 -> deal -12; reality 8: the best condition, overpriced
-        cand({ id: 2, price: 115000, history: 5 }), // price_v -15, cvt 5 -> deal -10 exactly; reality 5
-        cand({ id: 3, price: 100000, history: 2 }), // deal 2, reality 2
-      ],
-    });
-    const a = byId(res, 1).eligibility;
-    assert.equal(a.peace_of_mind, false);
-    assert.deepEqual(a.reasons, ["overpriced"]);
-    assert.equal(a.best_value, true); // a deal_score of -12 is still a deal_score
-    assert.equal(a.cheapest, true);
-    const b = byId(res, 2).eligibility;
-    assert.equal(b.peace_of_mind, true);
-    assert.deepEqual(b.reasons, []);
+    assert.equal(PEACE_OF_MIND_FLOOR_EFFECT, "none");
+    const res = selectThree({ listings: pool() });
+    const a = byId(res, 1);
+    assert.equal(a.eligibility.peace_of_mind, true);
+    assert.deepEqual(a.eligibility.reasons, []);
+    assert.equal(a.eligibility.best_value, true); // a deal_score of -12 is still a deal_score
+    assert.equal(a.eligibility.cheapest, true);
+    const op = entries(a, "overpriced");
+    assert.equal(op.length, 1);
+    assert.deepEqual(op[0], { rule: "overpriced", type: "eligibility", value: -12, threshold: -10, triggered: true, effect: "none", context: { evaluated: true } });
+    // exactly the floor is not triggered; every peace_of_mind-eligible listing carries one entry
+    const b = entries(byId(res, 2), "overpriced");
+    assert.equal(b.length, 1);
+    assert.equal(b[0].value, -10);
+    assert.equal(b[0].triggered, false);
+    assert.equal(entries(byId(res, 3), "overpriced").length, 1);
+    assert.deepEqual(res.picks, { best_value: 3, peace_of_mind: 1, cheapest: 3 });
+    assert.deepEqual(a.categories, ["peace_of_mind"]);
+  });
+
+  it("with { peace_of_mind_floor_effect: 'excluded' } the part-3 behaviour: -12 is not eligible (overpriced), no entry on it, the next wins; exactly -10 is eligible", () => {
+    const res = selectThree({ listings: pool() }, { peace_of_mind_floor_effect: "excluded" });
+    const a = byId(res, 1);
+    assert.equal(a.eligibility.peace_of_mind, false);
+    assert.deepEqual(a.eligibility.reasons, ["overpriced"]);
+    assert.equal(a.eligibility.best_value, true);
+    assert.equal(a.eligibility.cheapest, true);
+    assert.equal(entries(a, "overpriced").length, 0); // not eligible -> nothing recorded
+    const b = byId(res, 2);
+    assert.equal(b.eligibility.peace_of_mind, true);
+    assert.deepEqual(b.eligibility.reasons, []);
+    const op = entries(b, "overpriced");
+    assert.equal(op.length, 1);
+    assert.deepEqual(op[0], { rule: "overpriced", type: "eligibility", value: -10, threshold: -10, triggered: false, effect: "excluded", context: { evaluated: true } });
     assert.deepEqual(res.picks, { best_value: 3, peace_of_mind: 2, cheapest: 3 });
+  });
+
+  it("thin cell: eligible for nothing, so no overpriced entry; sold_strong: no rules run, no entry", () => {
+    const res = selectThree({ listings: [cand({ id: 1, thin: true, history: 5 }), cand({ id: 2, sold: "strong", history: 5 }), cand({ id: 3, history: 1 })] });
+    assert.equal(entries(byId(res, 1), "overpriced").length, 0);
+    assert.deepEqual(byId(res, 2).trace, []);
+    assert.equal(entries(byId(res, 3), "overpriced").length, 1);
+    assert.equal(res.rules_version, RULES_VERSION);
+    assert.equal(RULES_VERSION, 3);
   });
 });
 

@@ -6,23 +6,24 @@
 //
 // Pipeline (§4, order fixed):
 //   4.1 gate      sold_strong -> excluded, no rules run; sold medium -> verify_availability; eligibility per §2
+//                 (part 4 §1: peace_of_mind is condition alone; the deal floor is recorded by the overpriced rule, it does not bar)
 //   4.2 stage A   order everyone that passed the gate -> stage_a_place
-//   4.3 rule      below_threshold  (price / median_price)
+//   4.3 rule      below_threshold  (price / median_price); overpriced recorded on every peace_of_mind-eligible listing (part 4 §1)
 //   4.4 rule      dealer_not_visible
 //   4.5 merge     duplicate — one representative per car among the survivors
 //   4.6 rank      representatives in the Stage A order -> rank 1..n, status shown
 //   4.7 picks     best_value -> peace_of_mind -> cheapest, with double_winner and too_similar traced; a car may win
 //                 more than one category (part 3 §1); then cheapest_runner_up recorded on the cheapest pick (part 3 §2b)
 //
-// Module split: gate.ts (4.1) · order.ts (the comparators of 4.2, 4.6, §2 and 4.5) · rules.ts (4.3–4.5) ·
+// Module split: gate.ts (4.1, the overpriced measurement) · order.ts (the comparators of 4.2, 4.6, §2 and 4.5) · rules.ts (4.3–4.5) ·
 // picks.ts (4.7, runner-up) · similarity.ts (distance, 4.8) · constants.ts (§5) · types.ts (§3) · util.ts (helpers).
 
-import { CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
-import { eligibility, isSoldMedium, isSoldStrong } from "./gate";
+import { CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
+import { eligibility, isSoldMedium, isSoldStrong, overpriced } from "./gate";
 import { stageAOrder } from "./order";
 import { pick } from "./picks";
 import { belowThreshold, dealerNotVisible, mergeByCar, type Work } from "./rules";
-import type { CandidateListing, ListingResult, SelectionInput, SelectionOptions, SelectionResult } from "./types";
+import type { CandidateListing, ListingResult, PeaceOfMindFloorEffect, SelectionInput, SelectionOptions, SelectionResult } from "./types";
 import { cmpNullsLast } from "./util";
 
 export { distance } from "./similarity";
@@ -36,6 +37,7 @@ export type {
   ExcludedBy,
   ListingResult,
   ListingStatus,
+  PeaceOfMindFloorEffect,
   RuleEffect,
   RuleName,
   RuleTrace,
@@ -48,7 +50,7 @@ export type {
 } from "./types";
 export { RULE_TYPE } from "./types";
 
-function emptyResult(l: CandidateListing): ListingResult {
+function emptyResult(l: CandidateListing, floorEffect: PeaceOfMindFloorEffect): ListingResult {
   return {
     listing_id: l.listing_id,
     car_id: l.car_id,
@@ -57,7 +59,7 @@ function emptyResult(l: CandidateListing): ListingResult {
     stage_a_place: null,
     excluded_by: null,
     verify_availability: isSoldMedium(l),
-    eligibility: eligibility(l),
+    eligibility: eligibility(l, floorEffect),
     categories: [],
     trace: [],
   };
@@ -66,6 +68,7 @@ function emptyResult(l: CandidateListing): ListingResult {
 export function selectThree(input: SelectionInput, options: SelectionOptions = {}): SelectionResult {
   const tooSimilarEffect = options.too_similar_effect ?? TOO_SIMILAR_EFFECT;
   const doubleWinnerEffect = options.double_winner_effect ?? DOUBLE_WINNER_EFFECT;
+  const floorEffect = options.peace_of_mind_floor_effect ?? PEACE_OF_MIND_FLOOR_EFFECT;
 
   const seen = new Set<number>();
   for (const l of input.listings) {
@@ -73,7 +76,7 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
     seen.add(l.listing_id);
   }
 
-  const all: Work[] = input.listings.map((l) => ({ input: l, result: emptyResult(l) }));
+  const all: Work[] = input.listings.map((l) => ({ input: l, result: emptyResult(l, floorEffect) }));
 
   // 4.1 gate
   const passed: Work[] = [];
@@ -90,8 +93,10 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
   passed.sort((a, b) => stageAOrder(a.input, b.input));
   passed.forEach((w, i) => (w.result.stage_a_place = i + 1));
 
-  // 4.3 + 4.4 per-listing rules, on everyone that passed the gate (trace completeness, §3)
+  // 4.3 + 4.4 per-listing rules, on everyone that passed the gate (trace completeness, §3); the overpriced measurement
+  // (part 4 §1) on everyone that passed the gate and is eligible for peace_of_mind
   for (const w of passed) belowThreshold(w);
+  for (const w of passed) overpriced(w, floorEffect);
   for (const w of passed) dealerNotVisible(w);
 
   // 4.5 merge by car, over the survivors

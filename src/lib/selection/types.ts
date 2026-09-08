@@ -21,9 +21,11 @@ export type SelectionInput = { listings: CandidateListing[] };
 
 export type TooSimilarEffect = "none" | "excluded";
 export type DoubleWinnerEffect = "none" | "recategorized";
+export type PeaceOfMindFloorEffect = "none" | "excluded";
 export type SelectionOptions = {
   too_similar_effect?: TooSimilarEffect; // default: TOO_SIMILAR_EFFECT from constants
   double_winner_effect?: DoubleWinnerEffect; // default: DOUBLE_WINNER_EFFECT from constants
+  peace_of_mind_floor_effect?: PeaceOfMindFloorEffect; // default: PEACE_OF_MIND_FLOOR_EFFECT from constants (part 4 §1)
 };
 
 // output
@@ -58,7 +60,7 @@ export type ListingResult = {
   trace: RuleTrace[];
 };
 
-export type RuleName = "duplicate" | "below_threshold" | "too_similar" | "double_winner" | "dealer_not_visible" | "cheapest_runner_up";
+export type RuleName = "duplicate" | "below_threshold" | "overpriced" | "too_similar" | "double_winner" | "dealer_not_visible" | "cheapest_runner_up";
 export type RuleType = "correctness" | "eligibility" | "portfolio";
 export type RuleEffect = "excluded" | "merged" | "recategorized" | "none";
 
@@ -76,6 +78,7 @@ export type RuleTrace = {
 export const RULE_TYPE: Readonly<Record<RuleName, RuleType>> = {
   duplicate: "correctness",
   below_threshold: "eligibility",
+  overpriced: "eligibility",
   dealer_not_visible: "correctness",
   too_similar: "portfolio",
   double_winner: "portfolio",
