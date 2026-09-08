@@ -233,6 +233,7 @@ model new_car_prices {
   id            Int      @id @default(autoincrement())
   tozeret_cd    Int
   degem_cd      Int
+  degem_code    String // "tozeret_cd-degem_cd" as makeDegemCode builds it (Day 12 part 6) — equals models.degem_code for the join
   shnat_yitzur  Int
   sug_degem     String // 'P' private | 'M' commercial
   semel_yevuan  Int // importer code
@@ -246,6 +247,7 @@ model new_car_prices {
 
   @@unique([tozeret_cd, degem_cd, shnat_yitzur, sug_degem, published_at])
   @@index([tozeret_cd, degem_cd, shnat_yitzur, sug_degem])
+  @@index([degem_code, sug_degem, shnat_yitzur])
 }
 
 // Day 11: the scoring engine's confidence level (src/lib/scoring/confidence.ts).

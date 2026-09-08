@@ -30,9 +30,9 @@
 // Rules v3 (part 4 §1): peace_of_mind is condition alone; the deal floor is recorded (`overpriced`, effect PEACE_OF_MIND_FLOOR_EFFECT)
 // and does not bar, so ELIGIBILITY reports it as its own count line, not as a reason.
 // The finish test (§3 of part 3) keeps three lines; distinct cars and double wins are reported, not failed.
-// Rules v4 (part 5 §3–§4): each listing gets new_price = the latest published_at row of new_car_prices on the car's four-column key
-// (tozeret_cd, degem_cd from models.degem_code "t-d"; shnat_yitzur = cars.year; sug_degem = models.vehicle_class); null when no row
-// matches. The library's above_new_price rule (out at >= PRICE_VS_NEW_CEILING_PCT, effect ABOVE_NEW_PRICE_EFFECT) is reported as:
+// Rules v4 (part 5 §3–§4): each listing gets new_price = the latest published_at row of new_car_prices on the car's key. Since part 6
+// the key is three columns, no split: new_car_prices.degem_code = models.degem_code (the same makeDegemCode string), sug_degem =
+// models.vehicle_class, shnat_yitzur = cars.year; null when no row matches. The library's above_new_price rule (out at >= PRICE_VS_NEW_CEILING_PCT, effect ABOVE_NEW_PRICE_EFFECT) is reported as:
 //   each pick's line gains `price / new = N%`; RANK LIST gains a `% of new` column;
 //   NEW PRICE               the distribution of the value over the pool (min / median / max, per year), the count at or above the
 //                           ceiling, and every listing without a new price (plate, codes, year, type).
@@ -123,8 +123,8 @@ function median(xs: number[]): number {
 }
 
 // ---------- the loaded pool ----------
-type NewPriceKey = { tozeret_cd: number; degem_cd: number; shnat_yitzur: number; sug_degem: string };
-const keyText = (k: NewPriceKey) => `${k.tozeret_cd}|${k.degem_cd}|${k.shnat_yitzur}|${k.sug_degem}`;
+type NewPriceKey = { degem_code: string; shnat_yitzur: number; sug_degem: string };
+const keyText = (k: NewPriceKey) => `${k.degem_code}|${k.shnat_yitzur}|${k.sug_degem}`;
 
 type Loaded = {
   candidate: CandidateListing;
@@ -135,7 +135,7 @@ type Loaded = {
   cell: string; // "comparison_group year"
   codes: string; // "tozeret_cd-degem_cd" (models.degem_code)
   vehicle_class: string; // models.vehicle_class = the file's sug_degem
-  key: NewPriceKey; // the four-column key the new price is read by
+  key: NewPriceKey; // the key the new price is read by (degem_code, sug_degem, shnat_yitzur)
 };
 
 // The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c, part 4 §1), for the
@@ -181,8 +181,7 @@ async function main() {
     if (l.car.year === null) throw new Error(`listing ${l.id} (${plate}): cars.year is null`);
     if (l.car.model.comparison_group === null) throw new Error(`listing ${l.id} (${plate}): models.comparison_group is null`);
     if (l.car.model.degem_code === null) throw new Error(`listing ${l.id} (${plate}): models.degem_code is null`);
-    const codes = /^(\d+)-(\d+)$/.exec(l.car.model.degem_code);
-    if (!codes) throw new Error(`listing ${l.id} (${plate}): models.degem_code '${l.car.model.degem_code}' is not 'tozeret_cd-degem_cd'`);
+    if (!/^\d+-\d+$/.test(l.car.model.degem_code)) throw new Error(`listing ${l.id} (${plate}): models.degem_code '${l.car.model.degem_code}' is not 'tozeret_cd-degem_cd'`);
     if (l.car.model.vehicle_class === null) throw new Error(`listing ${l.id} (${plate}): models.vehicle_class is null`);
     if (l.score_breakdown === null) throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
     if (MAX_PRICE !== null && l.price > MAX_PRICE) continue;
@@ -213,12 +212,13 @@ async function main() {
       cell: `${l.car.model.comparison_group} ${l.car.year}`,
       codes: l.car.model.degem_code,
       vehicle_class: l.car.model.vehicle_class,
-      key: { tozeret_cd: Number(codes[1]), degem_cd: Number(codes[2]), shnat_yitzur: l.car.year, sug_degem: l.car.model.vehicle_class },
+      key: { degem_code: l.car.model.degem_code, shnat_yitzur: l.car.year, sug_degem: l.car.model.vehicle_class },
     });
   }
   const byId = new Map(pool.map((p) => [p.candidate.listing_id, p]));
 
-  // part 5 §4: new_price = the latest published_at row on the car's four-column key; null when none. One query for the pool's keys.
+  // part 5 §4 / part 6: new_price = the latest published_at row on the car's key (degem_code, sug_degem, shnat_yitzur); null when none.
+  // One query for the pool's keys.
   const wanted = new Map<string, NewPriceKey>();
   for (const p of pool) wanted.set(keyText(p.key), p.key);
   const priceRows = wanted.size

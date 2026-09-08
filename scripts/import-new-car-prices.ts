@@ -16,11 +16,13 @@
 // select published_at, count(*) from new_car_prices group by 1.
 //
 // If the table does not exist yet (the migration not applied): the dry run says so and goes on with the file checks; --write stops.
+// Day 12 part 6: every row also gets degem_code = makeDegemCode(tozeret_cd, degem_cd) — the same string as models.degem_code.
 
 import "dotenv/config";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { db } from "@/lib/db";
+import { makeDegemCode } from "@/lib/mot/degem-code";
 import { parsePipeCsv } from "@/lib/mot/pipe-csv";
 import { RAW_DIR } from "@/lib/mot/resources";
 
@@ -36,6 +38,7 @@ type FileRow = Record<Column, string>;
 type Insert = {
   tozeret_cd: number;
   degem_cd: number;
+  degem_code: string; // makeDegemCode(tozeret_cd, degem_cd)
   shnat_yitzur: number;
   sug_degem: string;
   semel_yevuan: number;
@@ -96,9 +99,14 @@ function parseFile(published: Date): { inserts: Insert[]; header: string[]; kinu
     if (!(SUG_DEGEM as readonly string[]).includes(sug)) stopAt(line, row, `sug_degem not in {${SUG_DEGEM.join(", ")}}: ${JSON.stringify(sug)}`);
     const kinuy = (row.kinuy_mishari ?? "").trim();
     if (kinuy === "") kinuyNull++;
+    const tozeret_cd = int(row, "tozeret_cd", line);
+    const degem_cd = int(row, "degem_cd", line);
+    const degem_code = makeDegemCode(tozeret_cd, degem_cd); // throws on a non-positive code — a stop
+    if (degem_code === null) stopAt(line, row, `degem_code is null for tozeret_cd=${tozeret_cd}, degem_cd=${degem_cd}`);
     return {
-      tozeret_cd: int(row, "tozeret_cd", line),
-      degem_cd: int(row, "degem_cd", line),
+      tozeret_cd,
+      degem_cd,
+      degem_code,
       shnat_yitzur: int(row, "shnat_yitzur", line),
       sug_degem: sug,
       semel_yevuan: int(row, "semel_yevuan", line),
@@ -157,10 +165,10 @@ async function main() {
   console.log(`year range:                 ${Math.min(...years)} – ${Math.max(...years)}`);
   console.log(`kinuy_mishari empty → null: ${kinuyNull}`);
   console.log(`sample of ${SAMPLE} rows (spread over the file):`);
-  console.log(`  tozeret_cd | degem_cd | shnat_yitzur | sug_degem | semel_yevuan | shem_yevuan | tozeret_nm | degem_nm | kinuy_mishari | mehir | published_at`);
+  console.log(`  tozeret_cd | degem_cd | degem_code | shnat_yitzur | sug_degem | semel_yevuan | shem_yevuan | tozeret_nm | degem_nm | kinuy_mishari | mehir | published_at`);
   for (let i = 0; i < SAMPLE; i++) {
     const r = inserts[Math.floor((i * (inserts.length - 1)) / (SAMPLE - 1))];
-    console.log(`  ${r.tozeret_cd} | ${r.degem_cd} | ${r.shnat_yitzur} | ${r.sug_degem} | ${r.semel_yevuan} | ${r.shem_yevuan} | ${r.tozeret_nm} | ${r.degem_nm} | ${r.kinuy_mishari ?? "null"} | ${r.mehir} | ${published.text}`);
+    console.log(`  ${r.tozeret_cd} | ${r.degem_cd} | ${r.degem_code} | ${r.shnat_yitzur} | ${r.sug_degem} | ${r.semel_yevuan} | ${r.shem_yevuan} | ${r.tozeret_nm} | ${r.degem_nm} | ${r.kinuy_mishari ?? "null"} | ${r.mehir} | ${published.text}`);
   }
   if (keys.size !== inserts.length) throw new Error(`STOP: distinct keys ${keys.size} ≠ rows read ${inserts.length}`);
 
