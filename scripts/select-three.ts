@@ -10,12 +10,23 @@
 // dealer_commercial rows. Then the search's filters (budget, years) → the pool.
 //   version check   every live listing and every norm row must be at ENGINE_VERSION — anything else stops.
 //   median_price    the norm row's median_price; null when the listing's price row is not 'scored'.
-//   seller_visible  the seller has an OPEN dealer_commercial row = agreement_end is null (prisma/schema.prisma §5:
-//                   "Open row = agreement_end null; at most one open row per dealer; no agreement = no open row").
-//                   agreement_status is not part of "open" (the demo sellers sit on rows in status demo).
+//   seller_visible  the seller has an OPEN dealer_commercial row = agreement_end is null OR later than this run's `now`
+//                   (§13.3: a trial born with a known end date is open until that date arrives). agreement_status is not
+//                   part of "open" (the demo sellers sit on rows in status demo). The preflight line prints the definition.
 //
 // Preflight, printed first: sellers in the pool · sellers with an open row · listings whose seller is visible.
 // Zero visible listings → STOP (the report carries the preflight and the stop; exit 1). A FAIL in the finish test → STOP.
+//
+// THE THREE (§9.2 as answered in §13.4): under each pick, the top 5 of that category by its own order (categoryOrder from
+// the library) among the shown listings eligible for it — plate, price, the category's key value, winner / winner here too
+// (also won X) / double winner (won X) / skipped (too_similar) / not examined — then its distance() to each pick, null when
+// not the same cell, and whether it would fire at SIMILARITY_THRESHOLD. This shows what the too_similar rule would have done.
+// Rules v2 (part 3): a car may win more than one category (double_winner records, it does not act). After THE THREE:
+//   RUNNER-UP for cheapest     the recorded cheapest_runner_up entry, then every cheapest-eligible shown listing priced above
+//                              the cheapest pick by up to RUNNER_UP_TUNING_WINDOW_PCT, for tuning the band and the gap.
+//   CHEAPEST BAR tuning        who would win cheapest under each bar in CHEAPEST_BAR_TUNING (the constant in force is -5).
+//   PEACE OF MIND FLOOR tuning who would win peace_of_mind under each floor in PEACE_FLOOR_TUNING (in force: -10).
+// The finish test (§3 of part 3) keeps three lines; distinct cars and double wins are reported, not failed.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
@@ -24,22 +35,29 @@ import { ENGINE_VERSION } from "@/lib/scoring/constants";
 import type { Row, ScoreResult } from "@/lib/scoring/types";
 import {
   CATEGORY_PRIORITY,
+  CHEAPEST_CONDITION_FLOOR,
+  DOUBLE_WINNER_EFFECT,
+  PEACE_OF_MIND_DEAL_FLOOR,
   RULES_VERSION,
+  RUNNER_UP_DEAL_GAP,
+  RUNNER_UP_PRICE_BAND_PCT,
   SIMILARITY_THRESHOLD,
   TOO_SIMILAR_EFFECT,
+  categoryOrder,
   distance,
   selectThree,
   type CandidateListing,
   type Category,
-  type ListingResult,
-  type RuleTrace,
-  type SelectionResult,
 } from "@/lib/selection";
 
 const REPORT_FILE = "REPORT-select-three.md";
-const RUNNER_UPS_SHOWN = 5; // §9.2
+const CATEGORY_TOP = 5; // §9.2 / §13.4: the top 5 of each category by its own order
 const RANK_LIST_TOP = 10; // §9.7
 const HISTOGRAM_EDGES = [0, 2, 4, 6, 10]; // §9.6: [0,2) [2,4) [4,6) [6,10) [10,∞)
+// Report format only (part 3 §4) — none of these is a rule value; the rule values are in src/lib/selection/constants.ts.
+const RUNNER_UP_TUNING_WINDOW_PCT = 10; // RUNNER-UP: list every cheapest-eligible listing priced above C by up to this much
+const CHEAPEST_BAR_TUNING: (number | null)[] = [0, -5, -10, null]; // CHEAPEST BAR: bars to try; null = any non-null condition_vs_typical
+const PEACE_FLOOR_TUNING: (number | null)[] = [null, -10, -5, 0]; // PEACE OF MIND FLOOR: floors to try; null = any non-null deal_score
 
 // ---------- arguments ----------
 function intArg(name: string): number | null {
@@ -96,51 +114,17 @@ type Loaded = {
   cell: string; // "comparison_group year"
 };
 
-// The reasons that can block each category (the library's reason strings, §4.1 and §11.3), for the eligibility counts.
+// The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c), for the eligibility counts.
 const REASONS_OF: Record<Category, string[]> = {
   best_value: ["thin_cell", "no_deal_score"],
-  peace_of_mind: ["thin_cell", "no_condition_by_reality"],
-  cheapest: ["thin_cell", "no_condition_vs_typical", "below_typical"],
+  peace_of_mind: ["thin_cell", "no_condition_by_reality", "no_deal_score", "overpriced"],
+  cheapest: ["thin_cell", "no_condition_vs_typical", "below_floor"],
 };
-
-// The pick-loop part of a listing's trace, attributed to the category it was examined for (§4.7). The library
-// records double_winner with `considered_for`; a too_similar burst carries only `vs_category`, so the burst for
-// category c is recognised by its shape: one entry per category picked before c, in category order. All complete
-// parses are collected; more than one (possible only under too_similar_effect 'excluded') is reported as ambiguous.
-type Exam = { category: Category; kind: "won" | "double_winner" | "skipped_too_similar"; entries: RuleTrace[] };
-function examinations(r: ListingResult, picks: SelectionResult["picks"]): Exam[] | "ambiguous" {
-  const entries = r.trace.filter((t) => t.rule === "too_similar" || t.rule === "double_winner");
-  const parses: Exam[][] = [];
-  function go(ci: number, ei: number, acc: Exam[]) {
-    if (ci === CATEGORY_PRIORITY.length) {
-      if (ei === entries.length) parses.push(acc);
-      return;
-    }
-    const c = CATEGORY_PRIORITY[ci];
-    const won = r.category === c;
-    const e = entries[ei];
-    if (!won && e && e.rule === "double_winner" && e.context.considered_for === c) {
-      go(ci + 1, ei + 1, [...acc, { category: c, kind: "double_winner", entries: [e] }]);
-    }
-    const before = CATEGORY_PRIORITY.slice(0, ci).filter((cc) => picks[cc] !== null);
-    const burst = entries.slice(ei, ei + before.length);
-    const isBurst = burst.length === before.length && burst.every((t, i) => t.rule === "too_similar" && t.context.vs_category === before[i]);
-    if (won) {
-      if (isBurst) go(ci + 1, ei + before.length, [...acc, { category: c, kind: "won", entries: burst }]);
-      return; // the winner of c has exactly its burst for c
-    }
-    if (before.length > 0 && isBurst && burst.some((t) => t.triggered && t.effect === "excluded")) {
-      go(ci + 1, ei + before.length, [...acc, { category: c, kind: "skipped_too_similar", entries: burst }]);
-    }
-    go(ci + 1, ei, acc); // not examined for c
-  }
-  go(0, 0, []);
-  if (parses.length === 0) throw new Error(`listing ${r.listing_id}: the pick-loop trace does not parse: ${JSON.stringify(entries)}`);
-  return parses.length === 1 ? parses[0] : "ambiguous";
-}
 
 async function main() {
   const now = new Date();
+  // §13.3: open = agreement_end is null or later than this run's now. agreement_status plays no part.
+  const isOpen = (end: Date | null) => end === null || end > now;
   const filters =
     [MAX_PRICE !== null ? `max-price=${MAX_PRICE}` : null, YEARS ? `years=${YEARS.from}-${YEARS.to}` : null].filter(Boolean).join(", ") ||
     "none (whole live pool)";
@@ -179,7 +163,7 @@ async function main() {
     if (!priceRow) throw new Error(`listing ${l.id} (${plate}): invoice has no price row`);
     if (priceRow.status === "scored" && l.market_stats === null) throw new Error(`listing ${l.id} (${plate}): price row scored but market_stats_id is null`);
     const median_price = priceRow.status === "scored" ? (l.market_stats?.median_price ?? null) : null;
-    const seller_visible = l.dealer.commercial.some((c) => c.agreement_end === null);
+    const seller_visible = l.dealer.commercial.some((c) => isOpen(c.agreement_end));
     pool.push({
       candidate: {
         listing_id: l.id,
@@ -206,13 +190,16 @@ async function main() {
   const openSellers = new Set(pool.filter((p) => p.candidate.seller_visible).map((p) => p.dealer_id));
   const visibleListings = pool.filter((p) => p.candidate.seller_visible).length;
   const commercialRows = await db.dealer_commercial.count();
-  const openRows = await db.dealer_commercial.count({ where: { agreement_end: null } });
+  const openRows = await db.dealer_commercial.count({ where: { OR: [{ agreement_end: null }, { agreement_end: { gt: now } }] } });
 
-  log(`select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}`);
+  log(
+    `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}`,
+  );
+  log(`constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}`);
   log(`filters: ${filters}; live listings: ${rows.length}; pool after filters: ${pool.length}`);
   log(`\n===== PREFLIGHT =====`);
   log(`sellers in the pool: ${sellers.size}`);
-  log(`sellers with an open dealer_commercial row (agreement_end is null): ${openSellers.size}`);
+  log(`sellers with an open dealer_commercial row (open = agreement_end is null or later than now = ${now.toISOString()}): ${openSellers.size}`);
   log(`listings whose seller is visible: ${visibleListings} of ${pool.length}`);
   log(`(dealer_commercial rows in total: ${commercialRows}; open rows: ${openRows})`);
   if (visibleListings === 0) {
@@ -230,58 +217,144 @@ async function main() {
   const bd = (id: number) => P(id).candidate.breakdown;
 
   // ---------- 4. THE THREE ----------
+  // §13.4: under each pick, the top CATEGORY_TOP of that category by its own order among the shown listings eligible for
+  // it (exactly the pick loop's candidate set), each labelled by what the loop did with it, then its distance to each pick.
+  const KEY_TEXT: Record<Category, (id: number) => string> = {
+    best_value: (id) => `deal_score ${fmt(bd(id).deal_score)}`,
+    peace_of_mind: (id) => `condition_by_reality ${fmt(bd(id).condition_by_reality)}`,
+    cheapest: (id) => `price ${P(id).candidate.price} (condition_vs_typical ${fmt(bd(id).condition_vs_typical)})`,
+  };
   log(`\n===== THE THREE =====`);
   for (const c of CATEGORY_PRIORITY) {
     const id = res.picks[c];
     log(`\n--- ${c}`);
     if (id === null) {
       log(`  no pick: ${res.missing[c]}`);
-      continue;
-    }
-    const p = P(id);
-    const b = bd(id);
-    const r = R(id);
-    log(`  plate ${p.plate} | listing ${id} | year ${p.candidate.year} | price ${p.candidate.price} | km_declared ${p.km_declared ?? "-"} | rank ${r.rank}`);
-    log(`  deal_score ${fmt(b.deal_score)} | condition_score ${fmt(b.condition_score)} | condition_by_reality ${fmt(b.condition_by_reality)} | typical_condition ${fmt(b.typical_condition)}`);
-    log(`  seller ${p.seller} | verify_availability ${r.verify_availability}`);
-    const own = examinations(r, res.picks);
-    if (own === "ambiguous") {
-      log(`  similarity vs earlier picks: ambiguous trace — the too_similar entries: ${JSON.stringify(r.trace.filter((t) => t.rule === "too_similar"))}`);
     } else {
-      const winExam = own.find((e) => e.category === c);
-      for (const t of winExam?.entries ?? []) {
-        const vs = P(t.context.vs_listing_id as number);
-        log(`  too_similar vs ${vs.plate} (${t.context.vs_category}): distance ${t.value ?? "null"} (same_cell ${t.context.same_cell}) — would fire at < ${t.threshold}: ${t.triggered ? "YES" : "no"}; effect in force: ${t.effect}`);
-      }
+      const p = P(id);
+      const b = bd(id);
+      const r = R(id);
+      const also = r.categories.filter((x) => x !== c);
+      log(`  winner${also.length ? ` (also ${also.join(" + ")})` : ""}`);
+      log(`  plate ${p.plate} | listing ${id} | year ${p.candidate.year} | price ${p.candidate.price} | km_declared ${p.km_declared ?? "-"} | rank ${r.rank}`);
+      log(`  deal_score ${fmt(b.deal_score)} | condition_score ${fmt(b.condition_score)} | condition_by_reality ${fmt(b.condition_by_reality)} | typical_condition ${fmt(b.typical_condition)}`);
+      log(`  seller ${p.seller} | verify_availability ${r.verify_availability}`);
     }
-    // runner-ups examined for this category, before the winner
-    const runnerUps: { id: number; text: string; place: number }[] = [];
-    for (const other of shown) {
-      if (other.listing_id === id) continue;
-      const ex = examinations(other, res.picks);
-      if (ex === "ambiguous") {
-        runnerUps.push({ id: other.listing_id, place: Number.MAX_SAFE_INTEGER, text: "ambiguous trace (too_similar entries cannot be attributed to a category)" });
-        continue;
-      }
-      const e = ex.find((x) => x.category === c);
-      if (!e) continue;
-      if (e.kind === "double_winner") {
-        const ctx = e.entries[0].context;
-        runnerUps.push({ id: other.listing_id, place: ctx.place_in_category as number, text: `double_winner — already won ${ctx.won} (place ${ctx.place_in_category} in ${c})` });
-      } else if (e.kind === "skipped_too_similar") {
-        const parts = e.entries.map((t) => `vs ${P(t.context.vs_listing_id as number).plate} (${t.context.vs_category}) distance ${t.value ?? "null"}${t.triggered ? " FIRED" : ""}`);
-        runnerUps.push({ id: other.listing_id, place: Number.MAX_SAFE_INTEGER - 1, text: `too_similar — skipped: ${parts.join("; ")}` });
-      }
+    const cands = shown.filter((x) => x.eligibility[c]).sort((a, b) => categoryOrder[c](P(a.listing_id).candidate, P(b.listing_id).candidate));
+    const winnerPlace = id === null ? cands.length : cands.findIndex((x) => x.listing_id === id);
+    if (id !== null && winnerPlace < 0) throw new Error(`${c}: the pick (listing ${id}) is not among the shown listings eligible for it`);
+    log(`  top ${CATEGORY_TOP} of ${cands.length} candidates, by the ${c} order; distance to each pick fires at < ${SIMILARITY_THRESHOLD} (effect in force: ${TOO_SIMILAR_EFFECT}):`);
+    cands.slice(0, CATEGORY_TOP).forEach((q, i) => {
+      const qp = P(q.listing_id);
+      const dw = q.trace.find((t) => t.rule === "double_winner" && t.context.considered_for === c);
+      const won = dw ? (dw.context.won as Category[]).join(" + ") : "";
+      // part 3 §4: a double winner that won this category too says so; "double winner (won X)" alone means it was skipped —
+      // reachable only under effect 'recategorized'.
+      const label =
+        q.listing_id === id
+          ? dw
+            ? `winner here too (also won ${won})`
+            : "winner"
+          : dw
+            ? `double winner (won ${won})`
+            : i < winnerPlace
+              ? "skipped (too_similar)"
+              : "not examined";
+      const dists = CATEGORY_PRIORITY.map((pc) => {
+        const pid = res.picks[pc];
+        if (pid === null) return `${pc}: no pick`;
+        if (pid === q.listing_id) return `${pc}: self`;
+        const d = distance(qp.candidate, P(pid).candidate);
+        return `${pc}: ${d === null ? "null (other cell)" : d}${d !== null && d < SIMILARITY_THRESHOLD ? " FIRES" : ""}`;
+      });
+      log(`    ${i + 1}. ${qp.plate} | listing ${q.listing_id} | rank ${q.rank} | price ${qp.candidate.price} | ${KEY_TEXT[c](q.listing_id)} — ${label}`);
+      log(`       distance to picks — ${dists.join(" · ")}`);
+    });
+  }
+
+  // ---------- 4b. RUNNER-UP for cheapest (part 3 §2b / §4) ----------
+  log(`\n===== RUNNER-UP for cheapest (band ${RUNNER_UP_PRICE_BAND_PCT}%, gap ${RUNNER_UP_DEAL_GAP}; recorded only) =====`);
+  const cId = res.picks.cheapest;
+  if (cId === null) {
+    log(`  no cheapest pick (${res.missing.cheapest}) — the rule was not evaluated, nothing recorded`);
+  } else {
+    const cp = P(cId);
+    const cDeal = bd(cId).deal_score;
+    if (cDeal === null) throw new Error(`cheapest pick ${cId} (${cp.plate}) has no deal_score`);
+    log(`  C: ${cp.plate} | listing ${cId} | price ${cp.candidate.price} | deal_score ${fmt(cDeal)}`);
+    const ruEntries = R(cId).trace.filter((t) => t.rule === "cheapest_runner_up");
+    if (ruEntries.length !== 1) throw new Error(`cheapest pick ${cId}: expected exactly one cheapest_runner_up entry, found ${ruEntries.length}`);
+    const ru = ruEntries[0];
+    if (ru.context.evaluated === false) {
+      log(`  recorded: value null | threshold ${ru.threshold} | triggered ${ru.triggered} | not evaluated: ${ru.context.reason} (band ${ru.context.band_pct}%)`);
+    } else {
+      const rp = P(ru.context.runner_up as number);
+      log(`  recorded: value (gap) ${fmt(ru.value)} | threshold ${ru.threshold} | triggered ${ru.triggered ? "YES" : "no"} | runner-up ${rp.plate} (listing ${rp.candidate.listing_id}) | price_over_pct ${ru.context.price_over_pct}`);
     }
-    runnerUps.sort((a, b) => a.place - b.place || a.id - b.id);
-    if (runnerUps.length === 0) log(`  runner-ups examined before the winner: none (the first candidate in the ${c} order won)`);
-    else {
-      log(`  runner-ups examined before the winner (${runnerUps.length}, showing up to ${RUNNER_UPS_SHOWN}):`);
-      for (const ru of runnerUps.slice(0, RUNNER_UPS_SHOWN)) {
-        const q = P(ru.id);
-        const qb = bd(ru.id);
-        log(`    ${q.plate} | listing ${ru.id} | rank ${R(ru.id).rank} | price ${q.candidate.price} | deal ${fmt(qb.deal_score)} | reality ${fmt(qb.condition_by_reality)} | cvt ${fmt(qb.condition_vs_typical)} — ${ru.text}`);
-      }
+    const summary = res.runner_ups.cheapest;
+    log(`  runner_ups.cheapest: ${summary ? `listing ${summary.listing_id} (${P(summary.listing_id).plate}), gap ${fmt(summary.gap)}, price_over_pct ${summary.price_over_pct}, triggered ${summary.triggered}` : "null"}`);
+    // tuning: every shown listing eligible for cheapest priced above C by up to RUNNER_UP_TUNING_WINDOW_PCT
+    const window = shown
+      .filter((x) => x.eligibility.cheapest && x.car_id !== cp.candidate.car_id)
+      .map((x) => P(x.listing_id))
+      .filter((q) => q.candidate.price > cp.candidate.price && q.candidate.price <= cp.candidate.price * (1 + RUNNER_UP_TUNING_WINDOW_PCT / 100))
+      .sort((a, b) => a.candidate.price - b.candidate.price || a.candidate.listing_id - b.candidate.listing_id);
+    log(`  cheapest-eligible listings priced above C by up to ${RUNNER_UP_TUNING_WINDOW_PCT}% (${window.length}), by price:`);
+    log(`  plate | listing | price | price_over_pct | deal_score | gap | band | gap test`);
+    for (const q of window) {
+      const qDeal = bd(q.candidate.listing_id).deal_score;
+      if (qDeal === null) throw new Error(`listing ${q.candidate.listing_id} (${q.plate}) is eligible for cheapest but has no deal_score`);
+      const over = Math.round(((q.candidate.price - cp.candidate.price) / cp.candidate.price) * 1000) / 10;
+      const gap = Math.round((qDeal - cDeal) * 10) / 10;
+      log(
+        `  ${q.plate} | ${q.candidate.listing_id} | ${q.candidate.price} | ${over} | ${fmt(qDeal)} | ${fmt(gap)} | ${over <= RUNNER_UP_PRICE_BAND_PCT ? "in band" : "outside band"} | ${gap >= RUNNER_UP_DEAL_GAP ? ">= gap" : "< gap"}`,
+      );
+    }
+  }
+
+  // ---------- 4c. CHEAPEST BAR tuning (part 3 §2a / §4) ----------
+  log(`\n===== CHEAPEST BAR tuning (in force: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}) =====`);
+  {
+    const cheapestOrder = (a: number, b: number) => categoryOrder.cheapest(P(a).candidate, P(b).candidate);
+    const overall = shown.map((x) => x.listing_id).sort(cheapestOrder)[0];
+    if (overall === undefined) log(`  no shown listing`);
+    else log(`  cheapest shown listing overall (any condition): ${P(overall).plate} | listing ${overall} | price ${P(overall).candidate.price} | condition_vs_typical ${fmt(bd(overall).condition_vs_typical)}`);
+    const bv = res.picks.best_value;
+    log(`  bar | would win cheapest | price | condition_vs_typical | vs best_value pick${bv === null ? " (none)" : ` (${P(bv).plate})`}`);
+    for (const bar of CHEAPEST_BAR_TUNING) {
+      const eligible = shown
+        .map((x) => x.listing_id)
+        .filter((id) => {
+          const cvt = bd(id).condition_vs_typical;
+          return cvt !== null && (bar === null || cvt >= bar);
+        })
+        .sort(cheapestOrder);
+      const w = eligible[0];
+      const barText = bar === null ? "none" : String(bar);
+      if (w === undefined) log(`  ${barText} | no eligible listing | - | - | -`);
+      else log(`  ${barText} | ${P(w).plate} (listing ${w}) | ${P(w).candidate.price} | ${fmt(bd(w).condition_vs_typical)} | ${w === bv ? "= best_value pick" : "distinct"}`);
+    }
+  }
+
+  // ---------- 4d. PEACE OF MIND FLOOR tuning (part 3 §2c / §4) ----------
+  log(`\n===== PEACE OF MIND FLOOR tuning (in force: PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}; none = any non-null deal_score) =====`);
+  {
+    const peaceOrder = (a: number, b: number) => categoryOrder.peace_of_mind(P(a).candidate, P(b).candidate);
+    const current = res.picks.peace_of_mind;
+    log(`  current winner: ${current === null ? `none (${res.missing.peace_of_mind})` : `${P(current).plate} (listing ${current})`}`);
+    log(`  floor | would win peace_of_mind | condition_by_reality | deal_score | vs current winner`);
+    for (const floor of PEACE_FLOOR_TUNING) {
+      const eligible = shown
+        .map((x) => x.listing_id)
+        .filter((id) => {
+          const b = bd(id);
+          return b.condition_by_reality !== null && b.deal_score !== null && (floor === null || b.deal_score >= floor);
+        })
+        .sort(peaceOrder);
+      const w = eligible[0];
+      const floorText = floor === null ? "none" : String(floor);
+      if (w === undefined) log(`  ${floorText} | no eligible listing | - | - | -`);
+      else log(`  ${floorText} | ${P(w).plate} (listing ${w}) | ${fmt(bd(w).condition_by_reality)} | ${fmt(bd(w).deal_score)} | ${w === current ? "= current winner" : "different"}`);
     }
   }
 
@@ -312,16 +385,18 @@ async function main() {
   // ---------- 7. FINISH TEST ----------
   log(`\n===== FINISH TEST =====`);
   const pickIds = CATEGORY_PRIORITY.map((c) => res.picks[c]).filter((x): x is number => x !== null);
-  const winners = res.results.filter((r) => r.category !== null);
   const ranks = shown.map((r) => r.rank as number).sort((a, b) => a - b);
   const checks: [string, boolean][] = [
     ["three picks present", pickIds.length === CATEGORY_PRIORITY.length],
-    ["three distinct cars", new Set(pickIds.map((x) => R(x).car_id)).size === CATEGORY_PRIORITY.length],
-    ["no car in two categories", winners.length === pickIds.length && new Set(winners.map((r) => r.car_id)).size === winners.length],
     ["shown ranks contiguous 1..n", ranks.every((v, i) => v === i + 1)],
     ["best_value pick has rank 1", res.picks.best_value !== null && R(res.picks.best_value).rank === 1],
   ];
   for (const [name, ok] of checks) log(`  ${ok ? "ok  " : "FAIL"} ${name}`);
+  // part 3 §3: reported, non-failing
+  const distinctCars = new Set(pickIds.map((x) => R(x).car_id)).size;
+  const doubleWinners = res.results.filter((r) => r.categories.length > 1);
+  log(`  info distinct cars among the picks: ${distinctCars}`);
+  log(`  info double wins: ${doubleWinners.length}${doubleWinners.map((r) => ` (car ${P(r.listing_id).plate} won ${r.categories.join(" + ")})`).join("")}`);
   const finish = checks.every(([, ok]) => ok) ? "PASS" : "FAIL";
   log(`finish test: ${finish}`);
 
@@ -360,11 +435,11 @@ async function main() {
 
   // ---------- 9. RANK LIST ----------
   log(`\n===== RANK LIST (top ${RANK_LIST_TOP} of ${shown.length} shown) =====`);
-  log("rank | plate | year | price | deal_score | condition_score | condition_by_reality | category");
+  log("rank | plate | year | price | deal_score | condition_score | condition_by_reality | categories");
   for (const r of shown.slice(0, RANK_LIST_TOP)) {
     const p = P(r.listing_id);
     const b = bd(r.listing_id);
-    log(`${r.rank} | ${p.plate} | ${p.candidate.year} | ${p.candidate.price} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${fmt(b.condition_by_reality)} | ${r.category ?? "-"}${r.verify_availability ? " (verify availability)" : ""}`);
+    log(`${r.rank} | ${p.plate} | ${p.candidate.year} | ${p.candidate.price} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${fmt(b.condition_by_reality)} | ${r.categories.length ? r.categories.join(" + ") : "-"}${r.verify_availability ? " (verify availability)" : ""}`);
   }
 
   writeReport(`filters: ${filters} — finish test ${finish}`);

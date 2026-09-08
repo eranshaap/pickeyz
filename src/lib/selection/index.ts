@@ -11,12 +11,13 @@
 //   4.4 rule      dealer_not_visible
 //   4.5 merge     duplicate — one representative per car among the survivors
 //   4.6 rank      representatives in the Stage A order -> rank 1..n, status shown
-//   4.7 picks     best_value -> peace_of_mind -> cheapest, with double_winner and too_similar traced
+//   4.7 picks     best_value -> peace_of_mind -> cheapest, with double_winner and too_similar traced; a car may win
+//                 more than one category (part 3 §1); then cheapest_runner_up recorded on the cheapest pick (part 3 §2b)
 //
 // Module split: gate.ts (4.1) · order.ts (the comparators of 4.2, 4.6, §2 and 4.5) · rules.ts (4.3–4.5) ·
-// picks.ts (4.7) · similarity.ts (distance, 4.8) · constants.ts (§5) · types.ts (§3) · util.ts (helpers).
+// picks.ts (4.7, runner-up) · similarity.ts (distance, 4.8) · constants.ts (§5) · types.ts (§3) · util.ts (helpers).
 
-import { CATEGORY_PRIORITY, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
+import { CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
 import { eligibility, isSoldMedium, isSoldStrong } from "./gate";
 import { stageAOrder } from "./order";
 import { pick } from "./picks";
@@ -25,10 +26,12 @@ import type { CandidateListing, ListingResult, SelectionInput, SelectionOptions,
 import { cmpNullsLast } from "./util";
 
 export { distance } from "./similarity";
+export { categoryOrder } from "./order"; // the three category comparators (§2), for callers that list a category by its own order
 export * from "./constants";
 export type {
   CandidateListing,
   Category,
+  DoubleWinnerEffect,
   Eligibility,
   ExcludedBy,
   ListingResult,
@@ -37,6 +40,7 @@ export type {
   RuleName,
   RuleTrace,
   RuleType,
+  RunnerUp,
   SelectionInput,
   SelectionOptions,
   SelectionResult,
@@ -54,13 +58,14 @@ function emptyResult(l: CandidateListing): ListingResult {
     excluded_by: null,
     verify_availability: isSoldMedium(l),
     eligibility: eligibility(l),
-    category: null,
+    categories: [],
     trace: [],
   };
 }
 
 export function selectThree(input: SelectionInput, options: SelectionOptions = {}): SelectionResult {
-  const effect = options.too_similar_effect ?? TOO_SIMILAR_EFFECT;
+  const tooSimilarEffect = options.too_similar_effect ?? TOO_SIMILAR_EFFECT;
+  const doubleWinnerEffect = options.double_winner_effect ?? DOUBLE_WINNER_EFFECT;
 
   const seen = new Set<number>();
   for (const l of input.listings) {
@@ -100,8 +105,8 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
     w.result.rank = i + 1;
   });
 
-  // 4.7 picks
-  const { picks, missing } = pick(representatives, effect);
+  // 4.7 picks, then the cheapest runner-up (part 3 §2b)
+  const { picks, missing, runner_ups } = pick(representatives, tooSimilarEffect, doubleWinnerEffect);
 
   // results: ranked first (by rank), then the rest (by stage_a_place, nulls last, then listing_id)
   const results = all
@@ -113,5 +118,5 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
     if (picks[c] === null && missing[c] !== "no_candidate") throw new Error(`selectThree: category ${c} has no pick and no missing reason`);
   }
 
-  return { rules_version: RULES_VERSION, picks, missing, results };
+  return { rules_version: RULES_VERSION, picks, missing, runner_ups, results };
 }

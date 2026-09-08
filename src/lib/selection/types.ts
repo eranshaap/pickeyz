@@ -1,4 +1,4 @@
-// Stage B selection library — the contract (BRIEF Day 12 part 2, §3).
+// Stage B selection library — the contract (BRIEF Day 12 part 2, §3; part 3, §1–§2).
 // From the engine: the invoice shape only. No engine functions, no engine constants.
 
 import type { ScoreResult } from "../scoring/types";
@@ -20,15 +20,23 @@ export type CandidateListing = {
 export type SelectionInput = { listings: CandidateListing[] };
 
 export type TooSimilarEffect = "none" | "excluded";
-export type SelectionOptions = { too_similar_effect?: TooSimilarEffect }; // default: TOO_SIMILAR_EFFECT from constants
+export type DoubleWinnerEffect = "none" | "recategorized";
+export type SelectionOptions = {
+  too_similar_effect?: TooSimilarEffect; // default: TOO_SIMILAR_EFFECT from constants
+  double_winner_effect?: DoubleWinnerEffect; // default: DOUBLE_WINNER_EFFECT from constants
+};
 
 // output
 export type Category = (typeof CATEGORY_PRIORITY)[number];
 
+// The recorded runner-up of the cheapest pick (part 3, §2b): a little pricier, clearly better deal. null when none was recorded.
+export type RunnerUp = { listing_id: number; gap: number; price_over_pct: number; triggered: boolean };
+
 export type SelectionResult = {
   rules_version: number;
-  picks: Record<Category, number | null>; // listing_id of the representative listing, or null
+  picks: Record<Category, number | null>; // listing_id of the representative listing, or null; the same listing may win more than one category
   missing: Partial<Record<Category, "no_candidate">>; // why a pick is null
+  runner_ups: { cheapest: RunnerUp | null };
   results: ListingResult[]; // one per input listing: ranked first (by rank), then the rest
 };
 
@@ -46,11 +54,11 @@ export type ListingResult = {
   excluded_by: ExcludedBy | null;
   verify_availability: boolean; // sold_signal medium
   eligibility: Eligibility;
-  category: Category | null; // the category this listing won
+  categories: Category[]; // the categories this listing won, in category order; empty when none
   trace: RuleTrace[];
 };
 
-export type RuleName = "duplicate" | "below_threshold" | "too_similar" | "double_winner" | "dealer_not_visible";
+export type RuleName = "duplicate" | "below_threshold" | "too_similar" | "double_winner" | "dealer_not_visible" | "cheapest_runner_up";
 export type RuleType = "correctness" | "eligibility" | "portfolio";
 export type RuleEffect = "excluded" | "merged" | "recategorized" | "none";
 
@@ -71,4 +79,5 @@ export const RULE_TYPE: Readonly<Record<RuleName, RuleType>> = {
   dealer_not_visible: "correctness",
   too_similar: "portfolio",
   double_winner: "portfolio",
+  cheapest_runner_up: "portfolio",
 };
