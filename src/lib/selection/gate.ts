@@ -44,18 +44,21 @@ export function eligibility(l: CandidateListing, floorEffect: PeaceOfMindFloorEf
 
 // part 4 §1 — the peace_of_mind deal floor as a measurement: on every listing eligible for peace_of_mind, record
 // value = deal_score, threshold = PEACE_OF_MIND_DEAL_FLOOR, triggered = deal_score !== null && deal_score < threshold,
-// effect = the effect in force. A null deal_score is recorded as not evaluated. Never acts here — under 'excluded' the
-// barred listings are already out through eligibility(), so every entry written under 'excluded' is untriggered.
+// effect = what happened to this listing (part 5 §8.3, one convention for every rule): 'excluded' only when triggered and the
+// effect in force is 'excluded', otherwise 'none'. A null deal_score is recorded as not evaluated. Never acts here — under
+// 'excluded' the barred listings are already out through eligibility(), so every entry written under 'excluded' is untriggered
+// and carries 'none'.
 export function overpriced(w: Work, floorEffect: PeaceOfMindFloorEffect): void {
   if (!w.result.eligibility.peace_of_mind) return;
   const deal = w.input.breakdown.deal_score;
+  const triggered = deal !== null && deal < PEACE_OF_MIND_DEAL_FLOOR;
   w.result.trace.push({
     rule: "overpriced",
     type: RULE_TYPE.overpriced,
     value: deal,
     threshold: PEACE_OF_MIND_DEAL_FLOOR,
-    triggered: deal !== null && deal < PEACE_OF_MIND_DEAL_FLOOR,
-    effect: floorEffect,
+    triggered,
+    effect: triggered && floorEffect === "excluded" ? "excluded" : "none",
     context: { evaluated: deal !== null },
   });
 }

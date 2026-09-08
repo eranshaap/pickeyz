@@ -30,6 +30,12 @@
 // Rules v3 (part 4 §1): peace_of_mind is condition alone; the deal floor is recorded (`overpriced`, effect PEACE_OF_MIND_FLOOR_EFFECT)
 // and does not bar, so ELIGIBILITY reports it as its own count line, not as a reason.
 // The finish test (§3 of part 3) keeps three lines; distinct cars and double wins are reported, not failed.
+// Rules v4 (part 5 §3–§4): each listing gets new_price = the latest published_at row of new_car_prices on the car's four-column key
+// (tozeret_cd, degem_cd from models.degem_code "t-d"; shnat_yitzur = cars.year; sug_degem = models.vehicle_class); null when no row
+// matches. The library's above_new_price rule (out at >= PRICE_VS_NEW_CEILING_PCT, effect ABOVE_NEW_PRICE_EFFECT) is reported as:
+//   each pick's line gains `price / new = N%`; RANK LIST gains a `% of new` column;
+//   NEW PRICE               the distribution of the value over the pool (min / median / max, per year), the count at or above the
+//                           ceiling, and every listing without a new price (plate, codes, year, type).
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
@@ -37,11 +43,13 @@ import { db } from "@/lib/db";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
 import type { Row, ScoreResult } from "@/lib/scoring/types";
 import {
+  ABOVE_NEW_PRICE_EFFECT,
   CATEGORY_PRIORITY,
   CHEAPEST_CONDITION_FLOOR,
   DOUBLE_WINNER_EFFECT,
   PEACE_OF_MIND_DEAL_FLOOR,
   PEACE_OF_MIND_FLOOR_EFFECT,
+  PRICE_VS_NEW_CEILING_PCT,
   RULES_VERSION,
   RUNNER_UP_DEAL_GAP,
   RUNNER_UP_PRICE_BAND_PCT,
@@ -115,6 +123,9 @@ function median(xs: number[]): number {
 }
 
 // ---------- the loaded pool ----------
+type NewPriceKey = { tozeret_cd: number; degem_cd: number; shnat_yitzur: number; sug_degem: string };
+const keyText = (k: NewPriceKey) => `${k.tozeret_cd}|${k.degem_cd}|${k.shnat_yitzur}|${k.sug_degem}`;
+
 type Loaded = {
   candidate: CandidateListing;
   plate: string;
@@ -122,6 +133,9 @@ type Loaded = {
   dealer_id: number;
   seller: string; // display: name (dealer_type, dealer id)
   cell: string; // "comparison_group year"
+  codes: string; // "tozeret_cd-degem_cd" (models.degem_code)
+  vehicle_class: string; // models.vehicle_class = the file's sug_degem
+  key: NewPriceKey; // the four-column key the new price is read by
 };
 
 // The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c, part 4 §1), for the
@@ -144,7 +158,7 @@ async function main() {
   const rows = await db.listings.findMany({
     where: { delisted_at: null },
     include: {
-      car: { select: { id: true, license_plate: true, year: true, model: { select: { comparison_group: true } } } },
+      car: { select: { id: true, license_plate: true, year: true, model: { select: { comparison_group: true, degem_code: true, vehicle_class: true } } } },
       market_stats: { select: { id: true, median_price: true, engine_version: true } },
       dealer: { select: { id: true, name: true, dealer_type: true, commercial: { select: { id: true, agreement_status: true, agreement_end: true } } } },
     },
@@ -166,6 +180,10 @@ async function main() {
     const plate = l.car.license_plate ?? "?";
     if (l.car.year === null) throw new Error(`listing ${l.id} (${plate}): cars.year is null`);
     if (l.car.model.comparison_group === null) throw new Error(`listing ${l.id} (${plate}): models.comparison_group is null`);
+    if (l.car.model.degem_code === null) throw new Error(`listing ${l.id} (${plate}): models.degem_code is null`);
+    const codes = /^(\d+)-(\d+)$/.exec(l.car.model.degem_code);
+    if (!codes) throw new Error(`listing ${l.id} (${plate}): models.degem_code '${l.car.model.degem_code}' is not 'tozeret_cd-degem_cd'`);
+    if (l.car.model.vehicle_class === null) throw new Error(`listing ${l.id} (${plate}): models.vehicle_class is null`);
     if (l.score_breakdown === null) throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
     if (MAX_PRICE !== null && l.price > MAX_PRICE) continue;
     if (YEARS && (l.car.year < YEARS.from || l.car.year > YEARS.to)) continue;
@@ -184,6 +202,7 @@ async function main() {
         year: l.car.year,
         comparison_group: l.car.model.comparison_group,
         median_price,
+        new_price: null, // filled below from new_car_prices
         seller_visible,
         breakdown,
       },
@@ -192,9 +211,27 @@ async function main() {
       dealer_id: l.dealer.id,
       seller: `${l.dealer.name} (${l.dealer.dealer_type}, dealer ${l.dealer.id})`,
       cell: `${l.car.model.comparison_group} ${l.car.year}`,
+      codes: l.car.model.degem_code,
+      vehicle_class: l.car.model.vehicle_class,
+      key: { tozeret_cd: Number(codes[1]), degem_cd: Number(codes[2]), shnat_yitzur: l.car.year, sug_degem: l.car.model.vehicle_class },
     });
   }
   const byId = new Map(pool.map((p) => [p.candidate.listing_id, p]));
+
+  // part 5 §4: new_price = the latest published_at row on the car's four-column key; null when none. One query for the pool's keys.
+  const wanted = new Map<string, NewPriceKey>();
+  for (const p of pool) wanted.set(keyText(p.key), p.key);
+  const priceRows = wanted.size
+    ? await db.new_car_prices.findMany({ where: { OR: [...wanted.values()] }, orderBy: [{ published_at: "desc" }, { id: "desc" }] })
+    : [];
+  const latest = new Map<string, { mehir: number; published_at: Date }>();
+  for (const r of priceRows) {
+    const k = keyText(r);
+    if (!latest.has(k)) latest.set(k, { mehir: r.mehir, published_at: r.published_at }); // first = latest published_at
+  }
+  for (const p of pool) p.candidate.new_price = latest.get(keyText(p.key))?.mehir ?? null;
+  const withNewPrice = pool.filter((p) => p.candidate.new_price !== null).length;
+  const publications = [...new Set([...latest.values()].map((v) => v.published_at.toISOString().slice(0, 10)))].sort();
 
   // ---------- 2. preflight ----------
   const sellers = new Set(pool.map((p) => p.dealer_id));
@@ -204,10 +241,13 @@ async function main() {
   const openRows = await db.dealer_commercial.count({ where: { OR: [{ agreement_end: null }, { agreement_end: { gt: now } }] } });
 
   log(
-    `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}, peace_of_mind_floor_effect = ${PEACE_OF_MIND_FLOOR_EFFECT}`,
+    `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}, peace_of_mind_floor_effect = ${PEACE_OF_MIND_FLOOR_EFFECT}, above_new_price_effect = ${ABOVE_NEW_PRICE_EFFECT}`,
   );
-  log(`constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}`);
+  log(
+    `constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}`,
+  );
   log(`filters: ${filters}; live listings: ${rows.length}; pool after filters: ${pool.length}`);
+  log(`new price (new_car_prices, latest published_at per four-column key): ${withNewPrice} of ${pool.length} listings got one${publications.length ? `; publication(s) used: ${publications.join(", ")}` : ""}`);
   log(`\n===== PREFLIGHT =====`);
   log(`sellers in the pool: ${sellers.size}`);
   log(`sellers with an open dealer_commercial row (open = agreement_end is null or later than now = ${now.toISOString()}): ${openSellers.size}`);
@@ -226,6 +266,9 @@ async function main() {
   const P = (id: number) => byId.get(id)!;
   const R = (id: number) => resultOf.get(id)!;
   const bd = (id: number) => P(id).candidate.breakdown;
+  // the above_new_price rule's value (price / new_price, %) as recorded in the trace; null when not evaluated or no entry (sold_strong)
+  const pctOfNew = (id: number): number | null => R(id).trace.find((t) => t.rule === "above_new_price")?.value ?? null;
+  const pctText = (id: number) => (pctOfNew(id) === null ? "-" : `${pctOfNew(id)}%`);
 
   // ---------- 4. THE THREE ----------
   // §13.4: under each pick, the top CATEGORY_TOP of that category by its own order among the shown listings eligible for
@@ -247,7 +290,7 @@ async function main() {
       const r = R(id);
       const also = r.categories.filter((x) => x !== c);
       log(`  winner${also.length ? ` (also ${also.join(" + ")})` : ""}`);
-      log(`  plate ${p.plate} | listing ${id} | year ${p.candidate.year} | price ${p.candidate.price} | km_declared ${p.km_declared ?? "-"} | rank ${r.rank}`);
+      log(`  plate ${p.plate} | listing ${id} | year ${p.candidate.year} | price ${p.candidate.price} | price / new = ${pctText(id)} | km_declared ${p.km_declared ?? "-"} | rank ${r.rank}`);
       log(`  deal_score ${fmt(b.deal_score)} | condition_score ${fmt(b.condition_score)} | condition_by_reality ${fmt(b.condition_by_reality)} | typical_condition ${fmt(b.typical_condition)}`);
       log(`  seller ${p.seller} | verify_availability ${r.verify_availability}`);
     }
@@ -400,6 +443,33 @@ async function main() {
     log(`${r.listing_id} | ${p.plate} | ${r.status} | ${rule} | ${t?.value ?? "-"} | ${t ? JSON.stringify(t.context) : "-"}`);
   }
 
+  // ---------- 5b. NEW PRICE (part 5 §4) ----------
+  log(`\n===== NEW PRICE (price / new list price, %; ceiling PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}, effect in force: ${ABOVE_NEW_PRICE_EFFECT}) =====`);
+  {
+    const evaluated = res.results.filter((r) => pctOfNew(r.listing_id) !== null).map((r) => r.listing_id);
+    const noEntry = res.results.filter((r) => pctOfNew(r.listing_id) === null && P(r.listing_id).candidate.new_price !== null).length;
+    log(`listings with a new price: ${withNewPrice} of ${res.results.length}; value recorded on ${evaluated.length}${noEntry ? ` (${noEntry} with a new price but no entry: excluded at the gate)` : ""}`);
+    log(`year | n | min | median | max | at or above ${PRICE_VS_NEW_CEILING_PCT}%`);
+    const dist = (label: string, ids: number[]) => {
+      const vs = ids.map((id) => pctOfNew(id) as number);
+      if (vs.length === 0) return log(`${label} | 0 | - | - | - | 0`);
+      log(`${label} | ${vs.length} | ${Math.min(...vs)} | ${median(vs)} | ${Math.max(...vs)} | ${vs.filter((v) => v >= PRICE_VS_NEW_CEILING_PCT).length}`);
+    };
+    dist("all", evaluated);
+    for (const y of [...new Set(evaluated.map((id) => P(id).candidate.year))].sort((a, b) => a - b)) dist(String(y), evaluated.filter((id) => P(id).candidate.year === y));
+    const above = evaluated.filter((id) => (pctOfNew(id) as number) >= PRICE_VS_NEW_CEILING_PCT).sort((a, b) => (pctOfNew(b) as number) - (pctOfNew(a) as number) || a - b);
+    log(`at or above the ceiling: ${above.length} of ${evaluated.length}`);
+    if (above.length) log(`  plate | listing | year | codes | type | price | new price | % of new | status`);
+    for (const id of above) {
+      const r = R(id);
+      log(`  ${P(id).plate} | ${id} | ${P(id).candidate.year} | ${P(id).codes} | ${P(id).vehicle_class} | ${P(id).candidate.price} | ${P(id).candidate.new_price} | ${pctText(id)} | ${r.status}${r.excluded_by ? ` (${r.excluded_by})` : ""}`);
+    }
+    const without = pool.filter((p) => p.candidate.new_price === null).sort((a, b) => a.candidate.listing_id - b.candidate.listing_id);
+    log(`without a new price (no new_car_prices row on the four-column key): ${without.length} of ${pool.length}`);
+    if (without.length) log(`  plate | listing | tozeret_cd-degem_cd | year | type (vehicle_class)`);
+    for (const p of without) log(`  ${p.plate} | ${p.candidate.listing_id} | ${p.codes} | ${p.candidate.year} | ${p.vehicle_class}`);
+  }
+
   // ---------- 6. ELIGIBILITY ----------
   log(`\n===== ELIGIBILITY (over the whole pool, ${res.results.length} listings) =====`);
   for (const c of CATEGORY_PRIORITY) {
@@ -468,11 +538,11 @@ async function main() {
 
   // ---------- 9. RANK LIST ----------
   log(`\n===== RANK LIST (top ${RANK_LIST_TOP} of ${shown.length} shown) =====`);
-  log("rank | plate | year | price | deal_score | condition_score | condition_by_reality | categories");
+  log("rank | plate | year | price | % of new | deal_score | condition_score | condition_by_reality | categories");
   for (const r of shown.slice(0, RANK_LIST_TOP)) {
     const p = P(r.listing_id);
     const b = bd(r.listing_id);
-    log(`${r.rank} | ${p.plate} | ${p.candidate.year} | ${p.candidate.price} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${fmt(b.condition_by_reality)} | ${r.categories.length ? r.categories.join(" + ") : "-"}${r.verify_availability ? " (verify availability)" : ""}`);
+    log(`${r.rank} | ${p.plate} | ${p.candidate.year} | ${p.candidate.price} | ${pctText(r.listing_id)} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${fmt(b.condition_by_reality)} | ${r.categories.length ? r.categories.join(" + ") : "-"}${r.verify_availability ? " (verify availability)" : ""}`);
   }
 
   writeReport(`filters: ${filters} — finish test ${finish}`);

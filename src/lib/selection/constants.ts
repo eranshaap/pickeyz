@@ -1,14 +1,22 @@
 // Stage B selection library — every number it uses (BRIEF Day 12 part 2, §5; part 3, §1–§3).
 // Each constant carries its source line as a comment. No other number lives anywhere else in src/lib/selection/.
 
-export const RULES_VERSION = 3;
+export const RULES_VERSION = 4;
 // 1 — Day 12 — first selection rules
 // 2 — Day 12 — double_winner tracking only (a car may win more than one category); cheapest bar -5 (was 0); peace_of_mind deal floor -10; cheapest_runner_up recorded (band 5%, gap 2)
 // 3 — Day 12 — peace_of_mind deal floor tracking only: the category is condition alone by definition; the absolute price ceiling will come from the new-car price file
+// 4 — Day 12 — above_new_price: price as a percent of the car's new list price, out at >= 100 (mechanism); new_price supplied by the caller
 
 // below_threshold: a listing priced under this share of its cell's median is an error, not a deal.
 // mechanism — the sum of the engine's caps (history 40 + km 11 = 51), rounded. In force.
 export const BELOW_THRESHOLD_FLOOR_PCT = 50;
+
+// above_new_price: a used listing priced at or above its car's new list price is an error or an anomaly, not a recommendation.
+// mechanism — a used car cannot be worth more than new. In force.
+export const PRICE_VS_NEW_CEILING_PCT = 100;
+
+// The rule's effect: "excluded" bars the listing; "none" records only.
+export const ABOVE_NEW_PRICE_EFFECT: "excluded" | "none" = "excluded";
 
 // too_similar: planar distance between two same-cell cars' price and km rows, in percent of value.
 // guess — to be measured from the value distribution once real searches exist. Tracking only.
@@ -41,8 +49,9 @@ export const RUNNER_UP_DEAL_GAP = 2;
 
 export const CATEGORY_PRIORITY = ['best_value', 'peace_of_mind', 'cheapest'] as const;
 
-// Rounding, as written in the brief: the below_threshold value to 1 decimal (§4.3), distance to 2 decimals (§4.8),
+// Rounding, as written in the brief: the below_threshold value to 1 decimal (§4.3), the above_new_price value to 1 decimal (part 5 §3), distance to 2 decimals (§4.8),
 // the cheapest_runner_up gap and price_over_pct to 1 decimal (part 3, §2b).
 export const BELOW_THRESHOLD_ROUND_DECIMALS = 1;
+export const ABOVE_NEW_PRICE_ROUND_DECIMALS = 1;
 export const DISTANCE_ROUND_DECIMALS = 2;
 export const RUNNER_UP_ROUND_DECIMALS = 1;

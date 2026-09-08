@@ -8,7 +8,8 @@
 //   4.1 gate      sold_strong -> excluded, no rules run; sold medium -> verify_availability; eligibility per §2
 //                 (part 4 §1: peace_of_mind is condition alone; the deal floor is recorded by the overpriced rule, it does not bar)
 //   4.2 stage A   order everyone that passed the gate -> stage_a_place
-//   4.3 rule      below_threshold  (price / median_price); overpriced recorded on every peace_of_mind-eligible listing (part 4 §1)
+//   4.3 rule      below_threshold (price / median_price); above_new_price (price / new_price, part 5 §3) in the same pass;
+//                 overpriced recorded on every peace_of_mind-eligible listing (part 4 §1)
 //   4.4 rule      dealer_not_visible
 //   4.5 merge     duplicate — one representative per car among the survivors
 //   4.6 rank      representatives in the Stage A order -> rank 1..n, status shown
@@ -18,11 +19,11 @@
 // Module split: gate.ts (4.1, the overpriced measurement) · order.ts (the comparators of 4.2, 4.6, §2 and 4.5) · rules.ts (4.3–4.5) ·
 // picks.ts (4.7, runner-up) · similarity.ts (distance, 4.8) · constants.ts (§5) · types.ts (§3) · util.ts (helpers).
 
-import { CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
+import { ABOVE_NEW_PRICE_EFFECT, CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
 import { eligibility, isSoldMedium, isSoldStrong, overpriced } from "./gate";
 import { stageAOrder } from "./order";
 import { pick } from "./picks";
-import { belowThreshold, dealerNotVisible, mergeByCar, type Work } from "./rules";
+import { aboveNewPrice, belowThreshold, dealerNotVisible, mergeByCar, type Work } from "./rules";
 import type { CandidateListing, ListingResult, PeaceOfMindFloorEffect, SelectionInput, SelectionOptions, SelectionResult } from "./types";
 import { cmpNullsLast } from "./util";
 
@@ -30,6 +31,7 @@ export { distance } from "./similarity";
 export { categoryOrder } from "./order"; // the three category comparators (§2), for callers that list a category by its own order
 export * from "./constants";
 export type {
+  AboveNewPriceEffect,
   CandidateListing,
   Category,
   DoubleWinnerEffect,
@@ -69,6 +71,7 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
   const tooSimilarEffect = options.too_similar_effect ?? TOO_SIMILAR_EFFECT;
   const doubleWinnerEffect = options.double_winner_effect ?? DOUBLE_WINNER_EFFECT;
   const floorEffect = options.peace_of_mind_floor_effect ?? PEACE_OF_MIND_FLOOR_EFFECT;
+  const aboveNewPriceEffect = options.above_new_price_effect ?? ABOVE_NEW_PRICE_EFFECT;
 
   const seen = new Set<number>();
   for (const l of input.listings) {
@@ -93,9 +96,12 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
   passed.sort((a, b) => stageAOrder(a.input, b.input));
   passed.forEach((w, i) => (w.result.stage_a_place = i + 1));
 
-  // 4.3 + 4.4 per-listing rules, on everyone that passed the gate (trace completeness, §3); the overpriced measurement
-  // (part 4 §1) on everyone that passed the gate and is eligible for peace_of_mind
-  for (const w of passed) belowThreshold(w);
+  // 4.3 + 4.4 per-listing rules, on everyone that passed the gate (trace completeness, §3): below_threshold and above_new_price
+  // (part 5 §3) in one pass; the overpriced measurement (part 4 §1) on everyone that passed the gate and is eligible for peace_of_mind
+  for (const w of passed) {
+    belowThreshold(w);
+    aboveNewPrice(w, aboveNewPriceEffect);
+  }
   for (const w of passed) overpriced(w, floorEffect);
   for (const w of passed) dealerNotVisible(w);
 

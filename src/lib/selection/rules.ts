@@ -1,9 +1,9 @@
-// The per-listing rules (BRIEF §4.3 below_threshold, §4.4 dealer_not_visible) and the merge by car (§4.5).
+// The per-listing rules (BRIEF §4.3 below_threshold, part 5 §3 above_new_price, §4.4 dealer_not_visible) and the merge by car (§4.5).
 // Each function works on the mutable working record of a listing and appends to its trace.
 
-import { BELOW_THRESHOLD_FLOOR_PCT, BELOW_THRESHOLD_ROUND_DECIMALS } from "./constants";
+import { ABOVE_NEW_PRICE_ROUND_DECIMALS, BELOW_THRESHOLD_FLOOR_PCT, BELOW_THRESHOLD_ROUND_DECIMALS, PRICE_VS_NEW_CEILING_PCT } from "./constants";
 import { representativeOrder } from "./order";
-import type { CandidateListing, ListingResult, RuleTrace } from "./types";
+import type { AboveNewPriceEffect, CandidateListing, ListingResult, RuleTrace } from "./types";
 import { RULE_TYPE } from "./types";
 import { round } from "./util";
 
@@ -34,6 +34,40 @@ export function belowThreshold(w: Work): void {
       if (result.status !== "excluded") {
         result.status = "excluded";
         result.excluded_by = "below_threshold";
+      }
+    }
+  }
+  result.trace.push(entry);
+}
+
+// part 5 §3 — value = round(price / new_price * 100, 1); triggered = value >= PRICE_VS_NEW_CEILING_PCT. The entry's effect records
+// what happened to this listing (part 5 §8.3, one convention for every rule): "excluded" only when the rule triggered and the effect
+// in force is "excluded" (the listing is out: excluded_by above_new_price, rank null); otherwise "none" (recorded only).
+// No new price → not evaluated (reason no_new_price). Bars a listing, never a car: another listing of the same car under the
+// ceiling still represents it (§4.5).
+export function aboveNewPrice(w: Work, effect: AboveNewPriceEffect): void {
+  const { input, result } = w;
+  const entry: RuleTrace = {
+    rule: "above_new_price",
+    type: RULE_TYPE.above_new_price,
+    value: null,
+    threshold: PRICE_VS_NEW_CEILING_PCT,
+    triggered: false,
+    effect: "none",
+    context: {},
+  };
+  if (input.new_price === null) {
+    entry.context = { evaluated: false, reason: "no_new_price" };
+  } else {
+    const value = round((input.price / input.new_price) * 100, ABOVE_NEW_PRICE_ROUND_DECIMALS);
+    entry.value = value;
+    entry.triggered = value >= PRICE_VS_NEW_CEILING_PCT;
+    entry.context = { new_price: input.new_price, evaluated: true };
+    if (entry.triggered && effect === "excluded") {
+      entry.effect = "excluded";
+      if (result.status !== "excluded") {
+        result.status = "excluded";
+        result.excluded_by = "above_new_price";
       }
     }
   }

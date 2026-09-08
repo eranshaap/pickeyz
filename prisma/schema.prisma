@@ -225,6 +225,29 @@ model car_test_readings {
   @@unique([car_id, test_date])
 }
 
+// 10. new_car_prices — the Ministry of Transport new-car price list (Day 12 part 5, §1). One row per (key, publication).
+// The file's key is four columns: (tozeret_cd, degem_cd, shnat_yitzur, sug_degem) — the P and M lists reuse code numbers for
+// different vehicles. Append-only: a later publication adds rows, nothing is updated or deleted. No column on cars — a car's
+// new price is read by the four-column join at read time (models.degem_code + models.vehicle_class + cars.year).
+model new_car_prices {
+  id            Int      @id @default(autoincrement())
+  tozeret_cd    Int
+  degem_cd      Int
+  shnat_yitzur  Int
+  sug_degem     String // 'P' private | 'M' commercial
+  semel_yevuan  Int // importer code
+  shem_yevuan   String // importer name
+  tozeret_nm    String
+  degem_nm      String
+  kinuy_mishari String?
+  mehir         Int // list price, ILS, as published
+  published_at  DateTime @db.Date // the dataset's own update date ("עודכן בתאריך"), given on import
+  imported_at   DateTime @default(now()) @db.Timestamptz
+
+  @@unique([tozeret_cd, degem_cd, shnat_yitzur, sug_degem, published_at])
+  @@index([tozeret_cd, degem_cd, shnat_yitzur, sug_degem])
+}
+
 // Day 11: the scoring engine's confidence level (src/lib/scoring/confidence.ts).
 enum ConfidenceLevel {
   high

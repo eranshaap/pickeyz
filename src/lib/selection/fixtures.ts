@@ -10,6 +10,7 @@ export type Spec = {
   car?: number; // default: id
   price?: number; // default 100000
   median?: number | null; // the cell's median price; default 100000; null → price row unavailable (no_market_row)
+  new_price?: number | null; // the car's new list price (part 5 §3); default null → above_new_price not evaluated
   thin?: boolean; // price row unavailable with reason thin_cell (median_price passed as null)
   first_seen?: string; // ISO; default 2026-08-01
   year?: number; // default 2021
@@ -90,6 +91,7 @@ export function cand(s: Spec): CandidateListing {
     year: s.year ?? 2021,
     comparison_group: s.cell ?? "G",
     median_price: s.thin ? null : median,
+    new_price: s.new_price === undefined ? null : s.new_price,
     seller_visible: s.visible ?? true,
     breakdown: invoice(s),
   };
