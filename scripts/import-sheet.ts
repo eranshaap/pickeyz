@@ -26,12 +26,23 @@ const DRY = process.argv.includes("--dry-run");
 const FILE = process.argv.find((a) => a.endsWith(".csv")) ?? "data/raw/sheet.csv";
 
 // --expect-model "MAZDA 3": the registry's commercial model name every row must carry.
-const EXPECT_MODEL = (() => {
-  const i = process.argv.indexOf("--expect-model");
-  if (i === -1) return null;
-  const value = process.argv[i + 1];
-  if (!value || value.startsWith("--")) throw new Error("--expect-model: missing value");
-  return value;
+// The flag may be repeated — `--expect-model "MAZDA 3" --expect-model "IONIQ HYBRID"`
+// (or `--expect-model=A`): a row passes when its registry model equals ANY of the values.
+// With no flag, no model check is made.
+const EXPECT_MODELS = ((): string[] => {
+  const values: string[] = [];
+  process.argv.forEach((a, i) => {
+    if (a === "--expect-model") {
+      const value = process.argv[i + 1];
+      if (!value || value.startsWith("--")) throw new Error("--expect-model: missing value");
+      values.push(value);
+    } else if (a.startsWith("--expect-model=")) {
+      const value = a.slice("--expect-model=".length);
+      if (!value) throw new Error("--expect-model: missing value");
+      values.push(value);
+    }
+  });
+  return values;
 })();
 
 // Both sides are compared uppercased and without spaces.
@@ -237,8 +248,8 @@ async function main() {
     }
     // An inactive car carries the same registry fields; its expired tokef_dt is data, not a reason to skip.
     const v = lookup.data;
-    if (EXPECT_MODEL !== null && modelKey(v.registry.model_name) !== modelKey(EXPECT_MODEL)) {
-      fail(row.n, `${row.plate}: expected model ${JSON.stringify(EXPECT_MODEL)}, registry says ${v.registry.make} ${v.registry.model_name}`);
+    if (EXPECT_MODELS.length > 0 && !EXPECT_MODELS.some((m) => modelKey(m) === modelKey(v.registry.model_name))) {
+      fail(row.n, `${row.plate}: expected model ${EXPECT_MODELS.map((m) => JSON.stringify(m)).join(" or ")}, registry says ${v.registry.make} ${v.registry.model_name}`);
     }
     if (!v.degem_code) fail(row.n, `${row.plate}: registry row without a degem_code`);
 
@@ -247,36 +258,36 @@ async function main() {
     });
     if (!model) fail(row.n, `${row.plate}: no models row for (${v.vehicle_class}, ${v.degem_code}, ${v.year}) — catalog import incomplete`);
 
+    // The sheet is a first-seen observation: a row whose listing already exists changes nothing.
+    // The existence check therefore comes before resolveDealer(), which creates a dealers row
+    // for every private seller — a re-run would otherwise leave one orphan per private row.
     const work = async (tx: Tx) => {
-      const dealer = await resolveDealer(tx, row);
       const car = await upsertCar(tx, row, v, model.id);
       const exists = await tx.listings.findUnique({ where: { source_external_id: { source: row.source, external_id: row.external_id } } });
-      let listing = "existing";
-      if (!exists) {
-        listing = "new";
-        if (!DRY) {
-          const first_seen_at = new Date(`${row.first_seen}T00:00:00.000Z`);
-          const created = await tx.listings.create({
-            data: {
-              car_id: car.id, dealer_id: dealer.id, source: row.source, external_id: row.external_id,
-              price: row.price!, region: row.region, image_urls: [], km_declared: row.km, hand_declared: row.hand,
-              first_seen_at,
-              owners_at_first_seen: v.ownership_history?.length ?? null, // Day 11: the record's size at first sight
-            },
-          });
-          // Day 11 (§19.2): the first observed price, at first sight. Later changes go through recordPrice().
-          await tx.listing_price_history.create({ data: { listing_id: created.id, price: row.price!, observed_at: first_seen_at } });
-        }
+      if (exists) return { dealer: null, car, listing: "existing" };
+      const dealer = await resolveDealer(tx, row);
+      if (!DRY) {
+        const first_seen_at = new Date(`${row.first_seen}T00:00:00.000Z`);
+        const created = await tx.listings.create({
+          data: {
+            car_id: car.id, dealer_id: dealer.id, source: row.source, external_id: row.external_id,
+            price: row.price!, region: row.region, image_urls: [], km_declared: row.km, hand_declared: row.hand,
+            first_seen_at,
+            owners_at_first_seen: v.ownership_history?.length ?? null, // Day 11: the record's size at first sight
+          },
+        });
+        // Day 11 (§19.2): the first observed price, at first sight. Later changes go through recordPrice().
+        await tx.listing_price_history.create({ data: { listing_id: created.id, price: row.price!, observed_at: first_seen_at } });
       }
-      return { dealer, car, listing };
+      return { dealer, car, listing: "new" };
     };
     const r = DRY ? await work(db as unknown as Tx) : await db.$transaction(work);
 
     bump(`car:${r.car.created ? "new" : "existing"}`);
     if (lookup.status === "inactive") bump("car:inactive");
     bump(`listing:${r.listing}`);
-    bump(`dealer:${r.dealer.how}`);
-    console.log(`${tag} ${v.degem_code} ${v.year} | car:${r.car.created ? "new" : "existing"} dealer:${r.dealer.how} listing:${r.listing}`);
+    if (r.dealer) bump(`dealer:${r.dealer.how}`);
+    console.log(`${tag} ${v.degem_code} ${v.year} | car:${r.car.created ? "new" : "existing"} dealer:${r.dealer?.how ?? "—"} listing:${r.listing}`);
 
     // cross-checks, reported not stored (one line per car, not per listing)
     if (!seenCars.has(row.plate)) {
