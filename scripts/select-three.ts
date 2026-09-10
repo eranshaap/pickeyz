@@ -3,7 +3,12 @@
 // engine's invoices from listings.score_breakdown, calls selectThree(), and writes REPORT-select-three.md.
 // It NEVER writes to the database — there is no --write.
 //
-// Arguments: --max-price=<n> (optional), --years=<from>-<to> or --years=<y> (optional). Default: the whole live pool.
+// Arguments: --model=<value> (the search's model; see below), --max-price=<n> (optional), --years=<from>-<to> or --years=<y>
+// (optional). Default filters: the whole live pool of that model.
+//   --model    the model the search is for (Days 13–14 take it from the search screen; the script takes it as a flag).
+//              Matched against models.model the way scripts/import-sheet.ts matches --expect-model: both sides uppercased
+//              and with whitespace removed, exact. Required whenever the live listings span more than one model — missing
+//              or unknown value stops the run, printing the models present with their listing counts, before any search.
 //
 // Loading (the Prisma pattern of scripts/score-listings.ts): live listings (delisted_at is null) with their car
 // (car_id, plate, year), the model's comparison_group, the norm row via market_stats_id, the seller and its
@@ -90,6 +95,19 @@ function yearsArg(): { from: number; to: number } | null {
   if (to < from) throw new Error(`--years: to < from in '${v}'`);
   return { from, to };
 }
+// --model=<value>: compared to models.model uppercased and without whitespace, exactly as import-sheet.ts's --expect-model.
+function modelKey(s: string): string {
+  return s.toUpperCase().replace(/\s+/g, "");
+}
+function modelArg(): string | null {
+  if (process.argv.includes("--model")) throw new Error("--model: missing value — write --model=<value>");
+  const a = process.argv.find((x) => x.startsWith("--model="));
+  if (!a) return null;
+  const v = a.slice("--model=".length);
+  if (!v) throw new Error("--model: missing value");
+  return v;
+}
+const MODEL = modelArg();
 const MAX_PRICE = intArg("max-price");
 const YEARS = yearsArg();
 
@@ -158,7 +176,7 @@ async function main() {
   const rows = await db.listings.findMany({
     where: { delisted_at: null },
     include: {
-      car: { select: { id: true, license_plate: true, year: true, model: { select: { comparison_group: true, degem_code: true, vehicle_class: true } } } },
+      car: { select: { id: true, license_plate: true, year: true, model: { select: { model: true, comparison_group: true, degem_code: true, vehicle_class: true } } } },
       market_stats: { select: { id: true, median_price: true, engine_version: true } },
       dealer: { select: { id: true, name: true, dealer_type: true, commercial: { select: { id: true, agreement_status: true, agreement_end: true } } } },
     },
@@ -174,7 +192,31 @@ async function main() {
     throw new Error(`${badVersion.length} live listing(s) or norm row(s) not at engine version ${ENGINE_VERSION} — see above`);
   }
 
-  // the pool after the search's filters
+  // §1: the models among the live listings, keyed the way --model is compared. The model is the search's input: with
+  // more than one model live the flag is required, an unknown value stops — both before any search is run.
+  const present = new Map<string, { display: string; n: number }>();
+  for (const l of rows) {
+    if (l.car.model.model === null) throw new Error(`listing ${l.id} (${l.car.license_plate ?? "?"}): models.model is null`);
+    const e = present.get(modelKey(l.car.model.model)) ?? { display: l.car.model.model, n: 0 };
+    e.n += 1;
+    present.set(modelKey(l.car.model.model), e);
+  }
+  const presentText = [...present.values()]
+    .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
+    .map((e) => `${e.display} (${e.n} listing${e.n === 1 ? "" : "s"})`)
+    .join(", ");
+  if (MODEL === null && present.size > 1) {
+    console.log(`models among the ${rows.length} live listings: ${presentText}`);
+    throw new Error(`--model=<value> is required: the live listings span ${present.size} models — see the list above; no search was run`);
+  }
+  if (MODEL !== null && !present.has(modelKey(MODEL))) {
+    console.log(`models among the ${rows.length} live listings: ${presentText}`);
+    throw new Error(`--model: no live listing has model '${MODEL}' — see the list above; no search was run`);
+  }
+  const modelDisplay = MODEL === null ? [...present.values()][0].display : present.get(modelKey(MODEL))!.display;
+  const modelListings = MODEL === null ? rows.length : present.get(modelKey(MODEL))!.n;
+
+  // the pool after the model and the search's filters
   const pool: Loaded[] = [];
   for (const l of rows) {
     const plate = l.car.license_plate ?? "?";
@@ -184,6 +226,8 @@ async function main() {
     if (!/^\d+-\d+$/.test(l.car.model.degem_code)) throw new Error(`listing ${l.id} (${plate}): models.degem_code '${l.car.model.degem_code}' is not 'tozeret_cd-degem_cd'`);
     if (l.car.model.vehicle_class === null) throw new Error(`listing ${l.id} (${plate}): models.vehicle_class is null`);
     if (l.score_breakdown === null) throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
+    if (l.car.model.model === null) throw new Error(`listing ${l.id} (${plate}): models.model is null`);
+    if (MODEL !== null && modelKey(l.car.model.model) !== modelKey(MODEL)) continue;
     if (MAX_PRICE !== null && l.price > MAX_PRICE) continue;
     if (YEARS && (l.car.year < YEARS.from || l.car.year > YEARS.to)) continue;
     const breakdown = l.score_breakdown as unknown as ScoreResult;
@@ -246,6 +290,7 @@ async function main() {
   log(
     `constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}`,
   );
+  log(`model: ${modelDisplay}${MODEL === null ? " (the only model live; --model not given)" : ` (--model=${MODEL})`} — ${modelListings} live listing(s) of this model`);
   log(`filters: ${filters}; live listings: ${rows.length}; pool after filters: ${pool.length}`);
   log(`new price (new_car_prices, latest published_at per four-column key): ${withNewPrice} of ${pool.length} listings got one${publications.length ? `; publication(s) used: ${publications.join(", ")}` : ""}`);
   log(`\n===== PREFLIGHT =====`);
@@ -255,7 +300,7 @@ async function main() {
   log(`(dealer_commercial rows in total: ${commercialRows}; open rows: ${openRows})`);
   if (visibleListings === 0) {
     log(`\nSTOP: zero listings are visible — no seller in the pool has an open dealer_commercial row. The search was not run (§9).`);
-    writeReport(`STOPPED at preflight (filters: ${filters})`);
+    writeReport(`${modelDisplay}, ${pool.length} listings — STOPPED at preflight (filters: ${filters})`);
     throw new Error("preflight: zero visible listings — stopped before the search");
   }
 
@@ -545,7 +590,7 @@ async function main() {
     log(`${r.rank} | ${p.plate} | ${p.candidate.year} | ${p.candidate.price} | ${pctText(r.listing_id)} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${fmt(b.condition_by_reality)} | ${r.categories.length ? r.categories.join(" + ") : "-"}${r.verify_availability ? " (verify availability)" : ""}`);
   }
 
-  writeReport(`filters: ${filters} — finish test ${finish}`);
+  writeReport(`${modelDisplay}, ${pool.length} listings — filters: ${filters} — finish test ${finish}`);
   console.log(`\nnothing written to the database; report written to ${REPORT_FILE}`);
   if (finish === "FAIL") throw new Error("finish test FAIL — see the report");
 }

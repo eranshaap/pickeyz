@@ -13,6 +13,12 @@
 // by check kind, by sold_signal strength, by unavailable reason per row; the full ScoreResult JSON for
 // `--plates=1234567,...`; everything that threw.
 //
+// Day 13 §1 — the regression block classifies. Every difference between a stored score and the
+// recomputed one carries exactly one label, the first that applies: VERSION, NEW, CLOCK, DATA, NORM,
+// else UNEXPLAINED; only UNEXPLAINED counts as a regression (decision, Eran 09/09: a difference
+// explained by the clock is not one). The engine is not touched — CLOCK re-runs it read-only with the
+// stored scored_at as `now`, DATA and NORM read the inputs and norm values the stored breakdown carries.
+//
 // --write (§22.2): one transaction, one statement per table — a createMany of listing_scores rows
 // (§19.1) and one UPDATE listings … FROM unnest(...) setting score = deal_score, condition_score,
 // confidence = level, score_breakdown = the result, scored_at = now, market_stats_id = the norm
@@ -26,6 +32,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
 import { scoreListing, type ScoreResult, type ScoringInput } from "@/lib/scoring";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
+import { round, dateToIso } from "@/lib/scoring/util";
 import { scoringSubject } from "@/lib/scoring-input";
 
 const WRITE = process.argv.includes("--write");
@@ -41,8 +48,17 @@ type Scored = {
   year: number;
   price: number;
   market_stats_id: number | null;
+  input: ScoringInput; // kept for the §1 CLOCK check: the same inputs, a different `now`
   result: ScoreResult;
-  stored: { score: number | null; condition_score: number | null; confidence: string | null }; // Day 12 §6: what listings holds now, for the regression count
+  // Day 13 §1: what listings holds now — the classifier compares against all of it.
+  stored: {
+    score: number | null;
+    condition_score: number | null;
+    confidence: string | null;
+    engine_version: number | null;
+    scored_at: Date | null;
+    breakdown: unknown; // listings.score_breakdown — a stored ScoreResult
+  };
 };
 type Failed = { listing_id: number; plate: string; error: string };
 
@@ -58,6 +74,116 @@ function count<T>(items: T[], key: (t: T) => string): [string, number][] {
   const m = new Map<string, number>();
   for (const it of items) m.set(key(it), (m.get(key(it)) ?? 0) + 1);
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+// ---------- Day 13 §1: the classifier ----------
+// One label per differing listing, first match wins.
+type Label = "VERSION" | "NEW" | "CLOCK" | "DATA" | "NORM" | "UNEXPLAINED";
+const LABELS: Label[] = ["VERSION", "NEW", "CLOCK", "DATA", "NORM", "UNEXPLAINED"];
+
+// What this script reads out of listings.score_breakdown (a stored ScoreResult, src/lib/scoring/types.ts).
+type StoredBreakdown = {
+  rows?: { row?: string; raw?: Record<string, unknown> }[];
+  checks?: { check?: string; status?: string; reason?: string; declared?: number; official?: number; official_date?: string }[];
+  facts?: Record<string, unknown>;
+  typical_condition?: number | null;
+};
+
+// The engine's inputs (ScoringInput) as the stored breakdown carries them, and the ones it does not
+// carry at all — the DATA check is partial by exactly this second list.
+const DATA_COVERS = [
+  "listing.price", "listing.km_declared", "car.hand", "car.ownership_history", "car.test_expiry",
+  "listing.hand_declared (unless the hand check was skipped)",
+  "car.km_at_last_test, car.mivchan_acharon_dt (unless the km check was skipped or had no declaration)",
+];
+const DATA_MISSING = ["listing.first_seen_at", "listing.seller_type (dealers.dealer_type)", "listing.owners_at_first_seen", "car.year", "car.first_registration"];
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+function show(v: unknown): string {
+  if (v === undefined) return "absent";
+  if (v === null) return "null";
+  return typeof v === "string" ? v : JSON.stringify(v);
+}
+// The ownership record as one comparable string; key order in the stored JSON is not part of the input.
+function ownersKey(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (!Array.isArray(v)) return `not-an-array:${JSON.stringify(v)}`;
+  return v.map((e) => {
+    const { ym, type } = (e ?? {}) as { ym?: unknown; type?: unknown };
+    return `${String(ym)}:${String(type)}`;
+  }).join(",");
+}
+// Compare every key the stored side carries; a key the current side lacks reads as 'absent'.
+function diffMaps(stored: Map<string, unknown>, current: Map<string, unknown>): string[] {
+  const diffs: string[] = [];
+  for (const [k, a] of stored) {
+    const b = current.get(k);
+    if (!same(a, b)) diffs.push(`${k}: ${show(a)} -> ${show(b)}`);
+  }
+  return diffs;
+}
+
+const rawOf = (bd: StoredBreakdown, row: string) => bd.rows?.find((r) => r.row === row)?.raw;
+const checkOf = (bd: StoredBreakdown, check: string) => bd.checks?.find((c) => c.check === check);
+
+function storedInputs(bd: StoredBreakdown): Map<string, unknown> {
+  const m = new Map<string, unknown>();
+  const price = rawOf(bd, "price"), km = rawOf(bd, "km"), history = rawOf(bd, "history");
+  if (price && "price" in price) m.set("listing.price", price.price);
+  if (km && "km_declared" in km) m.set("listing.km_declared", km.km_declared);
+  if (history && "paper_hand" in history) m.set("car.hand", history.paper_hand);
+  if (history && "owners" in history) m.set("car.ownership_history", ownersKey(history.owners));
+  if (bd.facts && "test_expiry" in bd.facts) m.set("car.test_expiry", bd.facts.test_expiry);
+  // hand_declared: checks.hand carries it unless the check was skipped (§18.8); 'no_declaration' means null.
+  const hand = checkOf(bd, "hand");
+  if (hand && hand.status !== "skipped") m.set("listing.hand_declared", hand.reason === "no_declaration" ? null : hand.declared ?? null);
+  // km check, in its own order (checks.ts): 'no_declaration' carries neither value; 'no_official_km' means
+  // km_at_last_test null and says nothing about the test date; every later branch carries both.
+  const kc = checkOf(bd, "km");
+  if (kc && kc.status !== "skipped" && kc.reason !== "no_declaration") {
+    m.set("car.km_at_last_test", kc.reason === "no_official_km" ? null : kc.official ?? null);
+    if (kc.reason !== "no_official_km") m.set("car.mivchan_acharon_dt", kc.reason === "no_test_date" ? null : kc.official_date ?? null);
+  }
+  return m;
+}
+function currentInputs(input: ScoringInput): Map<string, unknown> {
+  const { listing, car } = input;
+  return new Map<string, unknown>([
+    ["listing.price", listing.price],
+    ["listing.km_declared", listing.km_declared],
+    ["listing.hand_declared", listing.hand_declared],
+    ["car.hand", car.hand],
+    ["car.ownership_history", ownersKey(car.ownership_history)],
+    ["car.km_at_last_test", car.km_at_last_test],
+    ["car.mivchan_acharon_dt", car.mivchan_acharon_dt === null ? null : dateToIso(car.mivchan_acharon_dt)],
+    ["car.test_expiry", car.test_expiry === null ? null : dateToIso(car.test_expiry)],
+  ]);
+}
+
+// The norm values the stored breakdown carries. median_condition only through typical_condition, which
+// the engine writes only when the price row scored — when it is absent the stored median_condition is
+// unknown and stays out of the comparison. market_row records whether there was a norm row at all.
+function storedNorm(bd: StoredBreakdown): Map<string, unknown> {
+  const m = new Map<string, unknown>();
+  const price = rawOf(bd, "price"), km = rawOf(bd, "km");
+  m.set("market_row", price && "median_price" in price ? "present" : "none");
+  if (price && "median_price" in price) m.set("median_price", price.median_price);
+  if (price && "sample_size" in price) m.set("sample_size", price.sample_size);
+  if (price && "window_days" in price) m.set("window_days", price.window_days);
+  if (km && "median_km" in km) m.set("median_km", km.median_km);
+  if (typeof bd.typical_condition === "number") m.set("median_condition", bd.typical_condition);
+  return m;
+}
+function currentNorm(market: ScoringInput["market"]): Map<string, unknown> {
+  const m = new Map<string, unknown>();
+  m.set("market_row", market === null ? "none" : "present");
+  if (market === null) return m;
+  m.set("median_price", market.median_price);
+  m.set("sample_size", market.sample_size);
+  m.set("window_days", market.window_days);
+  m.set("median_km", market.median_km);
+  m.set("median_condition", market.median_condition === null ? null : round(market.median_condition));
+  return m;
 }
 
 async function main() {
@@ -112,8 +238,12 @@ async function main() {
           market = { id: n.id, median_price: n.median_price, median_km: n.median_km, median_condition: n.median_condition, sample_size: n.sample_size, window_days: n.window_days };
         }
       }
-      const result = scoreListing({ ...subject, market }, now);
-      scored.push({ listing_id: l.id, plate, year: subject.car.year, price: l.price, market_stats_id: market?.id ?? null, result, stored: { score: l.score, condition_score: l.condition_score, confidence: l.confidence } });
+      const input: ScoringInput = { ...subject, market };
+      const result = scoreListing(input, now);
+      scored.push({
+        listing_id: l.id, plate, year: subject.car.year, price: l.price, market_stats_id: market?.id ?? null, input, result,
+        stored: { score: l.score, condition_score: l.condition_score, confidence: l.confidence, engine_version: l.engine_version, scored_at: l.scored_at, breakdown: l.score_breakdown },
+      });
     } catch (e) {
       failed.push({ listing_id: l.id, plate, error: (e as Error).message });
     }
@@ -153,14 +283,57 @@ async function main() {
   log(`  ${scored.filter((s) => s.result.deal_score !== null).length.toString().padStart(4)}  scored`);
   log(`  ${scored.filter((s) => s.result.deal_score === null).length.toString().padStart(4)}  null`);
 
-  // ---------- Day 12 §6: regression against listings, and the reality delta ----------
-  log(`\n===== REGRESSION vs listings (score, condition_score, confidence) =====`);
-  const regressed = scored.filter(
-    (s) => s.result.deal_score !== s.stored.score || s.result.condition_score !== s.stored.condition_score || s.result.confidence.level !== s.stored.confidence,
-  );
-  log(`regression count: ${regressed.length} (must be 0)`);
-  for (const s of regressed) {
-    log(`listing ${s.listing_id} (${s.plate}): score ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)}; condition_score ${fmt(s.stored.condition_score)} -> ${fmt(s.result.condition_score)}; confidence ${s.stored.confidence ?? "-"} -> ${s.result.confidence.level}`);
+  // ---------- Day 13 §1: regression against listings, every difference classified ----------
+  log(`\n===== REGRESSION vs listings (score, condition_score, confidence; engine_version) =====`);
+  const labelled: { s: Scored; label: Label; head: string; detail: string[] }[] = [];
+  for (const s of scored) {
+    const cur = { score: s.result.deal_score, condition_score: s.result.condition_score, confidence: s.result.confidence.level as string };
+    const sto = { score: s.stored.score, condition_score: s.stored.condition_score, confidence: s.stored.confidence };
+    const head = `score ${fmt(sto.score)} -> ${fmt(cur.score)}; condition_score ${fmt(sto.condition_score)} -> ${fmt(cur.condition_score)}; confidence ${sto.confidence ?? "-"} -> ${cur.confidence}`;
+    const detail: string[] = [];
+    let label: Label;
+
+    if (s.stored.engine_version !== null && s.stored.engine_version !== ENGINE_VERSION) {
+      label = "VERSION";
+      detail.push(`stored engine_version ${s.stored.engine_version} != current ${ENGINE_VERSION}: listed, not compared`);
+    } else if (s.stored.scored_at === null) {
+      label = "NEW";
+      detail.push(`no stored score at all (scored_at null, engine_version ${s.stored.engine_version ?? "null"}): first scoring`);
+    } else if (same(sto, cur)) {
+      continue; // stored and recomputed agree — no line
+    } else {
+      const bd = (s.stored.breakdown ?? null) as StoredBreakdown | null;
+      // CLOCK: the same inputs and the same (today's) norm row, only `now` moved back to scored_at.
+      const back = scoreListing(s.input, s.stored.scored_at);
+      const then = { score: back.deal_score, condition_score: back.condition_score, confidence: back.confidence.level as string };
+      const dataDiffs = bd === null ? [] : diffMaps(storedInputs(bd), currentInputs(s.input));
+      const normDiffs = bd === null ? [] : diffMaps(storedNorm(bd), currentNorm(s.input.market));
+      const cellMoved = normDiffs.some((d) => d.startsWith("sample_size") || d.startsWith("window_days") || d.startsWith("market_row"));
+      if (same(then, sto)) {
+        label = "CLOCK";
+        detail.push(`recomputed with now = stored scored_at ${s.stored.scored_at.toISOString()}: ${fmt(then.score)} / ${fmt(then.condition_score)} / ${then.confidence} = the stored values (same inputs, same norm row as today)`);
+      } else if (dataDiffs.length) {
+        label = "DATA";
+        for (const d of dataDiffs) detail.push(`input ${d}`);
+      } else if (normDiffs.length && cellMoved) {
+        label = "NORM";
+        for (const d of normDiffs) detail.push(`norm ${d}`);
+      } else {
+        label = "UNEXPLAINED";
+        if (bd === null) detail.push(`listings.score_breakdown is null: neither DATA nor NORM could be checked`);
+        detail.push(`at the stored scored_at ${s.stored.scored_at.toISOString()}: ${fmt(then.score)} / ${fmt(then.condition_score)} / ${then.confidence} - not the stored values`);
+        for (const d of normDiffs) detail.push(`norm ${d} (same sample_size and window_days: same set, different norm)`);
+      }
+    }
+    labelled.push({ s, label, head, detail });
+  }
+  const labelCount = (l: Label) => labelled.filter((x) => x.label === l).length;
+  log(`regression count: ${labelCount("UNEXPLAINED")} (must be 0) = UNEXPLAINED only; ${LABELS.map((l) => `${l} ${labelCount(l)}`).join(", ")}; unchanged ${scored.length - labelled.length} of ${scored.length}`);
+  log(`DATA compares the inputs the stored breakdown carries: ${DATA_COVERS.join("; ")}`);
+  log(`DATA cannot see (not carried in the breakdown): ${DATA_MISSING.join("; ")}`);
+  for (const x of labelled) {
+    log(`${x.label.padEnd(11)} | listing ${x.s.listing_id} (${x.s.plate}) | ${x.head}`);
+    for (const d of x.detail) log(`              ${d}`);
   }
 
   log(`\n===== REALITY DELTA (condition_by_reality !== condition_score) =====`);
