@@ -34,7 +34,14 @@
 //                              listings whose recorded `overpriced` entry is triggered, with their place in the peace_of_mind order.
 // Rules v3 (part 4 §1): peace_of_mind is condition alone; the deal floor is recorded (`overpriced`, effect PEACE_OF_MIND_FLOOR_EFFECT)
 // and does not bar, so ELIGIBILITY reports it as its own count line, not as a reason.
-// The finish test (§3 of part 3) keeps three lines; distinct cars and double wins are reported, not failed.
+// The finish test is the library's finishTest() (src/lib/selection/finish.ts), printed here in Day 14 rules v5's
+// claims (§0.5); distinct cars and double wins stay reported, not failed.
+// Rules v5 (Day 14 run B, §0.1–§0.4, P5): a pick requires registry ownership history — a listing whose invoice
+// history row is not sourced 'mot' stays listed and keeps its rank, wins nothing, and cannot be the runner-up. This
+// script adds: UNVERIFIED HISTORY (who the rule barred, and every blocked_first fact — the counterfactual winner the
+// rule kept out of a category), the runner-up's also_won, and the NO-DEAL TAIL in its new order (NO_DEAL_ORDER =
+// price_asc, ties first_seen_at then listing_id). The reader is unchanged: it never selected listings.condition_score
+// or listings.confidence — Stage B has always read the sums out of the invoice.
 // Rules v4 (part 5 §3–§4): each listing gets new_price = the latest published_at row of new_car_prices on the car's key. Since part 6
 // the key is three columns, no split: new_car_prices.degem_code = models.degem_code (the same makeDegemCode string), sug_degem =
 // models.vehicle_class, shnat_yitzur = cars.year; null when no row matches. The library's above_new_price rule (out at >= PRICE_VS_NEW_CEILING_PCT, effect ABOVE_NEW_PRICE_EFFECT) is reported as:
@@ -55,13 +62,16 @@ import {
   PEACE_OF_MIND_DEAL_FLOOR,
   PEACE_OF_MIND_FLOOR_EFFECT,
   PRICE_VS_NEW_CEILING_PCT,
+  NO_DEAL_ORDER,
   RULES_VERSION,
   RUNNER_UP_DEAL_GAP,
   RUNNER_UP_PRICE_BAND_PCT,
   SIMILARITY_THRESHOLD,
   TOO_SIMILAR_EFFECT,
+  UNVERIFIED_HISTORY_EFFECT,
   categoryOrder,
   distance,
+  finishTest,
   selectThree,
   type CandidateListing,
   type Category,
@@ -158,10 +168,11 @@ type Loaded = {
 
 // The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c, part 4 §1), for the
 // eligibility counts. The deal floor blocks peace_of_mind only under floor effect 'excluded'; under 'none' it is recorded.
+// Day 14 rules v5: unverified_history bars all three (§0.1), so it is a reason under each of them.
 const REASONS_OF: Record<Category, string[]> = {
-  best_value: ["thin_cell", "no_deal_score"],
-  peace_of_mind: ["thin_cell", "no_condition_by_reality", ...(PEACE_OF_MIND_FLOOR_EFFECT === "excluded" ? ["no_deal_score", "overpriced"] : [])],
-  cheapest: ["thin_cell", "no_condition_vs_typical", "below_floor"],
+  best_value: ["thin_cell", "no_deal_score", "unverified_history"],
+  peace_of_mind: ["thin_cell", "no_condition_by_reality", "unverified_history", ...(PEACE_OF_MIND_FLOOR_EFFECT === "excluded" ? ["no_deal_score", "overpriced"] : [])],
+  cheapest: ["thin_cell", "no_condition_vs_typical", "below_floor", "unverified_history"],
 };
 
 async function main() {
@@ -285,7 +296,7 @@ async function main() {
   const openRows = await db.dealer_commercial.count({ where: { OR: [{ agreement_end: null }, { agreement_end: { gt: now } }] } });
 
   log(
-    `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}, peace_of_mind_floor_effect = ${PEACE_OF_MIND_FLOOR_EFFECT}, above_new_price_effect = ${ABOVE_NEW_PRICE_EFFECT}`,
+    `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}, peace_of_mind_floor_effect = ${PEACE_OF_MIND_FLOOR_EFFECT}, above_new_price_effect = ${ABOVE_NEW_PRICE_EFFECT}, unverified_history_effect = ${UNVERIFIED_HISTORY_EFFECT}, no_deal_order = ${NO_DEAL_ORDER}`,
   );
   log(
     `constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}`,
@@ -312,7 +323,10 @@ async function main() {
   const R = (id: number) => resultOf.get(id)!;
   const bd = (id: number) => P(id).candidate.breakdown;
   // the above_new_price rule's value (price / new_price, %) as recorded in the trace; null when not evaluated or no entry (sold_strong)
-  const pctOfNew = (id: number): number | null => R(id).trace.find((t) => t.rule === "above_new_price")?.value ?? null;
+  const pctOfNew = (id: number): number | null => {
+    const v = R(id).trace.find((t) => t.rule === "above_new_price")?.value ?? null;
+    return typeof v === "number" ? v : null; // RuleTrace.value is number | string | null since rules v5; this rule's is a number
+  };
   const pctText = (id: number) => (pctOfNew(id) === null ? "-" : `${pctOfNew(id)}%`);
 
   // ---------- 4. THE THREE ----------
@@ -388,10 +402,16 @@ async function main() {
       log(`  recorded: value null | threshold ${ru.threshold} | triggered ${ru.triggered} | not evaluated: ${ru.context.reason} (band ${ru.context.band_pct}%)`);
     } else {
       const rp = P(ru.context.runner_up as number);
-      log(`  recorded: value (gap) ${fmt(ru.value)} | threshold ${ru.threshold} | triggered ${ru.triggered ? "YES" : "no"} | runner-up ${rp.plate} (listing ${rp.candidate.listing_id}) | price_over_pct ${ru.context.price_over_pct}`);
+      const alsoWonRec = (ru.context.also_won as Category[] | undefined) ?? [];
+      log(
+        `  recorded: value (gap) ${fmt(typeof ru.value === "number" ? ru.value : null)} | threshold ${ru.threshold} | triggered ${ru.triggered ? "YES" : "no"} | runner-up ${rp.plate} (listing ${rp.candidate.listing_id}) | price_over_pct ${ru.context.price_over_pct}${alsoWonRec.length ? ` | also_won ${alsoWonRec.join(" + ")}` : ""}`,
+      );
     }
     const summary = res.runner_ups.cheapest;
-    log(`  runner_ups.cheapest: ${summary ? `listing ${summary.listing_id} (${P(summary.listing_id).plate}), gap ${fmt(summary.gap)}, price_over_pct ${summary.price_over_pct}, triggered ${summary.triggered}` : "null"}`);
+    // P1: a runner-up that is a category winner is recorded, never skipped — also_won says which categories.
+    log(
+      `  runner_ups.cheapest: ${summary ? `listing ${summary.listing_id} (${P(summary.listing_id).plate}), gap ${fmt(summary.gap)}, price_over_pct ${summary.price_over_pct}, triggered ${summary.triggered}, also_won ${summary.also_won?.join(" + ") ?? "-"}` : "null"}`,
+    );
     // tuning: every shown listing eligible for cheapest priced above C by up to RUNNER_UP_TUNING_WINDOW_PCT
     const window = shown
       .filter((x) => x.eligibility.cheapest && x.car_id !== cp.candidate.car_id)
@@ -530,22 +550,53 @@ async function main() {
     }
   }
 
+  // ---------- 6b. UNVERIFIED HISTORY (Day 14 rules v5 §0.1–§0.2, P5) ----------
+  log(`\n===== UNVERIFIED HISTORY (a pick needs registry history; effect in force: ${UNVERIFIED_HISTORY_EFFECT}) =====`);
+  const unvEntries = res.results.map((r) => ({ r, t: r.trace.find((x) => x.rule === "unverified_history") ?? null }));
+  const barred = unvEntries.filter((x) => x.t !== null && x.t.triggered);
+  log(`  recorded on ${unvEntries.filter((x) => x.t !== null).length} of ${res.results.length} listings; triggered on ${barred.length}`);
+  if (barred.length === 0) log(`  no listing in this pool is barred by the rule`);
+  for (const { r, t } of barred) {
+    log(
+      `  ${P(r.listing_id).plate} | listing ${r.listing_id} | rank ${r.rank ?? "-"} (${r.status}) | history source ${t?.value ?? "-"} (row ${t?.context.history_row_status}) | effect ${t?.effect} | categories won ${r.categories.length ? r.categories.join(" + ") : "none"}`,
+    );
+  }
+  // §0.2: the counterfactual winner the rule kept out of a category. Expected on today's pool: none.
+  const blocked = unvEntries.filter((x) => ((x.t?.context.blocked_first as Category[] | undefined) ?? []).length > 0);
+  log(`  blocked_first: ${blocked.length === 0 ? "none — in every category the counterfactual winner is the actual winner" : ""}`);
+  for (const { r, t } of blocked) {
+    for (const c of t?.context.blocked_first as Category[]) {
+      log(`    ${c}: ${P(r.listing_id).plate} (listing ${r.listing_id}, rank ${r.rank ?? "-"}) would have won but for the rule; the pick is ${res.picks[c] === null ? "empty" : `${P(res.picks[c] as number).plate} (listing ${res.picks[c]})`}`);
+    }
+  }
+
+  // ---------- 6c. NO-DEAL TAIL (Day 14 rules v5 §0.3, P5) ----------
+  const tail = shown.filter((r) => bd(r.listing_id).deal_score === null);
+  const ranked = shown.filter((r) => bd(r.listing_id).deal_score !== null);
+  log(`\n===== NO-DEAL TAIL (NO_DEAL_ORDER = ${NO_DEAL_ORDER}, ties first_seen_at then listing_id) =====`);
+  log(`  ${ranked.length} shown listing(s) have a deal score and take ranks 1..${ranked.length}; ${tail.length} have none`);
+  if (tail.length === 0) log(`  the tail is empty`);
+  else {
+    log("rank | plate | listing | price | first_seen_at | condition_score | eligibility reasons");
+    for (const r of tail) {
+      const p = P(r.listing_id);
+      log(`${r.rank} | ${p.plate} | ${r.listing_id} | ${p.candidate.price} | ${p.candidate.first_seen_at} | ${fmt(bd(r.listing_id).condition_score)} | ${r.eligibility.reasons.join(" + ") || "-"}`);
+    }
+    const first = tail[0].rank as number;
+    if (first !== ranked.length + 1) throw new Error(`no-deal tail starts at rank ${first}, but ${ranked.length} shown listings have a deal score — the tail must come after all of them`);
+  }
+
   // ---------- 7. FINISH TEST ----------
-  log(`\n===== FINISH TEST =====`);
+  log(`\n===== FINISH TEST (rules v${RULES_VERSION} claims, §0.5) =====`);
   const pickIds = CATEGORY_PRIORITY.map((c) => res.picks[c]).filter((x): x is number => x !== null);
-  const ranks = shown.map((r) => r.rank as number).sort((a, b) => a - b);
-  const checks: [string, boolean][] = [
-    ["three picks present", pickIds.length === CATEGORY_PRIORITY.length],
-    ["shown ranks contiguous 1..n", ranks.every((v, i) => v === i + 1)],
-    ["best_value pick has rank 1", res.picks.best_value !== null && R(res.picks.best_value).rank === 1],
-  ];
-  for (const [name, ok] of checks) log(`  ${ok ? "ok  " : "FAIL"} ${name}`);
+  const ft = finishTest(res);
+  for (const c of ft.checks) log(`  ${c.ok ? "ok  " : "FAIL"} ${c.claim}${c.detail ? `\n         ${c.detail}` : ""}`);
   // part 3 §3: reported, non-failing
   const distinctCars = new Set(pickIds.map((x) => R(x).car_id)).size;
   const doubleWinners = res.results.filter((r) => r.categories.length > 1);
   log(`  info distinct cars among the picks: ${distinctCars}`);
   log(`  info double wins: ${doubleWinners.length}${doubleWinners.map((r) => ` (car ${P(r.listing_id).plate} won ${r.categories.join(" + ")})`).join("")}`);
-  const finish = checks.every(([, ok]) => ok) ? "PASS" : "FAIL";
+  const finish = ft.pass ? "PASS" : "FAIL";
   log(`finish test: ${finish}`);
 
   // ---------- 8. SIMILARITY DISTRIBUTION ----------
@@ -583,11 +634,22 @@ async function main() {
 
   // ---------- 9. RANK LIST ----------
   log(`\n===== RANK LIST (top ${RANK_LIST_TOP} of ${shown.length} shown) =====`);
-  log("rank | plate | year | price | % of new | deal_score | condition_score | condition_by_reality | categories");
-  for (const r of shown.slice(0, RANK_LIST_TOP)) {
+  log("rank | plate | year | price | % of new | deal_score | condition_score | condition_by_reality | history source | categories");
+  const rankLine = (r: (typeof shown)[number]) => {
     const p = P(r.listing_id);
     const b = bd(r.listing_id);
-    log(`${r.rank} | ${p.plate} | ${p.candidate.year} | ${p.candidate.price} | ${pctText(r.listing_id)} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${fmt(b.condition_by_reality)} | ${r.categories.length ? r.categories.join(" + ") : "-"}${r.verify_availability ? " (verify availability)" : ""}`);
+    const t = r.trace.find((x) => x.rule === "unverified_history");
+    log(`${r.rank} | ${p.plate} | ${p.candidate.year} | ${p.candidate.price} | ${pctText(r.listing_id)} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${fmt(b.condition_by_reality)} | ${t?.value ?? "-"}${t?.triggered ? " (unverified)" : ""} | ${r.categories.length ? r.categories.join(" + ") : "-"}${r.verify_availability ? " (verify availability)" : ""}`);
+  };
+  for (const r of shown.slice(0, RANK_LIST_TOP)) rankLine(r);
+  // Every pick and every listing the rules v5 eligibility bars, wherever it ranks — the finish test's third claim is
+  // about exactly those, so the report shows them even when they sit below RANK_LIST_TOP.
+  const alsoWorthShowing = shown
+    .slice(RANK_LIST_TOP)
+    .filter((r) => r.categories.length > 0 || (r.trace.find((x) => x.rule === "unverified_history")?.triggered ?? false));
+  if (alsoWorthShowing.length) {
+    log(`-- below the top ${RANK_LIST_TOP}: the picks and the listings the rules bar`);
+    for (const r of alsoWorthShowing) rankLine(r);
   }
 
   writeReport(`${modelDisplay}, ${pool.length} listings — filters: ${filters} — finish test ${finish}`);

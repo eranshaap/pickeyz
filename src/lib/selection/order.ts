@@ -2,6 +2,7 @@
 // candidate orders with their tie-breaks (§2), and the representative order (§4.5).
 // Every order ends in listing_id, so it is total and the result is deterministic.
 
+import { NO_DEAL_ORDER } from "./constants";
 import type { CandidateListing, Category } from "./types";
 import { cmpNullsLast, parseIso } from "./util";
 
@@ -25,10 +26,29 @@ function chain(...cmps: Cmp[]): Cmp {
   };
 }
 
-// §4.2 (as answered in §11.2): the same tie-breaks as best_value — deal_score desc → condition_score desc → price asc →
-// first_seen_at asc → listing_id asc; nulls last at each nullable step, so the null deal_scores are ordered among themselves
-// by condition_score desc → price → first_seen_at → listing_id. Consequence: the best_value pick is always rank 1 among shown.
-export const stageAOrder: Cmp = chain(byDealScoreDesc, byConditionDesc, byPriceAsc, byFirstSeenAsc, byListingIdAsc);
+// §4.2 (as answered in §11.2), for the listings that HAVE a deal score: deal_score desc → condition_score desc (from the
+// invoice — Day 14 run B: the listings column is gone, the sum was always the same value) → price asc → first_seen_at asc →
+// listing_id asc.
+const rankedOrder: Cmp = chain(byDealScoreDesc, byConditionDesc, byPriceAsc, byFirstSeenAsc, byListingIdAsc);
+
+// Day 14 rules v5 (§0.3): the tail — the listings with no deal score — is ordered by NO_DEAL_ORDER, ties by
+// first_seen_at (oldest first), then listing_id. The map makes the constant the thing that decides, not a comment.
+const NO_DEAL_CMP: Readonly<Record<typeof NO_DEAL_ORDER, Cmp>> = {
+  price_asc: chain(byPriceAsc, byFirstSeenAsc, byListingIdAsc),
+};
+const noDealOrder: Cmp = NO_DEAL_CMP[NO_DEAL_ORDER];
+
+// The Stage A order (also the final rank, §4.6): everything with a deal score first, in rankedOrder; then the tail, in
+// noDealOrder. Replaces run A's fall-through, which ordered the tail by condition_score and then price.
+// The best_value pick is no longer always rank 1: a listing the rules v5 eligibility bars keeps its rank above it (§0.1).
+export const stageAOrder: Cmp = (a, b) => {
+  const da = a.breakdown.deal_score;
+  const db = b.breakdown.deal_score;
+  if (da === null && db === null) return noDealOrder(a, b);
+  if (da === null) return 1;
+  if (db === null) return -1;
+  return rankedOrder(a, b);
+};
 
 // §2: the category key, then its tie-breaks, in order. best_value's order is the Stage A order (§11.2).
 export const categoryOrder: Readonly<Record<Category, Cmp>> = {

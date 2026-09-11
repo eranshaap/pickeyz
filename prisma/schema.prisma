@@ -95,9 +95,7 @@ model listings {
   delisted_at         DateTime?
   // Stage A — precomputed against the comparison group's median.
   score                Float? // the deal score (Day 11: price_advantage + condition_vs_typical)
-  score_breakdown      Json? // the whole ScoreResult of src/lib/scoring
-  confidence           ConfidenceLevel? // Day 11: from the engine's item count (0 high, 1 medium, 2+ low)
-  condition_score      Float? // Day 11: history row + km row, % of value
+  score_breakdown      Json? // the whole ScoreResult of src/lib/scoring — Day 14 run B: the only place the condition sum and the confidence level live
   engine_version       Int? // Day 11: null until first scored
   owners_at_first_seen Int? // Day 11: rows in the car's ownership_history when the listing was first seen
   scored_at            DateTime?
@@ -233,9 +231,7 @@ model listing_scores {
   model_stats_id  Int? // Day 14: the model_stats row (km slope) this score used
   pool_stats_id   Int? // Day 14: the pool_stats row (anchor curve) this score used
   deal_score      Float?
-  condition_score Float?
-  confidence      ConfidenceLevel
-  breakdown       Json // the full ScoreResult
+  breakdown       Json // the full ScoreResult — Day 14 run B: the condition sum and the confidence level are read from here
 
   listing      listings      @relation(fields: [listing_id], references: [id])
   market_stats market_stats? @relation(fields: [market_stats_id], references: [id])
@@ -296,11 +292,4 @@ model new_car_prices {
   @@unique([tozeret_cd, degem_cd, shnat_yitzur, sug_degem, published_at])
   @@index([tozeret_cd, degem_cd, shnat_yitzur, sug_degem])
   @@index([degem_code, sug_degem, shnat_yitzur])
-}
-
-// Day 11: the scoring engine's confidence level (src/lib/scoring/confidence.ts).
-enum ConfidenceLevel {
-  high
-  medium
-  low
 }

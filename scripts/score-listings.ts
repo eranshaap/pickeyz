@@ -42,11 +42,16 @@
 // The count of each sub-rule is printed and compared against the §6.4 populations it must equal.
 //
 // --write (§22.2): one transaction, one statement per table — a createMany of listing_scores rows
-// (§19.1) and one UPDATE listings … FROM unnest(...) setting score = deal_score, condition_score,
-// confidence = level, score_breakdown = the result, scored_at = now, market_stats_id / model_stats_id /
-// pool_stats_id = the ids of the three rows the score used (or null), engine_version = ENGINE_VERSION
-// (and updated_at, which Prisma's update would have touched). Prisma's default transaction timeout.
-// The report is printed in both modes.
+// (§19.1) and one UPDATE listings … FROM unnest(...) setting score = deal_score, score_breakdown = the
+// result, scored_at = now, market_stats_id / model_stats_id / pool_stats_id = the ids of the three rows
+// the score used (or null), engine_version = ENGINE_VERSION (and updated_at, which Prisma's update would
+// have touched). Prisma's default transaction timeout. The report is printed in both modes.
+//
+// Day 14 run B (BRIEF rules v5, §6.2): the derived copy columns condition_score and confidence are gone from
+// both tables, so neither statement writes them. Nothing else about the write changed — the invoice is
+// untouched, ENGINE_VERSION stays 3, and the invoice keeps carrying the condition sum and the confidence
+// level exactly as before. The classifier's STORED side now reads those two out of listings.score_breakdown
+// instead of out of the columns; its printed lines are unchanged.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
@@ -78,7 +83,9 @@ type Scored = {
   pool_stats_id: number | null;
   input: ScoringInput; // kept for the §1 CLOCK check: the same inputs, a different `now`
   result: ScoreResult;
-  // Day 13 §1: what listings holds now — the classifier compares against all of it.
+  // Day 13 §1: what listings holds now — the classifier compares against all of it. Day 14 run B: score comes
+  // from the column (it stays); condition_score and the confidence level come out of the stored invoice, which is
+  // where they have always also been — §3 proved the two agreed on all 918 rows before the columns were dropped.
   stored: {
     score: number | null;
     condition_score: number | null;
@@ -120,6 +127,14 @@ type StoredBreakdown = {
 };
 
 // The stored typical under whichever name that engine wrote it (§0.2 renamed it, it is the same slot).
+// Day 14 run B (§6.2): the two values the dropped columns used to hold, read from the stored invoice.
+// A listing that has never been scored has no invoice — both are null, exactly as the columns were.
+function storedSums(breakdown: unknown): { condition_score: number | null; confidence: string | null } {
+  const bd = (breakdown ?? null) as { condition_score?: number | null; confidence?: { level?: string } } | null;
+  if (bd === null) return { condition_score: null, confidence: null };
+  return { condition_score: bd.condition_score ?? null, confidence: bd.confidence?.level ?? null };
+}
+
 function storedTypical(bd: StoredBreakdown): number | null {
   if (typeof bd.typical_history === "number") return bd.typical_history;
   if (typeof bd.typical_condition === "number") return bd.typical_condition;
@@ -475,7 +490,7 @@ async function main() {
         make: m.make ?? "?", model: m.model ?? "?",
         market_stats_id: market?.id ?? null, model_stats_id: model_stats?.id ?? null, pool_stats_id: pool_stats?.id ?? null,
         input, result,
-        stored: { score: l.score, condition_score: l.condition_score, confidence: l.confidence, engine_version: l.engine_version, scored_at: l.scored_at, breakdown: l.score_breakdown },
+        stored: { ...storedSums(l.score_breakdown), score: l.score, engine_version: l.engine_version, scored_at: l.scored_at, breakdown: l.score_breakdown },
       });
     } catch (e) {
       failed.push({ listing_id: l.id, plate, error: (e as Error).message });
@@ -696,8 +711,6 @@ async function main() {
   // §22.2: one statement per table, inside one transaction, default timeout.
   const ids = scored.map((s) => s.listing_id);
   const deal = scored.map((s) => s.result.deal_score);
-  const cond = scored.map((s) => s.result.condition_score);
-  const level = scored.map((s) => s.result.confidence.level);
   const breakdown = scored.map((s) => JSON.stringify(s.result));
   const msid = scored.map((s) => s.market_stats_id);
   const mdid = scored.map((s) => s.model_stats_id);
@@ -707,15 +720,13 @@ async function main() {
       data: scored.map((s) => ({
         listing_id: s.listing_id, scored_at: now, engine_version: ENGINE_VERSION,
         market_stats_id: s.market_stats_id, model_stats_id: s.model_stats_id, pool_stats_id: s.pool_stats_id,
-        deal_score: s.result.deal_score, condition_score: s.result.condition_score, confidence: s.result.confidence.level,
+        deal_score: s.result.deal_score,
         breakdown: s.result as unknown as Prisma.InputJsonValue,
       })),
     });
     const upd = await tx.$executeRaw`
       UPDATE "listings" AS l SET
         "score" = v.score,
-        "condition_score" = v.condition_score,
-        "confidence" = v.confidence::"ConfidenceLevel",
         "score_breakdown" = v.breakdown,
         "scored_at" = ${now},
         "market_stats_id" = v.market_stats_id,
@@ -723,8 +734,8 @@ async function main() {
         "pool_stats_id" = v.pool_stats_id,
         "engine_version" = ${ENGINE_VERSION},
         "updated_at" = ${now}
-      FROM unnest(${ids}::int[], ${deal}::float8[], ${cond}::float8[], ${level}::text[], ${breakdown}::jsonb[], ${msid}::int[], ${mdid}::int[], ${plid}::int[])
-        AS v(id, score, condition_score, confidence, breakdown, market_stats_id, model_stats_id, pool_stats_id)
+      FROM unnest(${ids}::int[], ${deal}::float8[], ${breakdown}::jsonb[], ${msid}::int[], ${mdid}::int[], ${plid}::int[])
+        AS v(id, score, breakdown, market_stats_id, model_stats_id, pool_stats_id)
       WHERE l."id" = v.id`;
     if (ins.count !== scored.length || upd !== scored.length) {
       throw new Error(`write: expected ${scored.length} rows, inserted ${ins.count} listing_scores and updated ${upd} listings — rolled back`);

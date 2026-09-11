@@ -6,21 +6,25 @@
 //
 // Pipeline (§4, order fixed):
 //   4.1 gate      sold_strong -> excluded, no rules run; sold medium -> verify_availability; eligibility per §2
-//                 (part 4 §1: peace_of_mind is condition alone; the deal floor is recorded by the overpriced rule, it does not bar)
+//                 (part 4 §1: peace_of_mind is condition alone; the deal floor is recorded by the overpriced rule, it does not bar;
+//                 Day 14 rules v5 §0.1: unverified_history bars all three categories — the listing stays listed and keeps its rank)
 //   4.2 stage A   order everyone that passed the gate -> stage_a_place
 //   4.3 rule      below_threshold (price / median_price); above_new_price (price / new_price, part 5 §3) in the same pass;
-//                 overpriced recorded on every peace_of_mind-eligible listing (part 4 §1)
+//                 overpriced recorded on every peace_of_mind-eligible listing (part 4 §1); unverified_history recorded
+//                 on everyone that passed the gate (Day 14 rules v5 §0.1)
 //   4.4 rule      dealer_not_visible
 //   4.5 merge     duplicate — one representative per car among the survivors
 //   4.6 rank      representatives in the Stage A order -> rank 1..n, status shown
 //   4.7 picks     best_value -> peace_of_mind -> cheapest, with double_winner and too_similar traced; a car may win
-//                 more than one category (part 3 §1); then cheapest_runner_up recorded on the cheapest pick (part 3 §2b)
+//                 more than one category (part 3 §1); then blocked_first (§0.2) and cheapest_runner_up recorded on the
+//                 cheapest pick (part 3 §2b, with P1's also_won)
 //
 // Module split: gate.ts (4.1, the overpriced measurement) · order.ts (the comparators of 4.2, 4.6, §2 and 4.5) · rules.ts (4.3–4.5) ·
-// picks.ts (4.7, runner-up) · similarity.ts (distance, 4.8) · constants.ts (§5) · types.ts (§3) · util.ts (helpers).
+// picks.ts (4.7, runner-up, blocked_first) · similarity.ts (distance, 4.8) · finish.ts (the finish test's claims) ·
+// constants.ts (§5) · types.ts (§3) · util.ts (helpers).
 
 import { ABOVE_NEW_PRICE_EFFECT, CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
-import { eligibility, isSoldMedium, isSoldStrong, overpriced } from "./gate";
+import { eligibility, isSoldMedium, isSoldStrong, overpriced, unverifiedHistory } from "./gate";
 import { stageAOrder } from "./order";
 import { pick } from "./picks";
 import { aboveNewPrice, belowThreshold, dealerNotVisible, mergeByCar, type Work } from "./rules";
@@ -28,6 +32,8 @@ import type { CandidateListing, ListingResult, PeaceOfMindFloorEffect, Selection
 import { cmpNullsLast } from "./util";
 
 export { distance } from "./similarity";
+export { finishTest, type FinishCheck, type FinishTest } from "./finish";
+export { hasVerifiedHistory, historySource, isThinCell } from "./gate";
 export { categoryOrder } from "./order"; // the three category comparators (§2), for callers that list a category by its own order
 export * from "./constants";
 export type {
@@ -103,6 +109,7 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
     aboveNewPrice(w, aboveNewPriceEffect);
   }
   for (const w of passed) overpriced(w, floorEffect);
+  for (const w of passed) unverifiedHistory(w); // Day 14 rules v5 (§0.1): recorded on everyone, acting through eligibility
   for (const w of passed) dealerNotVisible(w);
 
   // 4.5 merge by car, over the survivors

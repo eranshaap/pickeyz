@@ -1,7 +1,8 @@
 // The pick loop (BRIEF §4.7; part 3 §1): for each category in CATEGORY_PRIORITY, walk the eligible shown listings in the
 // category's order; record double_winner and too_similar on every candidate examined; the first candidate not
 // skipped wins. No candidate left → the pick is null and missing[category] = 'no_candidate'.
-// Then the cheapest_runner_up rule (part 3 §2b), recorded on the cheapest pick — never acting.
+// Then §0.2's blocked_first (Day 14 rules v5), and the cheapest_runner_up rule (part 3 §2b), recorded on the
+// cheapest pick — never acting.
 
 import {
   CATEGORY_PRIORITY,
@@ -80,10 +81,35 @@ export function pick(
     }
   }
 
+  blockedFirst(shown, picks);
   return { picks, missing, runner_ups: { cheapest: cheapestRunnerUp(shown, picks.cheapest) } };
 }
 
+// Day 14 rules v5 (§0.2) — per category, the counterfactual winner: the first listing in that category's order that
+// passes every eligibility condition EXCEPT unverified_history. When it is not the actual winner, and the reason it is
+// not is this rule (it is otherwise eligible and the rule is what bars it), its unverified_history record carries
+// blocked_first: [category, ...]. One extra read of an order that already exists — no what-if machinery, no re-run.
+// At most one listing per category can carry it; one listing may carry several categories.
+function blockedFirst(shown: Work[], picks: Record<Category, number | null>): void {
+  for (const category of CATEGORY_PRIORITY) {
+    const first = shown
+      .filter((w) => w.result.eligibility.without_unverified_history[category])
+      .sort((a, b) => categoryOrder[category](a.input, b.input))[0];
+    if (first === undefined) continue;
+    if (first.input.listing_id === picks[category]) continue; // it won — nothing was blocked
+    if (first.result.eligibility[category]) continue; // it is eligible and still did not win: some other rule, not this one
+    const entry = first.result.trace.find((t) => t.rule === "unverified_history");
+    if (entry === undefined) {
+      throw new Error(`selection: listing ${first.input.listing_id} was first for ${category} but for unverified_history, and carries no record of the rule`);
+    }
+    const so_far = (entry.context.blocked_first as Category[] | undefined) ?? [];
+    entry.context = { ...entry.context, blocked_first: [...so_far, category] };
+  }
+}
+
 // part 3 §2b — the runner-up of the cheapest pick C: among the shown listings eligible for cheapest, other than C's car,
+// which since Day 14 rules v5 means fully pick-eligible — the thin-cell gate and unverified_history are both part of
+// eligibility.cheapest (§5.5). Nothing else about the selection changed; P1 adds also_won to what is recorded.
 // priced in (C.price, C.price * (1 + band/100)], the one with the highest deal_score (ties → lower price → earlier
 // first_seen_at → lower listing_id). Recorded on C; value = its deal_score − C's, threshold RUNNER_UP_DEAL_GAP. Never acts.
 function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionResult["runner_ups"]["cheapest"] {
@@ -121,6 +147,8 @@ function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionRe
   const gap = round(dealOf(ru) - dealOf(C), RUNNER_UP_ROUND_DECIMALS);
   const price_over_pct = round(((ru.input.price - C.input.price) / C.input.price) * 100, RUNNER_UP_ROUND_DECIMALS);
   const triggered = gap >= RUNNER_UP_DEAL_GAP;
+  // P1: the categories this same listing won in this search. The pick loop has finished, so this is final.
+  const also_won = [...ru.result.categories];
   C.result.trace.push({
     rule: "cheapest_runner_up",
     type: RULE_TYPE.cheapest_runner_up,
@@ -128,7 +156,7 @@ function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionRe
     threshold: RUNNER_UP_DEAL_GAP,
     triggered,
     effect: "none",
-    context: { runner_up: ru.input.listing_id, price_over_pct, band_pct: RUNNER_UP_PRICE_BAND_PCT },
+    context: { runner_up: ru.input.listing_id, price_over_pct, band_pct: RUNNER_UP_PRICE_BAND_PCT, ...(also_won.length ? { also_won } : {}) },
   });
-  return { listing_id: ru.input.listing_id, gap, price_over_pct, triggered };
+  return { listing_id: ru.input.listing_id, gap, price_over_pct, triggered, ...(also_won.length ? { also_won } : {}) };
 }

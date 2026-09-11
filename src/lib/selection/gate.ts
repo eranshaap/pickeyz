@@ -1,8 +1,8 @@
 // The gate (BRIEF §4.1) and eligibility (§2; part 3 §2a and §2c; part 4 §1), read straight from the invoice. Nothing is recomputed.
 
-import { CHEAPEST_CONDITION_FLOOR, PEACE_OF_MIND_DEAL_FLOOR } from "./constants";
+import { CHEAPEST_CONDITION_FLOOR, PEACE_OF_MIND_DEAL_FLOOR, UNVERIFIED_HISTORY_EFFECT } from "./constants";
 import type { Work } from "./rules";
-import type { CandidateListing, Eligibility, PeaceOfMindFloorEffect } from "./types";
+import type { CandidateListing, Category, Eligibility, PeaceOfMindFloorEffect } from "./types";
 import { RULE_TYPE } from "./types";
 import { invoiceRow } from "./util";
 
@@ -14,14 +14,32 @@ export function isSoldMedium(l: CandidateListing): boolean {
   return l.breakdown.sold_signal.strength === "medium";
 }
 
-// A thin cell: the price row is unavailable with reason thin_cell. Eligible for no category.
+// A thin cell: the price row is unavailable with reason thin_cell. Eligible for no category, and — since the
+// three flags are what the runner-up filters on — not a runner-up either (Day 14 rules v5, §0.4).
 export function isThinCell(l: CandidateListing): boolean {
   const price = invoiceRow(l.breakdown, "price", l.listing_id);
   return price.status === "unavailable" && price.reason === "thin_cell";
 }
 
+// Day 14 rules v5 (§0.1) — the history row's `source` exactly as the engine stored it, or null when the row is
+// not a scored reading. 'mot' = the registry; 'typical' = the cell's median standing in (engine §0.4).
+export function historySource(l: CandidateListing): string | null {
+  const row = invoiceRow(l.breakdown, "history", l.listing_id);
+  return row.source ?? null;
+}
+
+// Eligible for a pick <=> the history row exists as a scored reading AND its source is the registry.
+export function hasVerifiedHistory(l: CandidateListing): boolean {
+  const row = invoiceRow(l.breakdown, "history", l.listing_id);
+  return row.status === "scored" && row.source === "mot";
+}
+
 export function eligibility(l: CandidateListing, floorEffect: PeaceOfMindFloorEffect): Eligibility {
-  if (isThinCell(l)) return { best_value: false, peace_of_mind: false, cheapest: false, reasons: ["thin_cell"] };
+  // The gate (§4.1; Day 14 rules v5 §0.4): a thin cell is eligible for no category — before this rule and after it.
+  if (isThinCell(l)) {
+    const none: Record<Category, boolean> = { best_value: false, peace_of_mind: false, cheapest: false };
+    return { ...none, reasons: ["thin_cell"], without_unverified_history: { ...none } };
+  }
   const b = l.breakdown;
   const best_value = b.deal_score !== null;
   // part 4 §1: peace_of_mind is condition alone — condition_by_reality !== null. The deal floor (part 3 §2c) is recorded by
@@ -39,7 +57,35 @@ export function eligibility(l: CandidateListing, floorEffect: PeaceOfMindFloorEf
   else if (!peace_of_mind && b.deal_score !== null) reasons.push("overpriced");
   if (b.condition_vs_typical === null) reasons.push("no_condition_vs_typical");
   else if (!cheapest) reasons.push("below_floor");
-  return { best_value, peace_of_mind, cheapest, reasons };
+  // Day 14 rules v5 (§0.1): the rule bars all three categories — and, through them, the runner-up (§5.5). The
+  // pre-rule answer is kept beside it: §0.2's blocked_first is the only thing that reads it.
+  const verified = hasVerifiedHistory(l);
+  if (!verified) reasons.push("unverified_history");
+  return {
+    best_value: best_value && verified,
+    peace_of_mind: peace_of_mind && verified,
+    cheapest: cheapest && verified,
+    reasons,
+    without_unverified_history: { best_value, peace_of_mind, cheapest },
+  };
+}
+
+// Day 14 rules v5 (§0.1) — the rule's record, written on everyone that passed the gate (trace completeness, §3).
+// value = the history row's source as stored in the invoice; effect = what happened to this listing (the same
+// convention every rule here follows): UNVERIFIED_HISTORY_EFFECT when it triggered, 'none' otherwise.
+// §0.2 writes blocked_first into this entry's context afterwards, on at most one listing per category.
+export function unverifiedHistory(w: Work): void {
+  const row = invoiceRow(w.input.breakdown, "history", w.input.listing_id);
+  const triggered = !hasVerifiedHistory(w.input);
+  w.result.trace.push({
+    rule: "unverified_history",
+    type: RULE_TYPE.unverified_history,
+    value: historySource(w.input),
+    threshold: null,
+    triggered,
+    effect: triggered ? UNVERIFIED_HISTORY_EFFECT : "none",
+    context: { evaluated: true, history_row_status: row.status, ...(row.status === "unavailable" ? { reason: row.reason ?? null } : {}) },
+  });
 }
 
 // part 4 §1 — the peace_of_mind deal floor as a measurement: on every listing eligible for peace_of_mind, record

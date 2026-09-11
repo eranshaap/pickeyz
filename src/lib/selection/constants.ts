@@ -1,11 +1,12 @@
 // Stage B selection library — every number it uses (BRIEF Day 12 part 2, §5; part 3, §1–§3).
 // Each constant carries its source line as a comment. No other number lives anywhere else in src/lib/selection/.
 
-export const RULES_VERSION = 4;
+export const RULES_VERSION = 5;
 // 1 — Day 12 — first selection rules
 // 2 — Day 12 — double_winner tracking only (a car may win more than one category); cheapest bar -5 (was 0); peace_of_mind deal floor -10; cheapest_runner_up recorded (band 5%, gap 2)
 // 3 — Day 12 — peace_of_mind deal floor tracking only: the category is condition alone by definition; the absolute price ceiling will come from the new-car price file
 // 4 — Day 12 — above_new_price: price as a percent of the car's new list price, out at >= 100 (mechanism); new_price supplied by the caller
+// 5 — Day 14 — unverified_history: a pick requires registry ownership history, effect 'ineligible' (the new effect); the thin-cell gate bars all three categories and the runner-up; the no-deal tail is ordered by price
 
 // below_threshold: a listing priced under this share of its cell's median is an error, not a deal.
 // mechanism — the sum of the engine's caps (history 40 + km 11 = 51), rounded. In force.
@@ -46,6 +47,18 @@ export const RUNNER_UP_PRICE_BAND_PCT = 5;
 // cheapest_runner_up: how many deal_score points above the cheapest pick count as "clearly better".
 // guess — measured from the recorded gap distribution. Recorded only.
 export const RUNNER_UP_DEAL_GAP = 2;
+
+// unverified_history: a pick requires registry ownership history — the invoice's history row must be a real
+// reading sourced from the registry ('mot'). The cell's typical standing in for a car with no registry record
+// ('typical', engine §0.4) is not history the pick can rest on.
+// decision — Day 14 (§0.1). In force. 'ineligible' is the effect this rule introduced: the listing stays in the
+// results and keeps its rank, wins no category, and cannot be the cheapest runner-up.
+export const UNVERIFIED_HISTORY_EFFECT = 'ineligible' as const;
+
+// The order of the listings with no deal score: they come after every ranked listing, cheapest first.
+// decision — Day 14 (§0.3). In force. Ties: first_seen_at (oldest first), then listing_id. Replaces the
+// fall-through that ordered them by condition_score and then price.
+export const NO_DEAL_ORDER = 'price_asc' as const;
 
 export const CATEGORY_PRIORITY = ['best_value', 'peace_of_mind', 'cheapest'] as const;
 

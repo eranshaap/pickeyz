@@ -35,7 +35,9 @@ export type SelectionOptions = {
 export type Category = (typeof CATEGORY_PRIORITY)[number];
 
 // The recorded runner-up of the cheapest pick (part 3, §2b): a little pricier, clearly better deal. null when none was recorded.
-export type RunnerUp = { listing_id: number; gap: number; price_over_pct: number; triggered: boolean };
+// Day 14 rules v5 (P1): also_won lists the categories this same listing won in this search — present only when non-empty.
+// A runner-up that is a category winner is recorded, never skipped.
+export type RunnerUp = { listing_id: number; gap: number; price_over_pct: number; triggered: boolean; also_won?: Category[] };
 
 export type SelectionResult = {
   rules_version: number;
@@ -48,7 +50,15 @@ export type SelectionResult = {
 export type ListingStatus = "shown" | "merged" | "excluded";
 export type ExcludedBy = "sold_strong" | "below_threshold" | "above_new_price" | "dealer_not_visible";
 
-export type Eligibility = { best_value: boolean; peace_of_mind: boolean; cheapest: boolean; reasons: string[] };
+export type Eligibility = {
+  best_value: boolean;
+  peace_of_mind: boolean;
+  cheapest: boolean;
+  reasons: string[];
+  // Day 14 rules v5 (§0.2): the same three flags with the unverified_history rule ignored and nothing else changed —
+  // the counterfactual blocked_first reads, and the only place the pre-rule answer is kept.
+  without_unverified_history: Record<Category, boolean>;
+};
 
 export type ListingResult = {
   listing_id: number;
@@ -63,14 +73,27 @@ export type ListingResult = {
   trace: RuleTrace[];
 };
 
-export type RuleName = "duplicate" | "below_threshold" | "above_new_price" | "overpriced" | "too_similar" | "double_winner" | "dealer_not_visible" | "cheapest_runner_up";
+export type RuleName =
+  | "duplicate"
+  | "below_threshold"
+  | "above_new_price"
+  | "overpriced"
+  | "too_similar"
+  | "double_winner"
+  | "dealer_not_visible"
+  | "cheapest_runner_up"
+  | "unverified_history"; // Day 14 rules v5 (§0.1)
 export type RuleType = "correctness" | "eligibility" | "portfolio";
-export type RuleEffect = "excluded" | "merged" | "recategorized" | "none";
+// Day 14 rules v5 (§0.1): 'ineligible' joins the vocabulary — the listing stays listed and ranked, wins no
+// category, and cannot be the runner-up. It is not 'excluded': nothing is hidden and no rank moves.
+export type RuleEffect = "excluded" | "merged" | "recategorized" | "none" | "ineligible";
 
 export type RuleTrace = {
   rule: RuleName;
   type: RuleType;
-  value: number | null;
+  // A number for every rule that measures one. unverified_history records the history row's `source` as stored in
+  // the invoice ('mot' | 'typical'), which is a string — Day 14 rules v5 (§0.1).
+  value: number | string | null;
   threshold: number | null;
   triggered: boolean;
   effect: RuleEffect;
@@ -87,4 +110,5 @@ export const RULE_TYPE: Readonly<Record<RuleName, RuleType>> = {
   too_similar: "portfolio",
   double_winner: "portfolio",
   cheapest_runner_up: "portfolio",
+  unverified_history: "eligibility",
 };
