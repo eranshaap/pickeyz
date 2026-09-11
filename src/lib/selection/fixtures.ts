@@ -54,17 +54,20 @@ export function invoice(s: Spec): ScoreResult {
   const condition_score = history === null ? null : r1(history + (km ?? 0));
   const condition_by_reality = history === null ? null : r1(reality + (km ?? 0));
   const price_advantage = priceRow.status === "scored" ? (priceRow.value as number) : null;
-  const typical_condition = price_advantage !== null && typical !== null ? typical : null;
-  const condition_vs_typical = condition_score !== null && typical_condition !== null ? r1(condition_score - typical_condition) : null;
+  // Day 14 §9.2: the field is renamed (typical_condition → typical_history) and the version bumped.
+  // The fixture's own arithmetic is NOT touched — it builds ScoreResult literals for the selection tests,
+  // which read condition_vs_typical and deal_score; how it derives them is not a rule of this brief.
+  const typical_history = price_advantage !== null && typical !== null ? typical : null;
+  const condition_vs_typical = condition_score !== null && typical_history !== null ? r1(condition_score - typical_history) : null;
   const deal_score = price_advantage !== null && condition_vs_typical !== null ? r1(price_advantage + condition_vs_typical) : null;
 
   const result: ScoreResult = {
-    engine_version: 2,
+    engine_version: 3,
     unit: "pct_of_value",
     rows: [priceRow, historyRow, kmRow],
     condition_score,
     condition_by_reality,
-    typical_condition,
+    typical_history,
     condition_vs_typical,
     price_advantage,
     deal_score,

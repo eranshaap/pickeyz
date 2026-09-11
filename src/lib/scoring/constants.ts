@@ -1,9 +1,12 @@
 // Stage A scoring engine — every table and threshold (BRIEF Day 11, §3).
 // Every constant carries its source in a comment and must not be changed in code without changing the comment.
 
-export const ENGINE_VERSION = 2;
+export const ENGINE_VERSION = 3;
 // 1 — Day 11 — first engine
 // 2 — Day 12 — no number changed; the invoice gained value_by_reality (history row) and condition_by_reality (sum)
+// 3 — Day 14 — three norm levels, each keyed at its own level (cell / model / pool): the typical is the cell's median
+//              history row (median_condition is gone), the km slope is the model's own and signed, and a thin cell's
+//              price row is anchored on the listing's new-car price through the pool's depreciation curve.
 export const MIN_SAMPLE = 5;              // source: Day 9 decision, guess; revisit with volume
 export const ROUND_DECIMALS = 1;
 
@@ -33,7 +36,8 @@ export const ZERO_KM_QUALIFYING_TYPES = ['leasing'] as const;   // source: mecha
 export const PRIVATE_PAIR_MAX_MONTHS = 1;   // source: guess from two cases (same month); measure later
 
 // --- km ---------------------------------------------------------------------
-export const KM_SLOPE_PCT_PER_1000_PER_YEAR = 0.6;  // source: LY examples midpoint AND our measurement (−0.64, n=78, r=−0.52) — both per 1,000 km per YEAR OF AGE: LY's 15–20k band is annual, his examples were annualized by the car's age, our regression used km_dev / age. Symmetric by decision (Day 11); LY's under-band bonus is steeper (~1.2 per 1,000/yr) — see later.md "km slope asymmetry".
+export const KM_SLOPE_PCT_PER_1000_PER_YEAR = -0.6; // source: LY examples midpoint AND our measurement (−0.64, n=78, r=−0.52) — both per 1,000 km per YEAR OF AGE: LY's 15–20k band is annual, his examples were annualized by the car's age, our regression used km_dev / age. Symmetric by decision (Day 11); LY's under-band bonus is steeper (~1.2 per 1,000/yr) — see later.md "km slope asymmetry". Day 14 (§0.3): the SIGN CONVENTION CHANGED — the constant is now signed like the slopes stored in model_stats (more km → negative), and the engine multiplies it as is instead of negating it. The magnitude did not change.
+export const KM_SLOPE_MIN_SAMPLE = 100;             // source: Day 14 decision (§0.3) — listings a model's own regression needs before its slope replaces the default. Below it the default is used; model_stats stores the measured slope either way.
 export const KM_CAP_PCT = 11;                        // source: LY — largest km example
 export const AGE_FLOOR_YEARS = 0.5;                  // source: mechanism — avoid dividing by a few days
 

@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { analyzeHistory, combineDeductions, historyRow } from "./history";
 import { scoreListing } from "./index";
-import { input, NOW, rows } from "./fixtures";
+import { cell, input, NOW, rows } from "./fixtures";
 
 describe("history row — the four known cars (§4.2)", () => {
   it("74294402: leasing 2021-10 → private 2021-10 — zero-km; users 1; [zero_km −10 full]; first hand 0 → −10", () => {
@@ -61,27 +61,35 @@ describe("history row — the four known cars (§4.2)", () => {
   });
 });
 
-describe("history row — sources and failures", () => {
-  it("no history, hand_declared present → source 'ad', users = hand_declared, partial owner_types", () => {
-    const r = historyRow(input({ listing: { hand_declared: 2 } }));
+// Day 14 (§0.4, §3.6 a): a car with no registry record is assumed to be the typical car of its cell.
+describe("history row — no registry record → the cell's typical (Day 14 §0.4)", () => {
+  it("with median_history → source 'typical', the median's value, marked assumed; raw = { median_history, based_on_n }", () => {
+    const r = historyRow(input({ market: cell({ median_history: -12 }) }));
     assert.equal(r.status, "scored");
-    assert.equal(r.source, "ad");
-    assert.equal(r.value, -4);
-    assert.deepEqual(r.partial, ["owner_types"]);
-    assert.equal(r.raw.users, 2);
-    assert.equal(r.raw.dealer_transfers, null);
+    assert.equal(r.source, "typical");
+    assert.equal(r.value, -12);
+    assert.equal(r.value_by_reality, -12);
+    assert.equal(r.note, "assumed_typical"); // §9.9: a code, not prose
+    assert.deepEqual(r.raw, { median_history: -12, based_on_n: 8 });
   });
 
-  it("no history, no hand_declared → unavailable no_history", () => {
-    const r = historyRow(input());
-    assert.equal(r.status, "unavailable");
-    assert.equal(r.reason, "no_history");
+  it("without median_history → unavailable no_typical_history", () => {
+    for (const market of [null, cell({ median_history: null })]) {
+      const r = historyRow(input({ market }));
+      assert.equal(r.status, "unavailable");
+      assert.equal(r.reason, "no_typical_history");
+      assert.equal("value" in r, false);
+    }
   });
 
-  it("no history, hand_declared 0 → unavailable invalid_declaration, no throw (§18.7)", () => {
-    const r = historyRow(input({ listing: { hand_declared: 0 } }));
-    assert.equal(r.status, "unavailable");
-    assert.equal(r.reason, "invalid_declaration");
+  it("the ad's declared hand enters no score: 0, 1, 2 and null all give the same typical row", () => {
+    const market = cell({ median_history: -12 });
+    for (const hand_declared of [null, 0, 1, 2, 5]) {
+      const r = historyRow(input({ listing: { hand_declared }, market }));
+      assert.equal(r.source, "typical");
+      assert.equal(r.value, -12);
+      assert.equal("deductions" in r.raw, false);
+    }
   });
 
   it("history present, hand_declared 0 → the row is computed from the history as usual (§18.7)", () => {
@@ -89,13 +97,9 @@ describe("history row — sources and failures", () => {
     assert.equal(r.status, "scored");
     assert.equal(r.value, -21);
   });
+});
 
-  it("no history, hand_declared 1 → first hand is 0, no entry", () => {
-    const r = historyRow(input({ listing: { hand_declared: 1 } }));
-    assert.equal(r.value, 0);
-    assert.deepEqual(r.raw.deductions, []);
-  });
-
+describe("history row — failures", () => {
   it("an ownership type with no table row throws with the type in the message", () => {
     const history = rows("private 2021-01, private 2023-01");
     (history[1] as { type: string }).type = "diplomatic";
@@ -202,7 +206,7 @@ describe("private pair — chained (§18.6)", () => {
 // BRIEF Day 12 §1–§2, §5: the reality reading of the history row (value_by_reality) and the reality
 // sum (condition_by_reality). The paper reading — every expectation above — is untouched.
 describe("reality reading (Day 12 §1, §5)", () => {
-  const market = { id: 7, median_price: 100000, median_km: 40000, median_condition: -12, sample_size: 8, window_days: 90 };
+  const market = cell({ median_history: -12 });
   // a km row that scores: 20,000 km declared on a 2023-01 car against a 40,000 median
   const kmScored = { listing: { km_declared: 20000 }, car: { first_registration: new Date("2023-01-01T00:00:00.000Z") } };
 
@@ -233,8 +237,6 @@ describe("reality reading (Day 12 §1, §5)", () => {
   const NO_ZERO_KM: { name: string; over: NonNullable<Parameters<typeof input>[0]> }[] = [
     { name: "34562903: private pair, two dealers", over: { car: { hand: 2, ownership_history: rows("private 2023-01, private 2023-01, dealer 2025-06, dealer 2025-06") } } },
     { name: "50997203: leasing, four dealers", over: { car: { hand: 1, ownership_history: rows("leasing 2023-07, dealer 2026-08, dealer 2026-08, dealer 2026-08, dealer 2026-08") } } },
-    { name: "source ad, hand_declared 2", over: { listing: { hand_declared: 2 } } },
-    { name: "source ad, hand_declared 1", over: { listing: { hand_declared: 1 } } },
     { name: "six private users", over: { car: { ownership_history: rows("private 2019-01, private 2020-01, private 2021-01, private 2022-01, private 2023-01, private 2024-01") } } },
     { name: "leasing → private 13 months out", over: { car: { ownership_history: rows("leasing 2020-01, private 2021-02") } } },
     { name: "leasing → rental → private", over: { car: { ownership_history: rows("leasing 2020-01, rental 2020-02, private 2020-03") } } },
@@ -261,14 +263,29 @@ describe("reality reading (Day 12 §1, §5)", () => {
     });
   }
 
+  // Day 14 (§0.4): the no-record row is the cell's typical, and reality == paper there too — there is no
+  // zero-km line to drop when there are no lines at all.
+  it("§5.3 no registry record, typical row: value_by_reality === value and condition_by_reality === condition_score", () => {
+    const r = historyRow(input({ market }));
+    assert.equal(r.status, "scored");
+    assert.equal(r.source, "typical");
+    assert.equal(r.value_by_reality, r.value);
+
+    const s = scoreListing(input({ ...kmScored, market }), NOW);
+    assert.equal(s.condition_score, -8.7); // typical −12 + km +3.3
+    assert.equal(s.condition_by_reality, s.condition_score);
+  });
+
   it("§5.4 history row unavailable: no value_by_reality; condition_by_reality is null", () => {
+    // Day 14: without a median_history there is no typical either, so the row is unavailable.
+    const noTypical = cell({ median_history: null });
     for (const over of [{}, { listing: { hand_declared: 0 } }] as NonNullable<Parameters<typeof input>[0]>[]) {
-      const r = historyRow(input(over));
+      const r = historyRow(input({ ...over, market: noTypical }));
       assert.equal(r.status, "unavailable");
       assert.equal("value" in r, false);
       assert.equal("value_by_reality" in r, false);
 
-      const s = scoreListing(input({ listing: { ...kmScored.listing, ...over.listing }, car: kmScored.car, market }), NOW);
+      const s = scoreListing(input({ listing: { ...kmScored.listing, ...over.listing }, car: kmScored.car, market: noTypical }), NOW);
       assert.equal(s.condition_score, null);
       assert.equal(s.condition_by_reality, null);
     }
@@ -282,8 +299,8 @@ describe("reality reading (Day 12 §1, §5)", () => {
     assert.equal(s.condition_by_reality, 0);
   });
 
-  it("§5.5 no history, km row unavailable: condition_by_reality is null exactly when condition_score is null", () => {
-    const s = scoreListing(input({ market }), NOW);
+  it("§5.5 no history row, km row unavailable: condition_by_reality is null exactly when condition_score is null", () => {
+    const s = scoreListing(input({ market: cell({ median_history: null }) }), NOW);
     assert.equal(s.condition_score, null);
     assert.equal(s.condition_by_reality, null);
   });
@@ -307,7 +324,7 @@ describe("reality reading (Day 12 §1, §5)", () => {
       }),
       NOW,
     );
-    assert.equal(s.engine_version, 2);
+    assert.equal(s.engine_version, 3);
     assert.equal(s.condition_score, -4);
     assert.equal(s.condition_by_reality, 6);
     // everything else in the invoice is the paper reading, unchanged

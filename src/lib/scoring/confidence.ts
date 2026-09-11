@@ -2,9 +2,13 @@
 // complete inputs.
 //
 // items = one missing_row per distinct unavailable REASON across the rows (§18.17: a thin cell costs
-//         one item, not two; ref = the reason)
+//         one item, not two; ref = the reason). Day 14 §9.7 keeps that true with the anchor: when the
+//         anchor cannot be built the price row's reason is 'thin_cell', the same reason the km row
+//         carries, so the two dedupe into one item and a thin-cell listing stays 'medium'.
 //       + one counted_mismatch per check with status mismatch and counts = true (ref = check:kind)
-//       + one unverified_source when the history row's source is 'ad'
+//       + one assumed_typical when the history row's source is 'typical' (Day 14, §3.5: the row came
+//         from the cell's median, not from the car's own record) — OR one unverified_source when the
+//         history row's source is 'ad'. One item either way, never both.
 //       + one possibly_sold when the sold signal is medium (§18.8; a strong signal adds nothing — the
 //         listing is out of the results and its confidence is irrelevant)
 // Skipped checks are neither items nor mismatches.
@@ -26,7 +30,10 @@ export function confidenceItems(rows: Row[], checks: Check[], sold: SoldSignal):
     if (c.status === "mismatch" && c.counts === true) items.push({ kind: "counted_mismatch", ref: `${c.check}:${c.kind ?? "?"}` });
   }
   const history = rows.find((r) => r.row === "history");
-  if (history && history.status === "scored" && history.source === "ad") items.push({ kind: "unverified_source", ref: "history:ad" });
+  if (history && history.status === "scored") {
+    if (history.source === "typical") items.push({ kind: "assumed_typical", ref: "history:typical" });
+    else if (history.source === "ad") items.push({ kind: "unverified_source", ref: "history:ad" });
+  }
   if (sold.strength === "medium") items.push({ kind: "possibly_sold", ref: "sold_signal:medium" });
   return items;
 }

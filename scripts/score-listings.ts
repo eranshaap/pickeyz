@@ -4,9 +4,15 @@
 // REPORT.md), nothing else. `--write` is the only way anything reaches the database.
 //
 // Per listing with delisted_at IS NULL:
-//   1. load listing, car, model, dealer; the norm row = the latest market_stats row by computed_at for
-//      (models.comparison_group, cars.year) with group_version = GROUP_VERSION; none -> market = null.
-//   2. build ScoringInput (src/lib/scoring-input.ts), scoreListing(input, now). One `now` for the run.
+//   1. load listing, car, model, dealer, and the THREE norm rows (Day 14 §6.1), each the latest by
+//      computed_at at the current versions:
+//        cell  = market_stats for (models.comparison_group, cars.year) with group_version = GROUP_VERSION
+//        model = model_stats for (models.make, models.model)          with group_version = GROUP_VERSION
+//        pool  = pool_stats  for the run                              (no group_version — P3)
+//      a missing row -> null for that level; a row from an older engine_version is counted, and the
+//      counter covers all three tables and must be 0.
+//   2. build ScoringInput (src/lib/scoring-input.ts) — with new_price + its new_car_prices row id, joined
+//      as select-three.ts joins it — and scoreListing(input, now). One `now` for the run.
 //   3. collect; a listing that throws is reported with its id and the error, and the run continues.
 //
 // Dry run prints: top 10 by deal_score (nulls last) as compact invoices; counts by confidence level,
@@ -19,11 +25,28 @@
 // explained by the clock is not one). The engine is not touched — CLOCK re-runs it read-only with the
 // stored scored_at as `now`, DATA and NORM read the inputs and norm values the stored breakdown carries.
 //
+// Day 14 §6.3 — the classifier's VERSION label is no longer "listed, not compared". v2 -> v3 moves a
+// listing's deal by a KNOWN amount: (old typical_condition - new median_history) + (new km row - old km
+// row), with the price row and the history row identical. A VERSION line that does not move by that,
+// within the ±0.1 rounding allowance of Q11, is UNEXPLAINED. The per-cell constant is printed and must be
+// the same for every listing of the cell; the lines that needed the allowance are counted.
+//
+// Q13 (run 3, option 1) — that rule cannot describe the two populations §0.4 and §0.5 created, so VERSION
+// gains two NAMED sub-rules. Each is a checked identity, not an exemption; a listing that enters one and
+// fails its identity is UNEXPLAINED like any other.
+//   (a) VERSION (anchor)  — the thin-cell anchor (§0.5): neither version has a deal score, the history and
+//       km rows are identical, and the price row goes from absent to a scored row with source 'anchor'.
+//   (b) VERSION (typical) — the re-sourced history (§0.4): the car has no ownership row, the v3 history row
+//       is the cell's typical (source 'typical'), the price row is unchanged, and the deal moves by
+//       constant + (new history - old history) + (new km - old km), within the same ±0.1 allowance.
+// The count of each sub-rule is printed and compared against the §6.4 populations it must equal.
+//
 // --write (§22.2): one transaction, one statement per table — a createMany of listing_scores rows
 // (§19.1) and one UPDATE listings … FROM unnest(...) setting score = deal_score, condition_score,
-// confidence = level, score_breakdown = the result, scored_at = now, market_stats_id = the norm
-// row's id or null, engine_version = ENGINE_VERSION (and updated_at, which Prisma's update would
-// have touched). Prisma's default transaction timeout. The report is printed in both modes.
+// confidence = level, score_breakdown = the result, scored_at = now, market_stats_id / model_stats_id /
+// pool_stats_id = the ids of the three rows the score used (or null), engine_version = ENGINE_VERSION
+// (and updated_at, which Prisma's update would have touched). Prisma's default transaction timeout.
+// The report is printed in both modes.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
@@ -31,7 +54,7 @@ import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
 import { scoreListing, type ScoreResult, type ScoringInput } from "@/lib/scoring";
-import { ENGINE_VERSION } from "@/lib/scoring/constants";
+import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
 import { round, dateToIso } from "@/lib/scoring/util";
 import { scoringSubject } from "@/lib/scoring-input";
 
@@ -47,7 +70,12 @@ type Scored = {
   plate: string;
   year: number;
   price: number;
+  cell_key: string; // "comparison_group year" — the per-cell VERSION constant is checked over this
+  make: string;
+  model: string;
   market_stats_id: number | null;
+  model_stats_id: number | null; // Day 14 §6.2: the score points at the row it used from each level
+  pool_stats_id: number | null;
   input: ScoringInput; // kept for the §1 CLOCK check: the same inputs, a different `now`
   result: ScoreResult;
   // Day 13 §1: what listings holds now — the classifier compares against all of it.
@@ -78,16 +106,31 @@ function count<T>(items: T[], key: (t: T) => string): [string, number][] {
 
 // ---------- Day 13 §1: the classifier ----------
 // One label per differing listing, first match wins.
-type Label = "VERSION" | "NEW" | "CLOCK" | "DATA" | "NORM" | "UNEXPLAINED";
-const LABELS: Label[] = ["VERSION", "NEW", "CLOCK", "DATA", "NORM", "UNEXPLAINED"];
+type Label = "VERSION" | "VERSION (anchor)" | "VERSION (typical)" | "NEW" | "CLOCK" | "DATA" | "NORM" | "UNEXPLAINED";
+const LABELS: Label[] = ["VERSION", "VERSION (anchor)", "VERSION (typical)", "NEW", "CLOCK", "DATA", "NORM", "UNEXPLAINED"];
+const LABEL_WIDTH = Math.max(...LABELS.map((l) => l.length));
 
 // What this script reads out of listings.score_breakdown (a stored ScoreResult, src/lib/scoring/types.ts).
 type StoredBreakdown = {
-  rows?: { row?: string; raw?: Record<string, unknown> }[];
+  rows?: { row?: string; status?: string; value?: number; raw?: Record<string, unknown> }[];
   checks?: { check?: string; status?: string; reason?: string; declared?: number; official?: number; official_date?: string }[];
   facts?: Record<string, unknown>;
-  typical_condition?: number | null;
+  typical_condition?: number | null; // v2's name for the cell's typical
+  typical_history?: number | null; // v3's name for it (§3.4)
 };
+
+// The stored typical under whichever name that engine wrote it (§0.2 renamed it, it is the same slot).
+function storedTypical(bd: StoredBreakdown): number | null {
+  if (typeof bd.typical_history === "number") return bd.typical_history;
+  if (typeof bd.typical_condition === "number") return bd.typical_condition;
+  return null;
+}
+// A row's value as the stored breakdown carries it; null when the row is absent or was not scored.
+function storedRowValue(bd: StoredBreakdown, row: string): number | null {
+  const r = bd.rows?.find((x) => x.row === row);
+  if (!r || r.status !== "scored" || typeof r.value !== "number") return null;
+  return r.value;
+}
 
 // The engine's inputs (ScoringInput) as the stored breakdown carries them, and the ones it does not
 // carry at all — the DATA check is partial by exactly this second list.
@@ -160,9 +203,9 @@ function currentInputs(input: ScoringInput): Map<string, unknown> {
   ]);
 }
 
-// The norm values the stored breakdown carries. median_condition only through typical_condition, which
-// the engine writes only when the price row scored — when it is absent the stored median_condition is
-// unknown and stays out of the comparison. market_row records whether there was a norm row at all.
+// The norm values the stored breakdown carries. The cell's typical only through typical_condition (v2) /
+// typical_history (v3), which the engine writes only when the price row scored — when it is absent the
+// stored typical is unknown and stays out of the comparison. market_row records whether there was a row.
 function storedNorm(bd: StoredBreakdown): Map<string, unknown> {
   const m = new Map<string, unknown>();
   const price = rawOf(bd, "price"), km = rawOf(bd, "km");
@@ -171,7 +214,7 @@ function storedNorm(bd: StoredBreakdown): Map<string, unknown> {
   if (price && "sample_size" in price) m.set("sample_size", price.sample_size);
   if (price && "window_days" in price) m.set("window_days", price.window_days);
   if (km && "median_km" in km) m.set("median_km", km.median_km);
-  if (typeof bd.typical_condition === "number") m.set("median_condition", bd.typical_condition);
+  if (typeof storedTypical(bd) === "number") m.set("typical", storedTypical(bd));
   return m;
 }
 function currentNorm(market: ScoringInput["market"]): Map<string, unknown> {
@@ -182,9 +225,122 @@ function currentNorm(market: ScoringInput["market"]): Map<string, unknown> {
   m.set("sample_size", market.sample_size);
   m.set("window_days", market.window_days);
   m.set("median_km", market.median_km);
-  m.set("median_condition", market.median_condition === null ? null : round(market.median_condition));
+  m.set("typical", market.median_history === null ? null : round(market.median_history));
   return m;
 }
+
+// Day 14 §6.3. The whole v2 -> v3 move of one listing's deal, checked term by term:
+//   the price row is unchanged, the history row is unchanged, and
+//   deal_v3 - deal_v2 = (old typical_condition - new median_history) + (new km row - old km row).
+// `constant` is the per-cell part — (old typical - new typical) — which must be the same for every
+// listing of the cell; the km term is the listing's own and is zero wherever the slope did not change.
+// Q13: `sub` names which of the two sub-rules carried the line, null when the general rule did.
+type VersionSub = "anchor" | "typical" | null;
+type VersionCheck = { ok: boolean; sub: VersionSub; detail: string[]; constant: number | null; km_term: number | null; used_allowance: boolean };
+const EPS = 1e-9;
+// Q11: v2 computed round(round(history + km) - typical), v3 computes round(history - typical + km) in
+// ONE rounding. On a .05 boundary the two differ by exactly one ROUND_DECIMALS step, so a line whose only
+// miss is that step is still VERSION — the deviation is printed and the lines that used it are counted.
+// Anything larger is a real move and stays UNEXPLAINED.
+const ROUNDING_ALLOWANCE = 0.1;
+function versionExpectation(s: Scored, bd: StoredBreakdown | null): VersionCheck {
+  const detail: string[] = [];
+  if (bd === null) return { ok: false, sub: null, detail: ["listings.score_breakdown is null: the v2 -> v3 move cannot be checked"], constant: null, km_term: null, used_allowance: false };
+
+  const curRow = (name: string) => s.result.rows.find((r) => r.row === name);
+  const curValue = (name: string) => {
+    const r = curRow(name);
+    return r && r.status === "scored" && typeof r.value === "number" ? r.value : null;
+  };
+  const oldPrice = storedRowValue(bd, "price"), newPrice = curValue("price");
+  const oldHistory = storedRowValue(bd, "history"), newHistory = curValue("history");
+  const oldKm = storedRowValue(bd, "km"), newKm = curValue("km");
+  const oldTypical = storedTypical(bd), newTypical = s.result.typical_history;
+
+  // Q13 (a) — the thin-cell anchor (§0.5). Neither version has a deal score, the history and km rows are
+  // identical, and the ONLY move is a price row that goes from absent to a scored anchor. Everything the
+  // sub-rule asserts is checked; a thin-cell listing that moved anything else falls through to the general
+  // rule below and is UNEXPLAINED there.
+  const priceSource = curRow("price")?.source ?? null;
+  if (
+    s.stored.score === null && s.result.deal_score === null &&
+    oldHistory === newHistory && oldKm === newKm &&
+    oldPrice === null && newPrice !== null && priceSource === "anchor"
+  ) {
+    detail.push(
+      `thin cell (sample_size ${s.input.market?.sample_size ?? "-"} < ${MIN_SAMPLE}): price row absent -> ${fmt(newPrice)} from the anchor (§0.5); ` +
+        `history ${fmt(oldHistory)} and km ${fmt(oldKm)} unchanged; no deal score on either side`,
+    );
+    return { ok: true, sub: "anchor", detail, constant: null, km_term: null, used_allowance: false };
+  }
+
+  // Q13 (b) — the re-sourced history (§0.4). The car has no ownership row, so v2 scored the hand the ad
+  // declared and v3 takes the cell's typical instead. The deal must move by the cell constant plus that
+  // history move plus the km move; the price row still may not move. Checked below, after the terms.
+  const historySource = curRow("history")?.source ?? null;
+  const reSourced =
+    s.input.car.ownership_history === null && historySource === "typical" &&
+    newHistory !== null && newTypical !== null && newHistory === round(newTypical) &&
+    oldPrice === newPrice && s.stored.score !== null && s.result.deal_score !== null &&
+    oldTypical !== null && oldHistory !== null;
+
+  // The two rows the brief says must not move.
+  if (oldPrice !== newPrice) detail.push(`price row moved ${fmt(oldPrice)} -> ${fmt(newPrice)} — §0.7 says it must not`);
+  if (!reSourced && oldHistory !== newHistory) detail.push(`history row moved ${fmt(oldHistory)} -> ${fmt(newHistory)} — §0.7 says it must not`);
+
+  if (s.stored.score === null || s.result.deal_score === null) {
+    // A deal that appears or disappears is a move §0.7 does not describe; say so rather than pass it.
+    detail.push(`deal ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)}: one side has no deal score, so the constant does not apply`);
+    return { ok: false, sub: null, detail, constant: null, km_term: null, used_allowance: false };
+  }
+  if (oldTypical === null || newTypical === null) {
+    detail.push(`typical ${fmt(oldTypical)} -> ${fmt(newTypical)}: one side has no typical, so the constant does not apply`);
+    return { ok: false, sub: null, detail, constant: null, km_term: null, used_allowance: false };
+  }
+
+  if (reSourced) {
+    const constant = round(oldTypical - newTypical);
+    const km_term = round((newKm ?? 0) - (oldKm ?? 0));
+    const history_term = round((newHistory as number) - (oldHistory as number));
+    const expected = round(constant + history_term + km_term);
+    const actual = round(s.result.deal_score - s.stored.score);
+    detail.push(
+      `car has no ownership record: history row ${fmt(oldHistory)} (ad's declared hand, v2) -> ${fmt(newHistory)} = the cell's typical (§0.4, ${history_term >= 0 ? "+" : ""}${history_term}); ` +
+        `typical ${fmt(oldTypical)} -> ${fmt(newTypical)} (cell constant ${fmt(constant)}); ` +
+        `km row ${fmt(oldKm)} -> ${fmt(newKm)} (${fmt(km_term)}, slope_source ${String(curRow("km")?.raw?.slope_source ?? "-")}); ` +
+        `price row ${fmt(oldPrice)} unchanged; deal ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)} = ${fmt(actual)}, expected ${fmt(expected)}`,
+    );
+    const miss = Math.abs(actual - expected);
+    const exact = miss < EPS;
+    const used = !exact && miss <= ROUNDING_ALLOWANCE + EPS;
+    if (used) detail.push(`off by ${fmt(round(actual - expected))} — within the ±${ROUNDING_ALLOWANCE} rounding allowance, counted as VERSION (typical)`);
+    else if (!exact) detail.push(`the move is ${fmt(round(actual - expected))} away from the expected one — beyond the ±${ROUNDING_ALLOWANCE} rounding allowance`);
+    // `reSourced` already required the price row to hold, so the identity is the only thing left to pass.
+    return { ok: exact || used, sub: "typical", detail, constant, km_term, used_allowance: used };
+  }
+  const constant = round(oldTypical - newTypical);
+  const km_term = round((newKm ?? 0) - (oldKm ?? 0));
+  const expected = round(constant + km_term);
+  const actual = round(s.result.deal_score - s.stored.score);
+  detail.push(
+    `typical ${fmt(oldTypical)} -> ${fmt(newTypical)} (cell constant ${fmt(constant)}); ` +
+      `km row ${fmt(oldKm)} -> ${fmt(newKm)} (${fmt(km_term)}, slope_source ${String(curRow("km")?.raw?.slope_source ?? "-")}); ` +
+      `deal ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)} = ${fmt(actual)}, expected ${fmt(expected)}`,
+  );
+  // detail.length === 1 means neither the price nor the history row moved: those two lines come first.
+  const rowsHeld = detail.length === 1;
+  const miss = Math.abs(actual - expected);
+  const exact = miss < EPS;
+  const used_allowance = !exact && miss <= ROUNDING_ALLOWANCE + EPS;
+  if (used_allowance) {
+    detail.push(`off by ${fmt(round(actual - expected))} — within the ±${ROUNDING_ALLOWANCE} rounding allowance (v2 rounded twice, v3 rounds once), counted as VERSION`);
+  } else if (!exact) {
+    detail.push(`the move is ${fmt(round(actual - expected))} away from the expected one — beyond the ±${ROUNDING_ALLOWANCE} rounding allowance`);
+  }
+  return { ok: rowsHeld && (exact || used_allowance), sub: null, detail, constant, km_term, used_allowance: rowsHeld && used_allowance };
+}
+// Q13: the label a passing check carries.
+const versionLabel = (v: VersionCheck): Label => (v.sub === null ? "VERSION" : (`VERSION (${v.sub})` as Label));
 
 async function main() {
   const now = new Date();
@@ -196,26 +352,67 @@ async function main() {
     orderBy: { id: "asc" },
   });
 
-  // ---------- 1. norm rows ----------
+  // ---------- 1. the three norm levels (§6.1) ----------
   const norms = new Map<string, Awaited<ReturnType<typeof db.market_stats.findFirst>>>();
   async function normRow(group: string, year: number) {
     const k = `${group} ${year}`;
     if (!norms.has(k)) {
       norms.set(k, await db.market_stats.findFirst({
         where: { comparison_group: group, year, group_version: GROUP_VERSION },
-        orderBy: { computed_at: "desc" },
+        orderBy: [{ computed_at: "desc" }, { id: "desc" }],
       }));
     }
     return norms.get(k) ?? null;
   }
+  const modelNorms = new Map<string, Awaited<ReturnType<typeof db.model_stats.findFirst>>>();
+  async function modelRow(make: string, model: string) {
+    const k = `${make}|${model}`;
+    if (!modelNorms.has(k)) {
+      modelNorms.set(k, await db.model_stats.findFirst({
+        where: { make, model, group_version: GROUP_VERSION },
+        orderBy: [{ computed_at: "desc" }, { id: "desc" }],
+      }));
+    }
+    return modelNorms.get(k) ?? null;
+  }
+  // P3: pool_stats carries no group_version — the curve is measured per model-year, not per cell.
+  const poolNormRow = await db.pool_stats.findFirst({ orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
+
+  // The new-car price, joined exactly as select-three.ts and compute-market-stats.ts join it: the latest
+  // published_at row of new_car_prices on (degem_code, sug_degem = vehicle_class, shnat_yitzur = year).
+  type NewPriceKey = { degem_code: string; shnat_yitzur: number; sug_degem: string };
+  const keyText = (k: NewPriceKey) => `${k.degem_code}|${k.shnat_yitzur}|${k.sug_degem}`;
+  const wanted = new Map<string, NewPriceKey>();
+  const listingPriceKey = new Map<number, string>();
+  for (const l of listings) {
+    const m = l.car.model;
+    if (m.degem_code === null || m.vehicle_class === null || l.car.year === null) continue;
+    const k: NewPriceKey = { degem_code: m.degem_code, shnat_yitzur: l.car.year, sug_degem: m.vehicle_class };
+    wanted.set(keyText(k), k);
+    listingPriceKey.set(l.id, keyText(k));
+  }
+  const priceRows = wanted.size
+    ? await db.new_car_prices.findMany({ where: { OR: [...wanted.values()] }, orderBy: [{ published_at: "desc" }, { id: "desc" }] })
+    : [];
+  const latestNewPrice = new Map<string, { id: number; mehir: number }>();
+  for (const r of priceRows) {
+    const k = keyText(r);
+    if (!latestNewPrice.has(k)) latestNewPrice.set(k, { id: r.id, mehir: r.mehir }); // first = latest published_at
+  }
+  const newPriceOf = (listingId: number) => {
+    const k = listingPriceKey.get(listingId);
+    return k === undefined ? null : latestNewPrice.get(k) ?? null;
+  };
 
   // ---------- 2. score ----------
   const scored: Scored[] = [];
   const failed: Failed[] = [];
   let noGroup = 0; // models.comparison_group is null
   let noNorm = 0; // no market_stats row for (group, year)
+  let noModelNorm = 0; // no model_stats row for (make, model)
   let keyMismatch = 0; // models.comparison_group differs from groupKey(fields) under the current version
-  let staleNorm = 0; // norm row computed under an older engine (no median_condition)
+  let staleNorm = 0; // §6.1: a norm row from an older engine_version, over ALL THREE tables — must be 0
+  let noNewPrice = 0; // no new_car_prices row on the car's key
 
   for (const l of listings) {
     const plate = l.car.license_plate ?? "?";
@@ -227,7 +424,10 @@ async function main() {
       };
       if (m.comparison_group !== null && m.comparison_group !== groupKey(fields)) keyMismatch++;
 
-      const subject = scoringSubject(l, l.car, l.dealer.dealer_type);
+      const newPrice = newPriceOf(l.id);
+      if (newPrice === null) noNewPrice++;
+      const subject = scoringSubject(l, l.car, l.dealer.dealer_type, newPrice);
+
       let market: ScoringInput["market"] = null;
       if (m.comparison_group === null) noGroup++;
       else {
@@ -235,13 +435,46 @@ async function main() {
         if (n === null) noNorm++;
         else {
           if (n.engine_version !== ENGINE_VERSION) staleNorm++;
-          market = { id: n.id, median_price: n.median_price, median_km: n.median_km, median_condition: n.median_condition, sample_size: n.sample_size, window_days: n.window_days };
+          market = {
+            id: n.id, median_price: n.median_price, median_km: n.median_km, median_history: n.median_history,
+            sample_size: n.sample_size, window_days: n.window_days, group_version: n.group_version, engine_version: n.engine_version,
+          };
         }
       }
-      const input: ScoringInput = { ...subject, market };
+      // The model level. make / model come from the car's model row, as §6.1 names them.
+      let model_stats: ScoringInput["model_stats"] = null;
+      if (m.make !== null && m.model !== null) {
+        const mr = await modelRow(m.make, m.model);
+        if (mr === null) noModelNorm++;
+        else {
+          if (mr.engine_version !== ENGINE_VERSION) staleNorm++;
+          model_stats = { id: mr.id, km_slope: mr.km_slope, km_slope_n: mr.km_slope_n };
+        }
+      }
+      // The pool level: one row for the whole run.
+      let pool_stats: ScoringInput["pool_stats"] = null;
+      if (poolNormRow !== null) {
+        if (poolNormRow.engine_version !== ENGINE_VERSION) staleNorm++;
+        pool_stats = {
+          id: poolNormRow.id,
+          anchor_ratio_intercept: poolNormRow.anchor_ratio_intercept,
+          anchor_ratio_per_year: poolNormRow.anchor_ratio_per_year,
+          anchor_error_pct: poolNormRow.anchor_error_pct,
+          anchor_age_min_years: poolNormRow.anchor_age_min_years,
+          anchor_age_max_years: poolNormRow.anchor_age_max_years,
+          anchor_n: poolNormRow.anchor_n,
+          anchor_listings: poolNormRow.anchor_listings,
+        };
+      }
+
+      const input: ScoringInput = { ...subject, market, model_stats, pool_stats };
       const result = scoreListing(input, now);
       scored.push({
-        listing_id: l.id, plate, year: subject.car.year, price: l.price, market_stats_id: market?.id ?? null, input, result,
+        listing_id: l.id, plate, year: subject.car.year, price: l.price,
+        cell_key: `${m.comparison_group ?? "(no group)"} ${subject.car.year}`,
+        make: m.make ?? "?", model: m.model ?? "?",
+        market_stats_id: market?.id ?? null, model_stats_id: model_stats?.id ?? null, pool_stats_id: pool_stats?.id ?? null,
+        input, result,
         stored: { score: l.score, condition_score: l.condition_score, confidence: l.confidence, engine_version: l.engine_version, scored_at: l.scored_at, breakdown: l.score_breakdown },
       });
     } catch (e) {
@@ -251,7 +484,8 @@ async function main() {
 
   // ---------- 3. report ----------
   log(`listings (delisted_at is null): ${listings.length}; scored: ${scored.length}; threw: ${failed.length}`);
-  log(`no norm row: ${noNorm}; model without comparison_group: ${noGroup}; comparison_group != groupKey(fields): ${keyMismatch}; norm row from an older engine: ${staleNorm}`);
+  log(`no cell row: ${noNorm}; no model row: ${noModelNorm}; pool row: ${poolNormRow === null ? "none" : `id ${poolNormRow.id}`}; model without comparison_group: ${noGroup}; comparison_group != groupKey(fields): ${keyMismatch}`);
+  log(`norm row from an older engine (all three tables): ${staleNorm} (must be 0); listings with no new-car price: ${noNewPrice}`);
 
   log(`\n===== TOP 10 BY deal_score (nulls last) =====`);
   log("plate | year | price | price_adv | history | km | condition | typical | deal | confidence | sold");
@@ -265,7 +499,7 @@ async function main() {
   for (const s of ranked.slice(0, 10)) {
     const r = s.result;
     const row = (name: string) => r.rows.find((x) => x.row === name);
-    log(`${s.plate} | ${s.year} | ${s.price} | ${fmt(r.price_advantage)} | ${fmt(row("history")?.value)} | ${fmt(row("km")?.value)} | ${fmt(r.condition_score)} | ${fmt(r.typical_condition)} | ${fmt(r.deal_score)} | ${r.confidence.level} | ${r.sold_signal.strength ?? "-"}`);
+    log(`${s.plate} | ${s.year} | ${s.price} | ${fmt(r.price_advantage)} | ${fmt(row("history")?.value)} | ${fmt(row("km")?.value)} | ${fmt(r.condition_score)} | ${fmt(r.typical_history)} | ${fmt(r.deal_score)} | ${r.confidence.level} | ${r.sold_signal.strength ?? "-"}`);
   }
 
   log(`\n===== COUNTS =====`);
@@ -283,6 +517,11 @@ async function main() {
   log(`  ${scored.filter((s) => s.result.deal_score !== null).length.toString().padStart(4)}  scored`);
   log(`  ${scored.filter((s) => s.result.deal_score === null).length.toString().padStart(4)}  null`);
 
+  // The two §6.4 populations, defined once: the classifier's sub-rule counts are checked against them
+  // below and the §6.4 sections print them, so the two can never drift apart.
+  const noHistory = scored.filter((s) => s.input.car.ownership_history === null);
+  const thin = scored.filter((s) => s.input.market !== null && s.input.market.sample_size < MIN_SAMPLE);
+
   // ---------- Day 13 §1: regression against listings, every difference classified ----------
   log(`\n===== REGRESSION vs listings (score, condition_score, confidence; engine_version) =====`);
   const labelled: { s: Scored; label: Label; head: string; detail: string[] }[] = [];
@@ -294,8 +533,14 @@ async function main() {
     let label: Label;
 
     if (s.stored.engine_version !== null && s.stored.engine_version !== ENGINE_VERSION) {
-      label = "VERSION";
-      detail.push(`stored engine_version ${s.stored.engine_version} != current ${ENGINE_VERSION}: listed, not compared`);
+      // Day 14 §6.3: v2 -> v3 is not "listed, not compared" any more — the move is known exactly.
+      //   deal_v3 - deal_v2 = (old typical_condition - new median_history) + (new km row - old km row)
+      // with the price row and the history row identical. Anything else is UNEXPLAINED.
+      const bd = (s.stored.breakdown ?? null) as StoredBreakdown | null;
+      const v = versionExpectation(s, bd);
+      label = v.ok ? versionLabel(v) : "UNEXPLAINED";
+      detail.push(`stored engine_version ${s.stored.engine_version} -> ${ENGINE_VERSION}`);
+      for (const d of v.detail) detail.push(d);
     } else if (s.stored.scored_at === null) {
       label = "NEW";
       detail.push(`no stored score at all (scored_at null, engine_version ${s.stored.engine_version ?? "null"}): first scoring`);
@@ -331,10 +576,85 @@ async function main() {
   log(`regression count: ${labelCount("UNEXPLAINED")} (must be 0) = UNEXPLAINED only; ${LABELS.map((l) => `${l} ${labelCount(l)}`).join(", ")}; unchanged ${scored.length - labelled.length} of ${scored.length}`);
   log(`DATA compares the inputs the stored breakdown carries: ${DATA_COVERS.join("; ")}`);
   log(`DATA cannot see (not carried in the breakdown): ${DATA_MISSING.join("; ")}`);
+  // Q13: each sub-rule must carry exactly the §6.4 population it was written for — no more, no fewer.
+  const anchorCount = labelCount("VERSION (anchor)"), typicalCount = labelCount("VERSION (typical)");
+  log(
+    `Q13 sub-rules: VERSION (anchor) ${anchorCount} vs ${thin.length} thin-cell listings — ${anchorCount === thin.length ? "match" : "MISMATCH"}; ` +
+      `VERSION (typical) ${typicalCount} vs ${noHistory.length} cars with no ownership record — ${typicalCount === noHistory.length ? "match" : "MISMATCH"}`,
+  );
   for (const x of labelled) {
-    log(`${x.label.padEnd(11)} | listing ${x.s.listing_id} (${x.s.plate}) | ${x.head}`);
+    log(`${x.label.padEnd(LABEL_WIDTH)} | listing ${x.s.listing_id} (${x.s.plate}) | ${x.head}`);
     for (const d of x.detail) log(`              ${d}`);
   }
+
+  // §6.3: the per-cell constant, and the check that it is one number for the whole cell.
+  log(`\n===== §6.3 PER-CELL CONSTANT (old typical_condition - new median_history) =====`);
+  const byCell = new Map<string, { s: Scored; v: VersionCheck }[]>();
+  for (const s of scored) {
+    const bd = (s.stored.breakdown ?? null) as StoredBreakdown | null;
+    if (s.stored.engine_version === null || s.stored.engine_version === ENGINE_VERSION) continue;
+    const v = versionExpectation(s, bd);
+    if (!byCell.has(s.cell_key)) byCell.set(s.cell_key, []);
+    (byCell.get(s.cell_key) as { s: Scored; v: VersionCheck }[]).push({ s, v });
+  }
+  log("cell | listings | constant | km term (distinct) | one constant?");
+  let cellConstantBreaks = 0;
+  for (const [cell, items] of [...byCell.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const consts = [...new Set(items.map((x) => x.v.constant).filter((c): c is number => c !== null))];
+    const kms = [...new Set(items.map((x) => x.v.km_term).filter((k): k is number => k !== null))].sort((a, b) => a - b);
+    const one = consts.length <= 1;
+    if (!one) cellConstantBreaks++;
+    log(`${cell} | ${items.length} | ${consts.length === 0 ? "-" : consts.map((c) => fmt(c)).join(" / ")} | ${kms.length === 0 ? "-" : kms.map((k) => fmt(k)).join(", ")} | ${one ? "yes" : "NO - the cell does not move as one"}`);
+  }
+  log(`cells whose constant is not a single number: ${cellConstantBreaks} (must be 0)`);
+  const allowanceUsed = [...byCell.values()].flat().filter((x) => x.v.used_allowance);
+  log(`VERSION lines that needed the ±${ROUNDING_ALLOWANCE} rounding allowance (Q11): ${allowanceUsed.length} of ${[...byCell.values()].flat().length}`);
+  for (const x of allowanceUsed) log(`  listing ${x.s.listing_id} (${x.s.plate})`);
+
+  // §6.3: Mazda keeps the default slope (69 listings < KM_SLOPE_MIN_SAMPLE) and has no car without a
+  // registry record, so its km row and its history + km must be identical to v2.
+  const mazda = scored.filter((s) => s.model === "MAZDA 3" && s.stored.engine_version !== null && s.stored.engine_version !== ENGINE_VERSION);
+  const mazdaMoved = mazda.filter((s) => {
+    const bd = (s.stored.breakdown ?? null) as StoredBreakdown | null;
+    if (bd === null) return true;
+    const cur = s.result.rows.find((r) => r.row === "km");
+    const curKm = cur && cur.status === "scored" && typeof cur.value === "number" ? cur.value : null;
+    return storedRowValue(bd, "km") !== curKm || s.stored.condition_score !== s.result.condition_score;
+  });
+  log(`§0.7 Mazda check: ${mazda.length} listing(s) compared; km row or history + km moved on ${mazdaMoved.length} (must be 0)`);
+  for (const s of mazdaMoved) log(`  listing ${s.listing_id} (${s.plate}): condition_score ${fmt(s.stored.condition_score)} -> ${fmt(s.result.condition_score)}`);
+
+  // ---------- §6.4 ----------
+  log(`\n===== §6.4 CARS WITH NO REGISTRY HISTORY =====`);
+  log(`listings whose car has no ownership record: ${noHistory.length}`);
+  log("listing | plate | history source | value | note | confidence | deal");
+  for (const s of noHistory) {
+    const h = s.result.rows.find((r) => r.row === "history");
+    log(`${s.listing_id} | ${s.plate} | ${h?.source ?? "-"} | ${fmt(h?.value)} | ${h?.note ?? h?.reason ?? "-"} | ${s.result.confidence.level} (${s.result.confidence.items.map((i) => i.kind).join(", ") || "no items"}) | ${fmt(s.result.deal_score)}`);
+  }
+
+  log(`\n===== §6.4 THIN-CELL LISTINGS (sample_size < MIN_SAMPLE) =====`);
+  const thinWithDeal = thin.filter((s) => s.result.deal_score !== null);
+  log(`thin-cell listings: ${thin.length}; of them with a deal score: ${thinWithDeal.length} (must be 0 — §0.5)`);
+  log("listing | plate | cell | sample_size | price row | anchor / why not | pool_stats_id");
+  for (const s of thin) {
+    const p = s.result.rows.find((r) => r.row === "price");
+    const anchored = p?.status === "scored";
+    const why = anchored ? `anchor ${fmt(typeof p?.raw.anchor === "number" ? round(p.raw.anchor as number) : null)} (ratio ${String(p?.raw.ratio ?? "-")}, age ${typeof p?.raw.age === "number" ? (p.raw.age as number).toFixed(2) : "-"})` : String(p?.raw.anchor_unavailable ?? p?.reason ?? "-");
+    log(`${s.listing_id} | ${s.plate} | ${s.cell_key} | ${s.input.market?.sample_size ?? "-"} | ${anchored ? `${fmt(p?.value)} (${p?.source})` : `unavailable (${p?.reason})`} | ${why} | ${s.pool_stats_id ?? "null"}`);
+  }
+
+  log(`\n===== §6.4 SLOPE SOURCE AND THE POOL ROW =====`);
+  const slopeSource = scored.map((s) => {
+    const km = s.result.rows.find((r) => r.row === "km");
+    return `${String(km?.raw?.slope_source ?? "-")} (slope ${String(km?.raw?.slope_used ?? "-")}, n ${String(km?.raw?.km_slope_n ?? "-")})`;
+  });
+  for (const [k, n] of count(slopeSource, (x) => x)) log(`  ${n.toString().padStart(4)}  ${k}`);
+  log(
+    poolNormRow === null
+      ? "pool row used: none — no pool_stats row exists, so every thin-cell price row reports no_anchor_curve"
+      : `pool row used: id ${poolNormRow.id}, intercept ${poolNormRow.anchor_ratio_intercept}, per_year ${poolNormRow.anchor_ratio_per_year}, error_pct ${poolNormRow.anchor_error_pct}, age ${poolNormRow.anchor_age_min_years} … ${poolNormRow.anchor_age_max_years}, n ${poolNormRow.anchor_n} model-year points over ${poolNormRow.anchor_listings} listings, engine_version ${poolNormRow.engine_version}`,
+  );
 
   log(`\n===== REALITY DELTA (condition_by_reality !== condition_score) =====`);
   const historyOf = (s: Scored) => s.result.rows.find((r) => r.row === "history")!;
@@ -380,10 +700,13 @@ async function main() {
   const level = scored.map((s) => s.result.confidence.level);
   const breakdown = scored.map((s) => JSON.stringify(s.result));
   const msid = scored.map((s) => s.market_stats_id);
+  const mdid = scored.map((s) => s.model_stats_id);
+  const plid = scored.map((s) => s.pool_stats_id);
   const n = await db.$transaction(async (tx) => {
     const ins = await tx.listing_scores.createMany({
       data: scored.map((s) => ({
-        listing_id: s.listing_id, scored_at: now, engine_version: ENGINE_VERSION, market_stats_id: s.market_stats_id,
+        listing_id: s.listing_id, scored_at: now, engine_version: ENGINE_VERSION,
+        market_stats_id: s.market_stats_id, model_stats_id: s.model_stats_id, pool_stats_id: s.pool_stats_id,
         deal_score: s.result.deal_score, condition_score: s.result.condition_score, confidence: s.result.confidence.level,
         breakdown: s.result as unknown as Prisma.InputJsonValue,
       })),
@@ -396,10 +719,12 @@ async function main() {
         "score_breakdown" = v.breakdown,
         "scored_at" = ${now},
         "market_stats_id" = v.market_stats_id,
+        "model_stats_id" = v.model_stats_id,
+        "pool_stats_id" = v.pool_stats_id,
         "engine_version" = ${ENGINE_VERSION},
         "updated_at" = ${now}
-      FROM unnest(${ids}::int[], ${deal}::float8[], ${cond}::float8[], ${level}::text[], ${breakdown}::jsonb[], ${msid}::int[])
-        AS v(id, score, condition_score, confidence, breakdown, market_stats_id)
+      FROM unnest(${ids}::int[], ${deal}::float8[], ${cond}::float8[], ${level}::text[], ${breakdown}::jsonb[], ${msid}::int[], ${mdid}::int[], ${plid}::int[])
+        AS v(id, score, condition_score, confidence, breakdown, market_stats_id, model_stats_id, pool_stats_id)
       WHERE l."id" = v.id`;
     if (ins.count !== scored.length || upd !== scored.length) {
       throw new Error(`write: expected ${scored.length} rows, inserted ${ins.count} listing_scores and updated ${upd} listings — rolled back`);

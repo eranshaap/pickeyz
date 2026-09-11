@@ -4,13 +4,17 @@
 // and the sums are plain additions. No normalization, no weights. A row that cannot be computed is
 // unavailable with a reason; nothing is ever substituted for it.
 //
-// Sums (§5):
+// Sums (§5, as amended Day 14 §3.4):
 //   condition_score      = history + km              (null if history unavailable; history alone, partial ['km'], if km unavailable)
 //   condition_by_reality = history.value_by_reality + km   (Day 12 §2: same formula, the reality history in place of the paper one; null whenever condition_score is null)
-//   typical_condition    = market.median_condition   (only when the price row is available and the value is not null)
-//   condition_vs_typical = condition_score - typical_condition
+//   typical_history      = market.median_history     (only when the price row is available and the value is not null)
+//   condition_vs_typical = (history - typical_history) + km
 //   price_advantage      = price row value
 //   deal_score           = price_advantage + condition_vs_typical
+//
+// Day 14 (§0.2): the typical is the median HISTORY row, not the median condition. The km row is already a
+// deviation from the cell's median_km, so it is not centred a second time — it enters condition_vs_typical
+// as it is, and only the history row is measured against the typical.
 //
 // Pure: no Prisma, no database, no I/O. The result object is what listings.score_breakdown stores.
 
@@ -34,7 +38,7 @@ function valueOf(row: Row): number | null {
 }
 
 export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
-  const price = priceRow(input);
+  const price = priceRow(input, now);
   const history = historyRow(input);
   const km = kmRow(input, now);
   const rows: Row[] = [price, history, km];
@@ -64,9 +68,13 @@ export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
     condition_by_reality = kmValue !== null ? round(history.value_by_reality + kmValue) : round(history.value_by_reality);
   }
   const price_advantage = valueOf(price);
-  const typical_condition =
-    price_advantage !== null && input.market !== null && input.market.median_condition !== null ? round(input.market.median_condition) : null;
-  const condition_vs_typical = condition_score !== null && typical_condition !== null ? round(condition_score - typical_condition) : null;
+  // §3.4: the typical is the cell's median history row. A thin cell has a price row (the anchor) but no
+  // median_history, so its listings get no typical, no condition_vs_typical and no deal score (§0.5).
+  const typical_history =
+    price_advantage !== null && input.market !== null && input.market.median_history !== null ? round(input.market.median_history) : null;
+  // (history − typical) + km, in one rounding: the km row is a deviation already and is not centred again.
+  const condition_vs_typical =
+    historyValue !== null && typical_history !== null ? round(historyValue - typical_history + (kmValue ?? 0)) : null;
   const deal_score = price_advantage !== null && condition_vs_typical !== null ? round(price_advantage + condition_vs_typical) : null;
 
   // §9 facts
@@ -86,7 +94,7 @@ export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
     rows,
     condition_score,
     condition_by_reality,
-    typical_condition,
+    typical_history,
     condition_vs_typical,
     price_advantage,
     deal_score,

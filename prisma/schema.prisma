@@ -102,12 +102,16 @@ model listings {
   owners_at_first_seen Int? // Day 11: rows in the car's ownership_history when the listing was first seen
   scored_at            DateTime?
   market_stats_id      Int? // which median row the current score was computed against. Empty until the first score.
+  model_stats_id       Int? // Day 14: which model_stats row (the km slope) the current score used
+  pool_stats_id        Int? // Day 14: which pool_stats row (the anchor curve) the current score used
   created_at          DateTime  @default(now())
   updated_at          DateTime  @default(now()) @updatedAt
 
   car           cars                    @relation(fields: [car_id], references: [id])
   dealer        dealers                 @relation(fields: [dealer_id], references: [id])
   market_stats  market_stats?           @relation(fields: [market_stats_id], references: [id])
+  model_stats   model_stats?            @relation(fields: [model_stats_id], references: [id])
+  pool_stats    pool_stats?             @relation(fields: [pool_stats_id], references: [id])
   scores        listing_scores[]
   price_history listing_price_history[]
 
@@ -166,16 +170,56 @@ model market_stats {
   median_price     Int // every listing in the pool contributes price
   median_km        Int? // over km_declared of the same listings; empty when no ad in the pool states km
   sample_size      Int // how many listings the medians rest on — this is what sets the score's confidence
-  median_condition Float? // Day 11: median condition_score of the pool; null when thin or no listing has a history
+  median_history   Float? // Day 14: median of the on-paper history row over the cell's listings whose car has registry history; null below MIN_SAMPLE such listings. Replaces median_condition (dropped) — the typical is the history row alone.
   window_days      Int // length of the window this row was computed in. 90 normally; a thin cell is widened to 180
   group_version    Int // which definition of the key this row was computed under
-  engine_version   Int // which engine computed median_condition; 0 = computed before any engine existed
+  engine_version   Int // which engine computed median_history; 0 = computed before any engine existed
   computed_at      DateTime @default(now())
 
   listings       listings[]
   listing_scores listing_scores[]
 
   @@index([comparison_group, year, computed_at])
+}
+
+// 6b. model_stats — the norm one level above the cell: one row per (make, model) per norms run (Day 14, §0.1).
+// Holds the model's own km slope, signed as measured (more km → negative). Append-only like market_stats;
+// no foreign key to models — the key is the pair of catalog strings, as market_stats keys on the group string.
+model model_stats {
+  id             Int      @id @default(autoincrement())
+  make           String // models.make
+  model          String // models.model (normalized spelling)
+  km_slope       Float? // percent of value per 1,000 km per year of deviation; null only when nothing could be measured
+  km_slope_n     Int // listings in the regression; 0 when km_slope is null. Below KM_SLOPE_MIN_SAMPLE the engine uses the default instead, but the row is written anyway
+  engine_version Int
+  group_version  Int
+  computed_at    DateTime // no default: the norms run writes one `now` for the whole run
+
+  listings       listings[]
+  listing_scores listing_scores[]
+
+  @@index([make, model, computed_at])
+}
+
+// 6c. pool_stats — the norm above the model: one row per norms run for the whole pool (Day 14, §0.1).
+// The anchor curve, ratio = intercept + per_year × age, used for the price row of a thin cell against
+// the listing's own new-car price. Append-only. No group_version (P3): the curve is measured per
+// model-year, not per cell, so the cell definition does not touch it. All five values null (P4) when
+// fewer than 3 model-years have a new-car price and a median.
+model pool_stats {
+  id                     Int      @id @default(autoincrement())
+  anchor_ratio_intercept Float?
+  anchor_ratio_per_year  Float?
+  anchor_error_pct       Float? // leave-one-out, worst model-year
+  anchor_age_min_years   Float? // youngest model-year in the fit
+  anchor_age_max_years   Float? // oldest
+  anchor_n               Int // model-year POINTS the line was fitted through (the fit's own n)
+  anchor_listings        Int // listings behind those points — coverage, not the fit's n
+  engine_version         Int
+  computed_at            DateTime // no default: the norms run writes one `now` for the whole run
+
+  listings       listings[]
+  listing_scores listing_scores[]
 }
 
 // 7. listing_scores — one row per listing per scoring run (Day 11, §19.1). listings keeps the latest
@@ -186,6 +230,8 @@ model listing_scores {
   scored_at       DateTime // the run's `now`
   engine_version  Int
   market_stats_id Int?
+  model_stats_id  Int? // Day 14: the model_stats row (km slope) this score used
+  pool_stats_id   Int? // Day 14: the pool_stats row (anchor curve) this score used
   deal_score      Float?
   condition_score Float?
   confidence      ConfidenceLevel
@@ -193,6 +239,8 @@ model listing_scores {
 
   listing      listings      @relation(fields: [listing_id], references: [id])
   market_stats market_stats? @relation(fields: [market_stats_id], references: [id])
+  model_stats  model_stats?  @relation(fields: [model_stats_id], references: [id])
+  pool_stats   pool_stats?   @relation(fields: [pool_stats_id], references: [id])
 
   @@index([listing_id, scored_at])
 }

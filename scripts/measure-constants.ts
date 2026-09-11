@@ -13,6 +13,7 @@
 // and every fit that was dropped is listed in the INTERPRETED, NOT READ section.
 
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
 import { db } from "@/lib/db";
 import { kmFacts } from "@/lib/scoring/checks";
 import {
@@ -122,8 +123,12 @@ function neighbours(values: number[], v: number): { lo: number | null; hi: numbe
 }
 
 // ---------- ordinary least squares ----------
-type Column = { name: string; v: number[] };
-type FitOk = {
+// Day 14 (§5.2, §5.3): scripts/compute-market-stats.ts fits the model slope (M5) and the anchor curve
+// (M8 / M8b) by REUSING this code — Column, Fit, ols(), at() and loo() are exported for it. Nothing this
+// script measures changed; the only behaviour change is that main() runs on direct invocation only (see
+// the foot of the file), so importing the module no longer runs the whole measurement.
+export type Column = { name: string; v: number[] };
+export type FitOk = {
   ok: true;
   n: number;
   df: number;
@@ -135,8 +140,8 @@ type FitOk = {
   hi: number[];
   dropped: string[];
 };
-type FitBad = { ok: false; n: number; reason: string; dropped: string[] };
-type Fit = FitOk | FitBad;
+export type FitBad = { ok: false; n: number; reason: string; dropped: string[] };
+export type Fit = FitOk | FitBad;
 
 // Student-t 95 % two-sided critical value, Cornish-Fisher expansion in 1/df (~1e-4 at df >= 20).
 function tCrit95(df: number): number {
@@ -173,7 +178,7 @@ function invert(m: number[][]): number[][] | null {
 
 // y on [1, ...cols]. A column that does not vary in this sample is dropped and named; a singular
 // X'X drops the whole fit with its reason. Nothing is silently omitted.
-function ols(y: number[], cols: Column[]): Fit {
+export function ols(y: number[], cols: Column[]): Fit {
   const n = y.length;
   const dropped: string[] = [];
   const use: Column[] = [];
@@ -229,9 +234,37 @@ function ols(y: number[], cols: Column[]): Fit {
     dropped,
   };
 }
-function at(fit: FitOk, name: string): { coef: number; se: number; lo: number; hi: number } | null {
+export function at(fit: FitOk, name: string): { coef: number; se: number; lo: number; hi: number } | null {
   const i = fit.names.indexOf(name);
   return i < 0 ? null : { coef: fit.coef[i], se: fit.se[i], lo: fit.lo[i], hi: fit.hi[i] };
+}
+
+// M8b's leave-one-out, lifted out of main() unchanged so §5.3 can call it on the same points. It fits
+// ratio = a + b × age on `fitPool` — which never contains the held-out target — and asks the line for the
+// target's median ratio at its median age. Structural parameters: M8's own rows and model-years satisfy them.
+export type CurvePoint = { ratio: number; age: number };
+export type LooTarget = { medianRatio: number; medianAge: number };
+export type Loo = { err: number | null; a: number | null; b: number | null; pred: number | null; fitN: number; reason: string | null };
+export function loo(target: LooTarget, fitPool: CurvePoint[], tag: string): Loo {
+  if (fitPool.length === 0) {
+    note(`M8b: ${tag} — no listing outside the held-out model-year, so there is nothing to fit.`);
+    return { err: null, a: null, b: null, pred: null, fitN: 0, reason: "no listing outside the held-out model-year" };
+  }
+  const fit = ols(
+    fitPool.map((r) => r.ratio),
+    [{ name: "age", v: fitPool.map((r) => r.age) }],
+  );
+  if (!fit.ok) {
+    note(`M8b fit dropped: ${tag} — ${fit.reason}.`);
+    return { err: null, a: null, b: null, pred: null, fitN: fitPool.length, reason: fit.reason };
+  }
+  const bc = at(fit, "age");
+  if (bc === null) {
+    note(`M8b: ${tag} — the age column was dropped (${fit.dropped.join(", ")}).`);
+    return { err: null, a: fit.coef[0], b: null, pred: null, fitN: fit.n, reason: "age column dropped" };
+  }
+  const pred = fit.coef[0] + bc.coef * target.medianAge;
+  return { err: (Math.abs(pred - target.medianRatio) / target.medianRatio) * 100, a: fit.coef[0], b: bc.coef, pred, fitN: fit.n, reason: null };
 }
 
 // ---------- deterministic RNG (M4) ----------
@@ -1131,28 +1164,7 @@ async function main() {
       medianAge: median(set.map((r) => r.age)),
     };
   });
-  type Loo = { err: number | null; a: number | null; b: number | null; pred: number | null; fitN: number; reason: string | null };
-  const loo = (target: MYear, fitPool: M8Row[], tag: string): Loo => {
-    if (fitPool.length === 0) {
-      note(`M8b: ${tag} — no listing outside the held-out model-year, so there is nothing to fit.`);
-      return { err: null, a: null, b: null, pred: null, fitN: 0, reason: "no listing outside the held-out model-year" };
-    }
-    const fit = ols(
-      fitPool.map((r) => r.ratio),
-      [{ name: "age", v: fitPool.map((r) => r.age) }],
-    );
-    if (!fit.ok) {
-      note(`M8b fit dropped: ${tag} — ${fit.reason}.`);
-      return { err: null, a: null, b: null, pred: null, fitN: fitPool.length, reason: fit.reason };
-    }
-    const bc = at(fit, "age");
-    if (bc === null) {
-      note(`M8b: ${tag} — the age column was dropped (${fit.dropped.join(", ")}).`);
-      return { err: null, a: fit.coef[0], b: null, pred: null, fitN: fit.n, reason: "age column dropped" };
-    }
-    const pred = fit.coef[0] + bc.coef * target.medianAge;
-    return { err: (Math.abs(pred - target.medianRatio) / target.medianRatio) * 100, a: fit.coef[0], b: bc.coef, pred, fitN: fit.n, reason: null };
-  };
+  // loo() is now module-level (exported for §5.3); MYear and M8Row satisfy its structural parameters.
   const yearKey = (r: M8Row) => `${r.l.model_label}|${r.l.year}`;
 
   log(`**The pooled curve** — both models together: ${myears.length} model-years, ${m8All.length} listings with a new price and a first registration.`);
@@ -1501,10 +1513,14 @@ async function main() {
   table(["constant", "in use", ordered[0], ordered[1], "both", "n", "verdict"], summary);
 }
 
-main()
-  .then(() => db.$disconnect())
-  .catch(async (e) => {
-    console.error("\nSTOPPED:", (e as Error).message);
-    await db.$disconnect();
-    process.exit(1);
-  });
+// Day 14 (§5): run the measurement only when this file IS the command — importing it for ols() / at() /
+// loo() must not run it. Invoked directly, everything below behaves exactly as before.
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  main()
+    .then(() => db.$disconnect())
+    .catch(async (e) => {
+      console.error("\nSTOPPED:", (e as Error).message);
+      await db.$disconnect();
+      process.exit(1);
+    });
+}

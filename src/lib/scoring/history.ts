@@ -21,6 +21,11 @@
 // prices. `value_by_reality` is the same lines with the zero-km leasing line dropped (that row is a
 // holder, not an owner), combined by the same rule; identical to `value` whenever there is no
 // zero-km deal. users, every other line and the bonus are shared by both readings.
+//
+// A car with NO registry record has no lines to read at all (Day 14, §0.4): its row is the cell's
+// median history row, source 'typical', marked assumed — one confidence item. The declared hand of the
+// ad is not a substitute for a record and is not scored. Without a median_history there is no typical
+// either, and the row is unavailable with reason 'no_typical_history' — so no deal score.
 
 import {
   HISTORY_DEDUCTION_CAP,
@@ -140,38 +145,27 @@ function combineWithCount(entries: { for: string; pct: number }[], users: number
 }
 
 export function historyRow(input: ScoringInput): Row {
-  const { listing, car } = input;
+  const { car, market } = input;
   const history = car.ownership_history;
 
   if (history === null) {
-    if (listing.hand_declared === null) {
-      return { row: "history", status: "unavailable", reason: "no_history", raw: { owners: null, paper_hand: car.hand } };
+    // Day 14 (§0.4): a car with no registry record is assumed to be the typical car of its cell — the row
+    // is the cell's median history row, marked as assumed. The ad's declared hand enters no score: it is
+    // a claim about a record we do not have, and the Day 11 source-'ad' path is gone.
+    const median_history = market === null ? null : market.median_history;
+    const based_on_n = market === null ? null : market.sample_size;
+    if (median_history === null) {
+      return { row: "history", status: "unavailable", reason: "no_typical_history", raw: { median_history: null, based_on_n } };
     }
-    // hand_declared <= 0 is an invalid declaration (§18.7): unavailable, never a throw.
-    if (listing.hand_declared <= 0) {
-      return { row: "history", status: "unavailable", reason: "invalid_declaration", raw: { owners: null, paper_hand: car.hand, hand_declared: listing.hand_declared } };
-    }
-    // Source 'ad': the count from the ad, owner types unknown — no type deductions, no detectors.
-    const users = listing.hand_declared;
-    const { value, deductions, sum_before_cap } = combineWithCount([], users);
+    const value = round(median_history);
     return {
       row: "history",
       status: "scored",
-      source: "ad",
-      value: round(value),
-      value_by_reality: round(value), // no zero-km line without a record: reality == paper (§1.4)
-      partial: ["owner_types"],
-      raw: {
-        owners: null,
-        users,
-        paper_hand: car.hand,
-        zero_km_deal: false,
-        months_to_first_private: null,
-        private_pair: false,
-        dealer_transfers: null,
-        deductions,
-        sum_before_cap,
-      },
+      source: "typical",
+      value,
+      value_by_reality: value, // no record, so no zero-km line to drop: reality == paper
+      note: "assumed_typical", // §9.9: a code, not prose — the display layer maps it to text (Day 18)
+      raw: { median_history, based_on_n },
     };
   }
   if (history.length === 0) throw new Error("history row: ownership_history is [] — an empty record is stored as null, never []");

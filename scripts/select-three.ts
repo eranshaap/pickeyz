@@ -336,7 +336,7 @@ async function main() {
       const also = r.categories.filter((x) => x !== c);
       log(`  winner${also.length ? ` (also ${also.join(" + ")})` : ""}`);
       log(`  plate ${p.plate} | listing ${id} | year ${p.candidate.year} | price ${p.candidate.price} | price / new = ${pctText(id)} | km_declared ${p.km_declared ?? "-"} | rank ${r.rank}`);
-      log(`  deal_score ${fmt(b.deal_score)} | condition_score ${fmt(b.condition_score)} | condition_by_reality ${fmt(b.condition_by_reality)} | typical_condition ${fmt(b.typical_condition)}`);
+      log(`  deal_score ${fmt(b.deal_score)} | condition_score ${fmt(b.condition_score)} | condition_by_reality ${fmt(b.condition_by_reality)} | typical_history ${fmt(b.typical_history)}`);
       log(`  seller ${p.seller} | verify_availability ${r.verify_availability}`);
     }
     const cands = shown.filter((x) => x.eligibility[c]).sort((a, b) => categoryOrder[c](P(a.listing_id).candidate, P(b.listing_id).candidate));
