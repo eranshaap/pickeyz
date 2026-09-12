@@ -3,15 +3,26 @@ import { makeDegemCode } from "./degem-code";
 import { ownershipCode, originCode, type OwnershipCode, type OriginCode } from "./translator";
 
 // ---- the ministry's rows, with its field names (only what we read) ----
-type RegistryRow = {
+export type RegistryRow = {
   sug_degem: string; tozeret_cd: number; degem_cd: number; tozeret_nm: string; degem_nm: string;
   ramat_gimur: string; shnat_yitzur: number; kinuy_mishari: string; sug_delek_nm: string;
   baalut: string; tzeva_rechev: string; mivchan_acharon_dt: string; tokef_dt: string;
   moed_aliya_lakvish: string;
 };
-type HistoryKmRow = { kilometer_test_aharon: number; rishum_rishon_dt: string; mkoriut_nm: string };
-type HistoryHandRow = { _id: number; baalut_dt: number; baalut: string };
-type CancelledRow = { bitul_dt: string };
+export type HistoryKmRow = { kilometer_test_aharon: number; rishum_rishon_dt: string; mkoriut_nm: string };
+export type HistoryHandRow = { _id: number; baalut_dt: number; baalut: string };
+export type CancelledRow = { bitul_dt: string };
+
+// One plate's answers, per resource. `undefined` = the resource was not asked; `[]` = it answered
+// nothing, which is an answer (§0.3). getVehicleData asks in the chain's order and stops early, so
+// the resources it never reaches are absent here; the refresh fills in what it asked for.
+export type RawRows = {
+  registry?: RegistryRow[];
+  cancelled?: CancelledRow[];
+  inactive?: RegistryRow[];
+  history_km?: HistoryKmRow[];
+  history_hand?: HistoryHandRow[];
+};
 
 // ---- what the rest of the code receives; names match the cars table where they map ----
 export type VehicleData = {
@@ -40,7 +51,7 @@ export type VehicleLookup =
 // The active registry record's field names, verified 02/09. The inactive dataset is documented as
 // carrying the same fields; per our rule we do not take that on trust — the first inactive record
 // of a run prints its keys and is compared against this list, and any difference stops the run.
-const REGISTRY_FIELDS = [
+export const REGISTRY_FIELDS = [
   "_id", "mispar_rechev", "tozeret_cd", "sug_degem", "tozeret_nm", "degem_cd", "degem_nm",
   "ramat_gimur", "ramat_eivzur_betihuty", "kvutzat_zihum", "shnat_yitzur", "degem_manoa",
   "mivchan_acharon_dt", "tokef_dt", "baalut", "misgeret", "tzeva_cd", "tzeva_rechev",
@@ -68,29 +79,55 @@ function checkInactiveFields(plate: string, row: object): void {
   }
 }
 
-export async function getVehicleData(rawPlate: string, refresh = false): Promise<VehicleLookup> {
+export function normalizePlate(rawPlate: string): string {
   const plate = rawPlate.replace(/\D/g, "");
   if (plate.length < 6 || plate.length > 8) {
     throw new Error(`plate: expected 6-8 digits, got ${JSON.stringify(rawPlate)}`);
   }
+  return plate;
+}
+
+export async function getVehicleData(rawPlate: string, refresh = false): Promise<VehicleLookup> {
+  const plate = normalizePlate(rawPlate);
 
   // Sequential on purpose — a few quick requests in a row, not all at once.
   // active -> cancelled -> inactive: a finally-cancelled car may also sit in the inactive
   // file, and cancelled is the stronger fact, so it is asked first.
-  const registry = await fetchRows<RegistryRow>("registry", plate, refresh);
-  let reg = registry[0];
+  const rows: RawRows = {};
+  rows.registry = await fetchRows<RegistryRow>("registry", plate, refresh);
+  if (!rows.registry[0]) {
+    rows.cancelled = await fetchRows<CancelledRow>("cancelled", plate, refresh);
+    if (!rows.cancelled[0]) {
+      rows.inactive = await fetchRows<RegistryRow>("inactive", plate, refresh);
+      if (!rows.inactive[0]) return interpret(plate, rows); // not_found
+    }
+  }
+  // A cancellation record carries no moving fields, so the two history files are not asked for.
+  if (rows.cancelled?.[0]) return interpret(plate, rows);
+  rows.history_km = await fetchRows<HistoryKmRow>("history_km", plate, refresh);
+  rows.history_hand = await fetchRows<HistoryHandRow>("history_hand", plate, refresh);
+  return interpret(plate, rows);
+}
+
+// The mapping from the ministry's rows to VehicleData, with no I/O in it — the same reading of the
+// same answers whether they came off the network or off the cache. Day 14 run C (§0.6, §1.1): the
+// refresh drives its own fetch (fresh, nothing written) and then reads the answers through here, so
+// `hand`, the ownership rows, the truncation rule and the first_registration fallback stay in one place.
+export function interpret(plate: string, rows: RawRows): VehicleLookup {
+  let reg = rows.registry?.[0];
   let status: "active" | "inactive" = "active";
   if (!reg) {
-    const cancelled = await fetchRows<CancelledRow>("cancelled", plate, refresh);
-    if (cancelled[0]) return { status: "cancelled", bitul_dt: cancelled[0].bitul_dt };
-    const inactive = await fetchRows<RegistryRow>("inactive", plate, refresh);
-    if (!inactive[0]) return { status: "not_found" };
-    checkInactiveFields(plate, inactive[0]);
-    reg = inactive[0];
+    if (rows.cancelled?.[0]) return { status: "cancelled", bitul_dt: rows.cancelled[0].bitul_dt };
+    if (!rows.inactive?.[0]) return { status: "not_found" };
+    checkInactiveFields(plate, rows.inactive[0]);
+    reg = rows.inactive[0];
     status = "inactive";
   }
-  const km = await fetchRows<HistoryKmRow>("history_km", plate, refresh);
-  const hand = await fetchRows<HistoryHandRow>("history_hand", plate, refresh);
+  if (!rows.history_km || !rows.history_hand) {
+    throw new Error(`MoT ${plate}: the ${status} record resolved but a history file was not asked for`);
+  }
+  const km = rows.history_km;
+  const hand = rows.history_hand;
 
   const history = [...hand]
     .sort((a, b) => a.baalut_dt - b.baalut_dt || a._id - b._id)

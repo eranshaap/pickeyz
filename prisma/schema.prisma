@@ -47,28 +47,31 @@ model models {
 
 // 2. cars — the physical car, one row per license plate. No price, no seller, no declared km.
 model cars {
-  id                 Int       @id @default(autoincrement())
-  license_plate      String?   @unique // external id, the anchor. Digits only, kept as text.
-  model_id           Int // required: without a variant there is no comparison group
-  year               Int? // production year, registry shnat_yitzur. Picks the models row and slices the medians.
-  hand               Int? // non-dealer rows in ownership history; null when history is empty or truncated
-  ownership_history  Json? // [{ ym: "2018-03", type: "leasing" }, ...] all rows incl. dealer, oldest first
-  color              String? // from the ad; Ministry as fallback. A listing fills empty, never overwrites.
-  test_expiry        DateTime? @db.Date
-  mivchan_acharon_dt DateTime? @db.Date // date of last test (registry; snapshot at import)
-  km_at_last_test    Int? // odometer at last test (history 1; snapshot at import; null pre-2017)
-  first_registration DateTime? @db.Date // history 1 full date; fallback registry month with day 01
+  id                  Int       @id @default(autoincrement())
+  license_plate       String?   @unique // external id, the anchor. Digits only, kept as text.
+  model_id            Int // required: without a variant there is no comparison group
+  year                Int? // production year, registry shnat_yitzur. Picks the models row and slices the medians.
+  hand                Int? // non-dealer rows in ownership history; null when history is empty or truncated
+  ownership_history   Json? // [{ ym: "2018-03", type: "leasing" }, ...] all rows incl. dealer, oldest first
+  color               String? // from the ad; Ministry as fallback. A listing fills empty, never overwrites.
+  test_expiry         DateTime? @db.Date
+  mivchan_acharon_dt  DateTime? @db.Date // date of last test (registry; snapshot at import)
+  km_at_last_test     Int? // odometer at last test (history 1; snapshot at import; null pre-2017)
+  first_registration  DateTime? @db.Date // history 1 full date; fallback registry month with day 01
   // Future sources (leasing companies, disclosure form). Empty for now; null = unknown.
-  had_accident       Boolean?
-  damage_severity    String?
-  service_history    String?
-  authorized_garage  Boolean?
-  previous_owners    Int?
-  is_original        Boolean?
-  warranty_until     DateTime? @db.Date
-  test_failures      Int?
-  created_at         DateTime  @default(now())
-  updated_at         DateTime  @default(now()) @updatedAt
+  had_accident        Boolean?
+  damage_severity     String?
+  service_history     String?
+  authorized_garage   Boolean?
+  previous_owners     Int?
+  is_original         Boolean?
+  warranty_until      DateTime? @db.Date
+  test_failures       Int?
+  // Day 14 run C (§0.10): the registry refresh's two columns.
+  registry_checked_at DateTime? // when the Ministry's answer on this car was last ACCEPTED (not when we last asked). Backfilled from created_at.
+  cancelled_at        DateTime? @db.Date // bitul_dt, written once when the car resolves to the cancellations registry. Empty today (0 cars).
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @default(now()) @updatedAt
 
   model         models              @relation(fields: [model_id], references: [id])
   listings      listings[]

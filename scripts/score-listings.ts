@@ -39,7 +39,9 @@
 //   (b) VERSION (typical) — the re-sourced history (§0.4): the car has no ownership row, the v3 history row
 //       is the cell's typical (source 'typical'), the price row is unchanged, and the deal moves by
 //       constant + (new history - old history) + (new km - old km), within the same ±0.1 allowance.
-// The count of each sub-rule is printed and compared against the §6.4 populations it must equal.
+// The count of each sub-rule is printed and compared against the §6.4 populations it must equal —
+// except on a run with no version move at all, where the line reads `n/a — same engine version`
+// instead of comparing 0 against them (Day 14 run C §0.15, answering run B's Q12).
 //
 // --write (§22.2): one transaction, one statement per table — a createMany of listing_scores rows
 // (§19.1) and one UPDATE listings … FROM unnest(...) setting score = deal_score, score_breakdown = the
@@ -592,10 +594,17 @@ async function main() {
   log(`DATA compares the inputs the stored breakdown carries: ${DATA_COVERS.join("; ")}`);
   log(`DATA cannot see (not carried in the breakdown): ${DATA_MISSING.join("; ")}`);
   // Q13: each sub-rule must carry exactly the §6.4 population it was written for — no more, no fewer.
+  // Day 14 run C (§0.15, run B's Q12): the two sub-rules only exist to describe a v2 -> v3 move, so on a
+  // run where every stored engine_version already equals ENGINE_VERSION there is no VERSION line to
+  // carry — and comparing 0 against the two populations reads as a MISMATCH that is not one. Say so
+  // instead. The check itself is unchanged on any run that does have a version move to describe.
   const anchorCount = labelCount("VERSION (anchor)"), typicalCount = labelCount("VERSION (typical)");
+  const versionMoved = scored.some((s) => s.stored.engine_version !== null && s.stored.engine_version !== ENGINE_VERSION);
   log(
-    `Q13 sub-rules: VERSION (anchor) ${anchorCount} vs ${thin.length} thin-cell listings — ${anchorCount === thin.length ? "match" : "MISMATCH"}; ` +
-      `VERSION (typical) ${typicalCount} vs ${noHistory.length} cars with no ownership record — ${typicalCount === noHistory.length ? "match" : "MISMATCH"}`,
+    !versionMoved
+      ? `Q13 sub-rules: n/a — same engine version (every stored score is already engine_version ${ENGINE_VERSION}, so no listing takes the VERSION label; the populations they describe are ${thin.length} thin-cell listings and ${noHistory.length} cars with no ownership record)`
+      : `Q13 sub-rules: VERSION (anchor) ${anchorCount} vs ${thin.length} thin-cell listings — ${anchorCount === thin.length ? "match" : "MISMATCH"}; ` +
+          `VERSION (typical) ${typicalCount} vs ${noHistory.length} cars with no ownership record — ${typicalCount === noHistory.length ? "match" : "MISMATCH"}`,
   );
   for (const x of labelled) {
     log(`${x.label.padEnd(LABEL_WIDTH)} | listing ${x.s.listing_id} (${x.s.plate}) | ${x.head}`);
