@@ -23,6 +23,15 @@
 // The models (§5): MAZDA 3 with no filters, and IONIQ HYBRID with kmMax = the MIDDLE km anchor once the
 // anchors exist. They do not exist until `compute-market-stats --write` runs, so today the IONIQ search runs
 // with no filters too — and the script says which of the two it did.
+//
+// DAY 15 RUN 2b (§7.2) — a fourth block: the `search_results` rows runSearch now writes in the same
+// transaction as the search. Five invariants per written search, read back out of the database and not out
+// of the object runSearch returned:
+//   rows per search = pool_count · rows with a rank = results_count · the ranks are 1..N contiguous ·
+//   the was_recommended rows are exactly the distinct picked listings · the best_value winner has rank 1.
+// The IONIQ leg now runs with a km ceiling, so its pool_count is legitimately smaller than the 176 of Run 1;
+// the filter that was applied is printed beside it. MAZDA 3 unfiltered is unchanged at 78 / 75, and that is
+// asserted rather than left to the eye.
 
 import "dotenv/config";
 import { spawnSync } from "node:child_process";
@@ -35,6 +44,10 @@ import type { SearchIdentity } from "@/lib/search/visitor";
 
 const MAZDA = "MAZDA 3";
 const IONIQ = "IONIQ HYBRID";
+// §7.2 — the unfiltered MAZDA 3 leg is the fixed point of this read-back: the same pool and the same ranked
+// count as Run 1. A change here is a real change in the data or in the library, not a new expectation.
+const MAZDA_POOL = 78;
+const MAZDA_RESULTS = 75;
 const IDENTITY: SearchIdentity = { visitor_id: "verify-search-layer", session_id: `run-${new Date().toISOString()}` };
 
 let failures = 0;
@@ -214,11 +227,87 @@ async function main() {
     else if (r.pool_count < r.results_count) fail(`${search.model}: pool_count ${r.pool_count} < results_count ${r.results_count} — the cut pool cannot be smaller than what got a rank`);
     else ok(`${search.model}: pool_count ${r.pool_count} = the cut pool, results_count ${r.results_count} = ranked ${search.ranked.length} + tail ${search.tail.length}`);
   }
+  if (mazdaSearch.pool_cut !== MAZDA_POOL || mazdaSearch.results_count !== MAZDA_RESULTS) {
+    fail(`${MAZDA} unfiltered: ${mazdaSearch.pool_cut} / ${mazdaSearch.results_count} — §7.2 expects ${MAZDA_POOL} / ${MAZDA_RESULTS}`);
+  } else ok(`${MAZDA} unfiltered is still ${MAZDA_POOL} / ${MAZDA_RESULTS}`);
+  if (Object.keys(ioniqFilters).length > 0 && ioniqSearch.pool_cut >= ioniqSearch.pool_total) {
+    fail(`${IONIQ}: kmMax ${ioniqFilters.kmMax} cut nothing — pool ${ioniqSearch.pool_total} -> ${ioniqSearch.pool_cut}`);
+  } else if (Object.keys(ioniqFilters).length > 0) {
+    ok(`${IONIQ}: kmMax ${ioniqFilters.kmMax} cut the pool from ${ioniqSearch.pool_total} to ${ioniqSearch.pool_cut} — smaller than Run 1's 176, and legitimately so`);
+  }
   if (written.length !== 2) fail(`expected 2 searches rows, found ${written.length}`);
   else ok("2 searches rows, one per runSearch call");
   const ids = [mazdaSearch.search_id, ioniqSearch.search_id];
   if (written.map((r) => r.id).join(",") !== ids.join(",")) fail(`the ids runSearch returned (${ids.join(", ")}) are not the rows found (${written.map((r) => r.id).join(", ")})`);
   else ok(`the ids runSearch returned are the rows in the table: ${ids.join(", ")}`);
+
+  // Day 15 Run 2b (§7.2): the rows runSearch wrote beside each of those two searches. Everything below is
+  // read back OUT OF THE DATABASE — the point is what landed, not what the caller was handed.
+  console.log(`\n===== 4. THE search_results ROWS THIS RUN WROTE (§4) =====`);
+  console.log("search | model | pool_count | rows | ranked rows | results_count | recommended rows | best_value rank | ranks 1..N");
+  for (const search of [mazdaSearch, ioniqSearch]) {
+    const rows = await db.search_results.findMany({
+      where: { search_id: search.search_id },
+      orderBy: { id: "asc" },
+      select: { listing_id: true, rank: true, total_score: true, confidence: true, was_recommended: true, recommendation_categories: true, price_snapshot: true, km_snapshot: true, market_stats_id: true, model_stats_id: true, pool_stats_id: true, new_car_price_id: true, stage_b_trace: true, score_breakdown: true },
+    });
+    const ranked = rows.filter((r) => r.rank !== null).map((r) => r.rank as number).sort((a, b) => a - b);
+    const contiguous = ranked.every((v, i) => v === i + 1);
+    const recommended = rows.filter((r) => r.was_recommended).map((r) => r.listing_id).sort((a, b) => a - b);
+    const picked = [...new Set(Object.values(search.picks).filter((p): p is NonNullable<typeof p> => p !== null).map((p) => p.listing_id))].sort((a, b) => a - b);
+    const bestValue = search.picks.best_value;
+    const bestValueRank = bestValue === null ? null : (rows.find((r) => r.listing_id === bestValue.listing_id)?.rank ?? null);
+    console.log(
+      `${search.search_id} | ${search.model} | ${search.pool_cut} | ${rows.length} | ${ranked.length} | ${search.results_count} | ${recommended.length} | ${bestValueRank ?? "-"} | ${contiguous ? "yes" : "NO"}`,
+    );
+
+    if (rows.length !== search.pool_cut) fail(`${search.model}: ${rows.length} search_results row(s) for a cut pool of ${search.pool_cut} — §4 wants one row per listing of the cut pool`);
+    else ok(`${search.model}: ${rows.length} rows = pool_count`);
+    if (ranked.length !== search.results_count) fail(`${search.model}: ${ranked.length} row(s) with a rank vs results_count ${search.results_count}`);
+    else ok(`${search.model}: ${ranked.length} rows with a rank = results_count`);
+    if (!contiguous) fail(`${search.model}: the ranks are not 1..${ranked.length} contiguous — ${ranked.join(", ")}`);
+    else ok(`${search.model}: the ranks are 1..${ranked.length}, contiguous`);
+    if (recommended.join(",") !== picked.join(",")) fail(`${search.model}: was_recommended rows ${recommended.join(", ") || "none"} vs the picked listings ${picked.join(", ") || "none"}`);
+    else ok(`${search.model}: the was_recommended rows are exactly the ${picked.length} distinct picked listing(s)`);
+    if (bestValue !== null && bestValueRank !== 1) fail(`${search.model}: the best_value winner (listing ${bestValue.listing_id}) has rank ${bestValueRank ?? "null"}, not 1`);
+    else if (bestValue !== null) ok(`${search.model}: the best_value winner is rank 1`);
+
+    // the snapshot columns, on the picked rows — the numbers a later reader would reconstruct the answer from
+    for (const id of picked) {
+      const r = rows.find((x) => x.listing_id === id);
+      if (r === undefined) {
+        fail(`${search.model}: picked listing ${id} has no search_results row`);
+        continue;
+      }
+      const trace = Array.isArray(r.stage_b_trace) ? r.stage_b_trace.length : -1;
+      console.log(
+        `    listing ${id} | rank ${r.rank ?? "-"} | ${r.recommendation_categories.join(" + ")} | score ${r.total_score ?? "null"} | confidence ${r.confidence ?? "null"} | price ${r.price_snapshot} | km ${r.km_snapshot ?? "null"} | norms ${r.market_stats_id ?? "-"}/${r.model_stats_id ?? "-"}/${r.pool_stats_id ?? "-"} | new_car_price ${r.new_car_price_id ?? "-"} | trace ${trace} record(s) | invoice ${r.score_breakdown === null ? "null" : "stored"}`,
+      );
+      if (r.score_breakdown === null) fail(`${search.model}: picked listing ${id} has no score_breakdown snapshot`);
+      if (trace < 0) fail(`${search.model}: picked listing ${id} has a non-array stage_b_trace`);
+      // NOT a failure — §0.3 is a rank rule, not a pick rule. Only best_value is guaranteed rank 1;
+      // peace_of_mind and cheapest are won on their own orders, so a RECOMMENDED listing can sit at rank 11
+      // and keep its triggered records only — and keep none at all when it triggered nothing. Printed here
+      // because it is a consequence of the brief worth seeing, not a bug to paper over (REPORT.md §0.3).
+      if (trace === 0) console.log(`    NOTE  listing ${id} is recommended at rank ${r.rank} (> 10), so §0.3 kept only its triggered records — it triggered none, and its trace is empty`);
+    }
+
+    // §0.3 — a full trace down to rank 10, triggered-only above it. The counts are printed, not eyeballed.
+    const traceLen = (v: unknown): number => (Array.isArray(v) ? v.length : -1);
+    const deep = rows.filter((r) => r.rank !== null && r.rank <= 10);
+    const shallow = rows.filter((r) => r.rank !== null && r.rank > 10);
+    const unranked = rows.filter((r) => r.rank === null);
+    console.log(
+      `    trace size (§0.3): rank<=10 ${deep.length} row(s), ${deep.map((r) => traceLen(r.stage_b_trace)).join("/") || "-"} records | rank>10 ${shallow.length} row(s), min ${Math.min(...shallow.map((r) => traceLen(r.stage_b_trace)), Infinity)} max ${Math.max(...shallow.map((r) => traceLen(r.stage_b_trace)), -Infinity)} | rank null ${unranked.length} row(s), ${unranked.map((r) => traceLen(r.stage_b_trace)).join("/") || "-"}`,
+    );
+    if (rows.some((r) => traceLen(r.stage_b_trace) < 0)) fail(`${search.model}: a stage_b_trace is not an array`);
+    if (unranked.some((r) => traceLen(r.stage_b_trace) === 0)) fail(`${search.model}: a row with rank null has an empty trace — the reason it lost its rank is unrecorded`);
+  }
+
+  const totalRows = await db.search_results.count({ where: { search_id: { in: [mazdaSearch.search_id, ioniqSearch.search_id] } } });
+  const expectedRows = mazdaSearch.pool_cut + ioniqSearch.pool_cut;
+  if (totalRows !== expectedRows) fail(`${totalRows} search_results rows over the two searches, expected ${expectedRows}`);
+  else ok(`${totalRows} search_results rows over the two searches = ${mazdaSearch.pool_cut} + ${ioniqSearch.pool_cut}`);
 
   console.log(`\n===== VERDICT =====`);
   console.log(failures === 0 ? "PASS — every check above is ok" : `FAIL — ${failures} check(s) failed; see the FAIL lines above`);

@@ -57,13 +57,27 @@ export type FilterCountsView = {
 
 type Row = Filterable & { id: number };
 
-export async function filterCounts(input: { model: string; draft?: SearchFilters }): Promise<FilterCountsView> {
-  const draft = input.draft ?? {};
-  const key = modelKey(input.model);
+// Day 15 Run 2b (§5): the SHELF — the options the drawer offers for one model, with no draft and no counts.
+// It does not change while the user edits the draft, which is why it is fetched once per model and not with
+// every counter call. Every number filterCounts() prints is unchanged; this is an additional export.
+export type ShelfView = {
+  model: string; // the display spelling, as models.model holds it
+  model_key: string;
+  pool_total: number; // the model's live pool, no filter at all
+  years: number[]; // years WITH STOCK in the model pool, ascending
+  regions: string[]; // distinct non-null region in the model pool, by name
+  km_anchors: number[] | null; // the latest model_stats.km_filter_anchors; null = no km block at all (§5)
+  km_note: string | null; // why there are no anchors, when there are none
+};
 
-  // §4 — ONE fetch of the model's live listings. The model is matched on modelKey() (uppercased, whitespace
-  // stripped), which is a normalisation SQL cannot do for us, so the cut is in memory on the same field the
-  // assembly cuts on. make comes along because model_stats is keyed on (make, model).
+type ModelPool = { display: string; key: string; make: string; rows: Row[] };
+
+// One fetch of the model's live listings, shared by the counters and the shelf. The model is matched on
+// modelKey() (uppercased, whitespace stripped), which is a normalisation SQL cannot do for us, so the cut is
+// in memory on the same field the assembly cuts on. make comes along because model_stats is keyed on
+// (make, model).
+async function loadModelPool(model: string): Promise<ModelPool> {
+  const key = modelKey(model);
   const live = await db.listings.findMany({
     where: { delisted_at: null },
     select: {
@@ -89,9 +103,50 @@ export async function filterCounts(input: { model: string; draft?: SearchFilters
     makes.add(l.car.model.make);
     rows.push({ id: l.id, price: l.price, year: l.car.year, km_declared: l.km_declared, region: l.region });
   }
-  if (display === null) throw new Error(`filterCounts: no live listing has model '${input.model}'`);
+  if (display === null) throw new Error(`filterCounts: no live listing has model '${model}'`);
   if (makes.size > 1) throw new Error(`filterCounts: model '${display}' spans ${makes.size} makes (${[...makes].sort().join(", ")}) — model_stats cannot be read for it`);
-  const make = [...makes][0];
+  return { display, key, make: [...makes][0], rows };
+}
+
+// The km chips of one model: the anchors the norms run wrote (§1), never computed here. Shared by the
+// counters and the shelf so that both say the same thing about a model whose anchors have never been written.
+async function loadKmAnchors(make: string, model: string): Promise<{ anchors: number[] | null; note: string | null }> {
+  const modelStats = await db.model_stats.findFirst({
+    where: { make, model },
+    orderBy: [{ computed_at: "desc" }, { id: "desc" }],
+    select: { id: true, km_filter_anchors: true, computed_at: true },
+  });
+  const stored = modelStats?.km_filter_anchors ?? null;
+  const anchors: number[] | null = Array.isArray(stored) ? stored.filter((v): v is number => typeof v === "number") : null;
+  return {
+    anchors,
+    note:
+      modelStats === null
+        ? `no model_stats row for ${make} ${model} — the norms run has never written one`
+        : anchors === null
+          ? `model_stats row ${modelStats.id} (${modelStats.computed_at.toISOString()}) carries no km_filter_anchors — the column has not been written yet; the km group is hidden`
+          : null,
+  };
+}
+
+/** §5 — the drawer's shelf for one model: the years with stock, the regions present, the km anchors. */
+export async function filterShelf(model: string): Promise<ShelfView> {
+  const pool = await loadModelPool(model);
+  const km = await loadKmAnchors(pool.make, pool.display);
+  return {
+    model: pool.display,
+    model_key: pool.key,
+    pool_total: pool.rows.length,
+    years: [...new Set(pool.rows.map((r) => r.year))].sort((a, b) => a - b),
+    regions: [...new Set(pool.rows.map((r) => r.region).filter((v): v is string => v !== null))].sort((a, b) => a.localeCompare(b)),
+    km_anchors: km.anchors,
+    km_note: km.note,
+  };
+}
+
+export async function filterCounts(input: { model: string; draft?: SearchFilters }): Promise<FilterCountsView> {
+  const draft = input.draft ?? {};
+  const { display, key, make, rows } = await loadModelPool(input.model);
 
   const pool_total = rows.length;
   const pool_now = countPassing(rows, draft);
@@ -122,21 +177,10 @@ export async function filterCounts(input: { model: string; draft?: SearchFilters
 
   // km chips = the anchors the norms run wrote (§1), never computed here. The ceiling is single-valued, so
   // toggling a chip that is not the current ceiling REPLACES the ceiling; toggling the current one clears it.
-  const modelStats = await db.model_stats.findFirst({
-    where: { make, model: display },
-    orderBy: [{ computed_at: "desc" }, { id: "desc" }],
-    select: { id: true, km_filter_anchors: true, computed_at: true },
-  });
-  const stored = modelStats?.km_filter_anchors ?? null;
-  const anchors: number[] | null = Array.isArray(stored) ? stored.filter((v): v is number => typeof v === "number") : null;
+  const { anchors, note } = await loadKmAnchors(make, display);
   const km = {
     available: anchors !== null,
-    note:
-      modelStats === null
-        ? `no model_stats row for ${make} ${display} — the norms run has never written one`
-        : anchors === null
-          ? `model_stats row ${modelStats.id} (${modelStats.computed_at.toISOString()}) carries no km_filter_anchors — the column has not been written yet; the km group is hidden`
-          : null,
+    note,
     chips: (anchors ?? []).map((km_max) => {
       const selected = kmActive(draft) && draft.kmMax === km_max;
       const next: SearchFilters = selected ? { ...draft, kmMax: undefined } : { ...draft, kmMax: km_max };

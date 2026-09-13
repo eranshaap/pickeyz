@@ -30,6 +30,10 @@ import { ENGINE_VERSION } from "@/lib/scoring/constants";
 import type { ScoreResult, Row } from "@/lib/scoring/types";
 import type { CandidateListing } from "@/lib/selection";
 
+// Day 15 Run 2b (§4): the snapshot fields a `search_results` row needs and the two display facts the raw pick
+// card shows (§0.6) travel on the pool item too. They are ADDITIVE — nothing that existed changed shape, and
+// scripts/select-three.ts reads none of them, so its report stays byte-identical.
+
 // The four-column key's three variable columns (the fourth, tozeret_cd, is inside degem_code).
 export type NewPriceKey = { degem_code: string; shnat_yitzur: number; sug_degem: string };
 export const newPriceKeyText = (k: NewPriceKey) => `${k.degem_code}|${k.shnat_yitzur}|${k.sug_degem}`;
@@ -57,6 +61,16 @@ export type PoolItem = {
   vehicle_class: string; // models.vehicle_class = the price file's sug_degem
   key: NewPriceKey;
   new_price_published_at: Date | null; // the publication the new price came from; null when there is none
+  // Day 15 Run 2b (§4) — what a `search_results` row snapshots. The invoice itself is candidate.breakdown:
+  // the same object, read from listings.score_breakdown and never recomputed.
+  score: number | null; // listings.score — the stored deal score; null when the listing has none (thin cell)
+  market_stats_id: number | null; // the three norm pointers AS THE LISTING CARRIES THEM — pointers, not copies
+  model_stats_id: number | null;
+  pool_stats_id: number | null;
+  new_car_price_id: number | null; // the new_car_prices row `new_price` came from; null when the key has no row
+  // Day 15 Run 2b (§0.6) — the two facts the raw pick card shows that nothing else here carried.
+  dealer_type: string; // code: private | ... — the card says "פרטי" for private and "מגרש" for anything else
+  sub_model: string | null; // models.sub_model (catalog ramat_gimur)
 };
 
 export type AssembledPool = {
@@ -102,7 +116,7 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
   const rows = await db.listings.findMany({
     where: { delisted_at: null },
     include: {
-      car: { select: { id: true, license_plate: true, year: true, model: { select: { model: true, comparison_group: true, degem_code: true, vehicle_class: true } } } },
+      car: { select: { id: true, license_plate: true, year: true, model: { select: { model: true, sub_model: true, comparison_group: true, degem_code: true, vehicle_class: true } } } },
       market_stats: { select: { id: true, median_price: true, engine_version: true } },
       dealer: { select: { id: true, name: true, dealer_type: true, commercial: { select: { id: true, agreement_status: true, agreement_end: true } } } },
     },
@@ -187,6 +201,13 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
       vehicle_class: l.car.model.vehicle_class,
       key: { degem_code: l.car.model.degem_code, shnat_yitzur: l.car.year, sug_degem: l.car.model.vehicle_class },
       new_price_published_at: null, // filled below
+      score: l.score,
+      market_stats_id: l.market_stats_id,
+      model_stats_id: l.model_stats_id,
+      pool_stats_id: l.pool_stats_id,
+      new_car_price_id: null, // filled below, beside the price itself
+      dealer_type: l.dealer.dealer_type,
+      sub_model: l.car.model.sub_model,
     });
   }
 
@@ -196,15 +217,18 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
   const priceRows = wanted.size
     ? await db.new_car_prices.findMany({ where: { OR: [...wanted.values()] }, orderBy: [{ published_at: "desc" }, { id: "desc" }] })
     : [];
-  const latest = new Map<string, { mehir: number; published_at: Date }>();
+  // The row's id travels with its price: §4 stores WHICH new_car_prices row supplied the ceiling's new price,
+  // and the id is the only thing that identifies it after a later publication lands on the same key.
+  const latest = new Map<string, { id: number; mehir: number; published_at: Date }>();
   for (const r of priceRows) {
     const k = newPriceKeyText(r);
-    if (!latest.has(k)) latest.set(k, { mehir: r.mehir, published_at: r.published_at }); // first = latest published_at
+    if (!latest.has(k)) latest.set(k, { id: r.id, mehir: r.mehir, published_at: r.published_at }); // first = latest published_at
   }
   for (const p of items) {
     const hit = latest.get(newPriceKeyText(p.key));
     p.candidate.new_price = hit?.mehir ?? null;
     p.new_price_published_at = hit?.published_at ?? null;
+    p.new_car_price_id = hit?.id ?? null;
   }
 
   return {

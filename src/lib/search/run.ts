@@ -6,6 +6,8 @@
 //   cut by the filters    BEFORE selectThree(); the filters define the question and never touch a score (§3.2)
 //   selectThree()         the Stage B library, unchanged: nothing here recomputes a score or a rule
 //   the `searches` row    written on every invocation, even when the answer is empty (§3.4)
+//   its `search_results`  one row per listing of the CUT pool, in the SAME transaction (Run 2b §4) — the
+//                         mapping is src/lib/search/results.ts, which is pure and tested on its own
 //
 // The row carries BOTH sizes of the question (Run 1d, §2): `pool_count` is the cut pool — what survived the
 // filters and entered selectThree(), the same number counts.ts puts on the "עדכן" button — and
@@ -33,6 +35,7 @@ import {
 } from "@/lib/selection";
 import { assemblePool } from "./assemble";
 import { passes, type SearchFilters } from "./filters";
+import { toSearchResultRows, type ResultSnapshot } from "./results";
 import { searchIdentity, type SearchIdentity } from "./visitor";
 
 // The display labels of the gate (§3.3). Hebrew lives only in display strings — never in a comparison.
@@ -48,6 +51,10 @@ export type ListingView = {
   year: number;
   km_declared: number | null;
   region: string | null;
+  // Day 15 Run 2b (§0.6): the two facts the raw pick card shows beside year / price / km. dealer_type is the
+  // CODE (private | ...) — the Hebrew "פרטי" / "מגרש" is a display string and lives in the component.
+  sub_model: string | null;
+  dealer_type: string;
   deal_score: number | null;
   condition_score: number | null;
   condition_by_reality: number | null;
@@ -141,6 +148,8 @@ export async function runSearch(input: {
       year: p.year,
       km_declared: p.km_declared,
       region: p.region,
+      sub_model: p.sub_model,
+      dealer_type: p.dealer_type,
       deal_score: b.deal_score,
       condition_score: b.condition_score,
       condition_by_reality: b.condition_by_reality,
@@ -194,22 +203,53 @@ export async function runSearch(input: {
       (failed.length ? `: ${failed.map((c) => c.claim).join("; ")}` : ""),
   );
 
-  // §3.4 — one row per invocation, written whatever the answer was
+  // §3.4 — one row per invocation, written whatever the answer was.
+  // Day 15 Run 2b (§4): the row AND its `search_results` rows are written in ONE transaction. A `searches`
+  // row that exists without its result rows would be a search nobody can reconstruct, so either both land or
+  // neither does. An empty cut pool writes the search row alone (§0.10) — a search with no cars is still a
+  // search, and it has no rows to write.
   const identity = input.identity ?? (await searchIdentity());
-  const row = await db.searches.create({
-    data: {
-      visitor_id: identity.visitor_id,
-      session_id: identity.session_id,
-      user_id: null, // no login this month
-      model_searched: assembled.model_display,
-      filters: input.filters === undefined ? undefined : (filters as object), // as received
-      priority: null, // no screen writes it yet
-      engine_version: ENGINE_VERSION,
-      rules_version: RULES_VERSION,
-      results_count: shown.length,
-      pool_count: cut.length, // the cut pool, before selectThree — the same number filterCounts() puts on "עדכן"
-    },
-    select: { id: true },
+  const snapshots: ResultSnapshot[] = cut.map((p) => ({
+    listing_id: p.listing_id,
+    price: p.price,
+    km_declared: p.km_declared,
+    score: p.score,
+    breakdown: p.candidate.breakdown,
+    market_stats_id: p.market_stats_id,
+    model_stats_id: p.model_stats_id,
+    pool_stats_id: p.pool_stats_id,
+    new_car_price_id: p.new_car_price_id,
+  }));
+
+  const row = await db.$transaction(async (tx) => {
+    const created = await tx.searches.create({
+      data: {
+        visitor_id: identity.visitor_id,
+        session_id: identity.session_id,
+        user_id: null, // no login this month
+        model_searched: assembled.model_display,
+        filters: input.filters === undefined ? undefined : (filters as object), // as received
+        priority: null, // no screen writes it yet
+        engine_version: ENGINE_VERSION,
+        rules_version: RULES_VERSION,
+        results_count: shown.length,
+        pool_count: cut.length, // the cut pool, before selectThree — the same number filterCounts() puts on "עדכן"
+      },
+      select: { id: true },
+    });
+    const rows = toSearchResultRows(created.id, snapshots, res);
+    if (rows.length !== cut.length) throw new Error(`runSearch: ${rows.length} result row(s) for a cut pool of ${cut.length} — the two must be equal`);
+    if (rows.length > 0) {
+      const written = await tx.search_results.createMany({
+        data: rows.map((r) => ({
+          ...r,
+          score_breakdown: r.score_breakdown as unknown as object,
+          stage_b_trace: r.stage_b_trace as unknown as object[],
+        })),
+      });
+      if (written.count !== rows.length) throw new Error(`runSearch: createMany wrote ${written.count} of ${rows.length} search_results rows`);
+    }
+    return created;
   });
 
   return {
