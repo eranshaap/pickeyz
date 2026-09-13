@@ -81,21 +81,21 @@ model cars {
 // 3. listings — one row per offer to sell a specific car. The score lives here.
 // is_active reflects the source only; display is a rule on the dealer's agreement status.
 model listings {
-  id                  Int       @id @default(autoincrement())
-  car_id              Int // required: an offer without a car is not an offer
-  dealer_id           Int // required: decides where the lead goes and who is billed
-  source              String // code: yad2 | albar | ... Derived from the link at import.
-  external_id         String // the listing's id in the source system, without the "?" tail
-  price               Int // required: asking price, NIS
-  region              String?
-  image_urls          String[] // addresses of images, not images. Empty in the manual phase.
-  km_declared         Int? // what THIS ad says. Another ad for the same car may say otherwise.
-  hand_declared       Int? // hand per the ad. Empty if the ad does not state it.
-  disclosure_provided Boolean   @default(false) // data came from a disclosure form
-  is_active           Boolean   @default(true)
-  first_seen_at       DateTime // required: the one value that cannot be recovered later
-  last_verified_at    DateTime?
-  delisted_at         DateTime?
+  id                   Int       @id @default(autoincrement())
+  car_id               Int // required: an offer without a car is not an offer
+  dealer_id            Int // required: decides where the lead goes and who is billed
+  source               String // code: yad2 | albar | ... Derived from the link at import.
+  external_id          String // the listing's id in the source system, without the "?" tail
+  price                Int // required: asking price, NIS
+  region               String?
+  image_urls           String[] // addresses of images, not images. Empty in the manual phase.
+  km_declared          Int? // what THIS ad says. Another ad for the same car may say otherwise.
+  hand_declared        Int? // hand per the ad. Empty if the ad does not state it.
+  disclosure_provided  Boolean   @default(false) // data came from a disclosure form
+  is_active            Boolean   @default(true)
+  first_seen_at        DateTime // required: the one value that cannot be recovered later
+  last_verified_at     DateTime?
+  delisted_at          DateTime?
   // Stage A — precomputed against the comparison group's median.
   score                Float? // the deal score (Day 11: price_advantage + condition_vs_typical)
   score_breakdown      Json? // the whole ScoreResult of src/lib/scoring — Day 14 run B: the only place the condition sum and the confidence level live
@@ -105,16 +105,17 @@ model listings {
   market_stats_id      Int? // which median row the current score was computed against. Empty until the first score.
   model_stats_id       Int? // Day 14: which model_stats row (the km slope) the current score used
   pool_stats_id        Int? // Day 14: which pool_stats row (the anchor curve) the current score used
-  created_at          DateTime  @default(now())
-  updated_at          DateTime  @default(now()) @updatedAt
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @default(now()) @updatedAt
 
-  car           cars                    @relation(fields: [car_id], references: [id])
-  dealer        dealers                 @relation(fields: [dealer_id], references: [id])
-  market_stats  market_stats?           @relation(fields: [market_stats_id], references: [id])
-  model_stats   model_stats?            @relation(fields: [model_stats_id], references: [id])
-  pool_stats    pool_stats?             @relation(fields: [pool_stats_id], references: [id])
-  scores        listing_scores[]
-  price_history listing_price_history[]
+  car            cars                    @relation(fields: [car_id], references: [id])
+  dealer         dealers                 @relation(fields: [dealer_id], references: [id])
+  market_stats   market_stats?           @relation(fields: [market_stats_id], references: [id])
+  model_stats    model_stats?            @relation(fields: [model_stats_id], references: [id])
+  pool_stats     pool_stats?             @relation(fields: [pool_stats_id], references: [id])
+  scores         listing_scores[]
+  price_history  listing_price_history[]
+  search_results search_results[]
 
   @@unique([source, external_id])
   @@index([market_stats_id])
@@ -227,7 +228,7 @@ model pool_stats {
 // 7. listing_scores — one row per listing per scoring run (Day 11, §19.1). listings keeps the latest
 // score; this table keeps all of them. Append-only (forbid_change trigger: no UPDATE, no DELETE).
 model listing_scores {
-  id              Int             @id @default(autoincrement())
+  id              Int      @id @default(autoincrement())
   listing_id      Int
   scored_at       DateTime // the run's `now`
   engine_version  Int
@@ -303,7 +304,6 @@ model new_car_prices {
 // invocation, so it is born here. Written in real time by src/lib/search/run.ts — zero manual filling.
 // TWO versions, not one: engine_version is Stage A's, rules_version is Stage B's. Without both you
 // cannot tell which of them moved a result when they change in the same week.
-// search_results (the full ranking, one row per listing per search) is born on days 27–28, not here.
 model searches {
   id             Int      @id @default(autoincrement())
   visitor_id     String? // anonymous visitor cookie, 1 year, httpOnly — the same browser and device ACROSS visits
@@ -317,4 +317,38 @@ model searches {
   results_count  Int // how many listings entered the ranking
   pool_count     Int? // the cut pool — listings after the filters, before selectThree (the number on the "עדכן" button); results_count keeps its meaning: ranked + tail
   created_at     DateTime @default(now())
+
+  search_results search_results[]
+}
+
+// 12. search_results — the full ranking of one search: one row per listing of that search's cut pool
+// (findCar-schema.md §D8). Born on Day 15 (BRIEF Run 2a §2), written by src/lib/search/run.ts in the same
+// transaction as its searches row — a search row never exists without its rows. Each row is a SNAPSHOT: the
+// score, the invoice and the price/km as they were at that moment, so a result stays reconstructable after the
+// listing moves or the next norms run lands. The three norm columns and new_car_price_id are plain nullable
+// ints, not foreign keys (BRIEF §0.2): those tables are append-only, so a pointer never dangles.
+// No forbid_change trigger (§0.2) — the test rows of Run 2b are deleted by hand, results first, searches second.
+model search_results {
+  id                        Int      @id @default(autoincrement())
+  search_id                 Int // the searches row this belongs to; one row per listing of that search's cut pool
+  listing_id                Int // a listing, not a car
+  rank                      Int? // the final rank after Stage B, contiguous over the shown listings; null for a merged (duplicate) or excluded listing — the reason is in stage_b_trace. The best_value winner is always 1
+  total_score               Float? // snapshot of listings.score at that moment; null when the listing had no deal score (thin cell)
+  score_breakdown           Json? // snapshot of listings.score_breakdown at that moment (Stage A); null when never scored
+  confidence                String? // score_breakdown.confidence.level at that moment: high | medium | low
+  market_stats_id           Int? // snapshot of the three norm pointers on the listing at that moment (pointers, not copies — those tables are append-only)
+  model_stats_id            Int?
+  pool_stats_id             Int?
+  new_car_price_id          Int? // the new_car_prices row that supplied the ceiling's new price; null when the key has no row
+  was_recommended           Boolean  @default(false) // shown as one of the three
+  recommendation_categories String[] // codes: best_value | peace_of_mind | cheapest — a list, a car may win more than one; empty = not recommended
+  stage_b_trace             Json // array of rule records, one fixed shape (findCar-schema.md §D8); full for rank <= 10, triggered-only below, acted-only for rank null
+  price_snapshot            Int // listings.price at that moment
+  km_snapshot               Int? // listings.km_declared at that moment
+
+  searches searches @relation(fields: [search_id], references: [id], onDelete: Restrict)
+  listings listings @relation(fields: [listing_id], references: [id], onDelete: Restrict)
+
+  @@index([search_id])
+  @@index([listing_id])
 }
