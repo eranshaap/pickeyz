@@ -1,4 +1,5 @@
-// BRIEF Days 15–16, Run 2b §4: toSearchResultRows() — the `search_results` mapping, on one hand-built pool.
+// BRIEF Days 15–16, Run 2b §4 and Run 2c §4–§5: toSearchResultRows() — the `search_results` mapping — plus
+// latestScoreIdByListing(), the §0.5 rule that resolves the invoice pointer. Both on hand-built input.
 //
 // The pool is built from src/lib/selection/fixtures.ts so that the ranks are PREDICTABLE: with the default
 // invoice every condition sum is 0, so deal_score = price_advantage = -100 * (price - median) / median, and
@@ -8,15 +9,24 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { selectThree, type Category, type SelectionResult } from "@/lib/selection";
+import { selectThree, type Category, type RuleTrace, type SelectionResult } from "@/lib/selection";
 import { cand, type Spec } from "@/lib/selection/fixtures";
-import { FULL_TRACE_RANK, toSearchResultRows, traceFor, type ResultSnapshot, type SearchResultRow } from "./results";
+import {
+  TRACE_FULL_RANK,
+  latestScoreIdByListing,
+  toSearchResultRows,
+  traceFor,
+  type ResultSnapshot,
+  type ScoreRowRef,
+  type SearchResultRow,
+} from "./results";
 
 const SEARCH_ID = 4242;
 
 const SHOWN = 12; // ids 1..12, rank = id
 const MERGED = 13; // a second listing of car 5, dearer than it — merged away
 const EXCLUDED = 14; // seller not visible — excluded
+const LATE_PICK = 11; // Run 2c §4: the listing the crafted pool makes a WINNER at a rank above TRACE_FULL_RANK
 
 type Fixture = { snapshot: ResultSnapshot; candidate: ReturnType<typeof cand> };
 
@@ -35,6 +45,7 @@ function fixture(id: number, extra: Partial<Spec> = {}, snap: Partial<ResultSnap
       model_stats_id: 4,
       pool_stats_id: 2,
       new_car_price_id: id % 2 === 0 ? 900 + id : null, // half the pool has no new-price row
+      listing_scores_id: id % 3 === 0 ? null : 700 + id, // a third of the pool was never scored (§0.5)
       ...snap,
     },
   };
@@ -45,10 +56,10 @@ function pool(): Fixture[] {
   for (let id = 1; id <= SHOWN; id++) {
     // id 3 carries a better value_by_reality so that peace_of_mind does not land on the same car as
     // best_value — the mapping is then exercised on two distinct recommended listings, one of them double.
-    // ids above FULL_TRACE_RANK rest on a 'typical' history row, which is what makes unverified_history
+    // ids above TRACE_FULL_RANK rest on a 'typical' history row, which is what makes unverified_history
     // TRIGGER on them: with no triggered record the "triggered only" truncation could not be seen.
     if (id === 3) items.push(fixture(id, { reality: 5 }));
-    else if (id > FULL_TRACE_RANK) items.push(fixture(id, { history_source: "typical" }));
+    else if (id > TRACE_FULL_RANK) items.push(fixture(id, { history_source: "typical" }));
     else items.push(fixture(id));
   }
   items.push(fixture(MERGED, { car: 5, price: 300000 })); // dearer than listing 5, so listing 5 represents car 5
@@ -56,15 +67,34 @@ function pool(): Fixture[] {
   return items;
 }
 
+// Run 2c §4 — the pool the old rule could not describe. peace_of_mind is won on condition_by_reality, not on
+// rank, so a listing can win it from anywhere in the order: LATE_PICK keeps its price (rank 11) and gets both
+// the best condition in the pool and a REGISTRY history row, which is what makes it eligible to win at all.
+function latePickPool(): Fixture[] {
+  const items: Fixture[] = [];
+  for (let id = 1; id <= SHOWN; id++) {
+    if (id === LATE_PICK) items.push(fixture(id, { reality: 40 }));
+    else if (id > TRACE_FULL_RANK) items.push(fixture(id, { history_source: "typical" }));
+    else items.push(fixture(id));
+  }
+  return items;
+}
+
+function rowsOf(items: Fixture[]): { selection: SelectionResult; rows: SearchResultRow[] } {
+  const selection = selectThree({ listings: items.map((f) => f.candidate) });
+  return {
+    selection,
+    rows: toSearchResultRows(
+      SEARCH_ID,
+      items.map((f) => f.snapshot),
+      selection,
+    ),
+  };
+}
+
 function run(): { items: Fixture[]; selection: SelectionResult; rows: SearchResultRow[] } {
   const items = pool();
-  const selection = selectThree({ listings: items.map((f) => f.candidate) });
-  const rows = toSearchResultRows(
-    SEARCH_ID,
-    items.map((f) => f.snapshot),
-    selection,
-  );
-  return { items, selection, rows };
+  return { items, ...rowsOf(items) };
 }
 
 const rowOf = (rows: SearchResultRow[], id: number): SearchResultRow => {
@@ -72,6 +102,8 @@ const rowOf = (rows: SearchResultRow[], id: number): SearchResultRow => {
   assert.ok(r !== undefined, `no row for listing ${id}`);
   return r;
 };
+
+const ruleNames = (trace: RuleTrace[]): string[] => [...new Set(trace.map((t) => t.rule))].sort();
 
 describe("toSearchResultRows — the pool (§4)", () => {
   it("one row per listing of the cut pool, in the pool's order, all on the same search", () => {
@@ -129,21 +161,22 @@ describe("toSearchResultRows — rank (§4)", () => {
   });
 });
 
-describe("toSearchResultRows — the trace (§0.3)", () => {
-  it(`rank <= ${FULL_TRACE_RANK} carries every record selectThree produced`, () => {
+describe("toSearchResultRows — the trace (Run 2c §4)", () => {
+  it(`rank <= ${TRACE_FULL_RANK} carries every record selectThree produced`, () => {
     const { selection, rows } = run();
-    for (let id = 1; id <= FULL_TRACE_RANK; id++) {
+    for (let id = 1; id <= TRACE_FULL_RANK; id++) {
       assert.deepEqual(rowOf(rows, id).stage_b_trace, selection.results.find((x) => x.listing_id === id)?.trace);
     }
     // and the full trace really does hold records the other two rules would have dropped
-    assert.ok(selection.results.find((x) => x.rank === FULL_TRACE_RANK)?.trace.some((t) => !t.triggered && t.effect === "none"));
+    assert.ok(selection.results.find((x) => x.rank === TRACE_FULL_RANK)?.trace.some((t) => !t.triggered && t.effect === "none"));
   });
 
-  it("a rank above that carries only the records that triggered — and that is fewer", () => {
+  it("a rank above that, with nothing recommended, carries only the records that triggered — and that is fewer", () => {
     const { selection, rows } = run();
-    for (let id = FULL_TRACE_RANK + 1; id <= SHOWN; id++) {
+    for (let id = TRACE_FULL_RANK + 1; id <= SHOWN; id++) {
       const r = selection.results.find((x) => x.listing_id === id);
       assert.ok(r !== undefined);
+      assert.equal(r.categories.length, 0, `listing ${id} is recommended — the truncation does not apply to it`);
       const kept = rowOf(rows, id).stage_b_trace;
       assert.deepEqual(
         kept,
@@ -169,32 +202,56 @@ describe("toSearchResultRows — the trace (§0.3)", () => {
       assert.ok(kept.length < r.trace.length, `listing ${id} lost nothing — the truncation is untested`);
       for (const t of kept) assert.ok(t.effect !== "none" || t.triggered);
     }
-    // the reason each of the two lost its rank is among the kept records, which is what §0.3 is for
+    // the reason each of the two lost its rank is among the kept records, which is what the rule is for
     assert.ok(rowOf(rows, MERGED).stage_b_trace.some((t) => t.rule === "duplicate" && t.effect === "merged"));
     assert.ok(rowOf(rows, EXCLUDED).stage_b_trace.some((t) => t.rule === "dealer_not_visible" && t.effect === "excluded"));
   });
 
+  it(`a RECOMMENDED row beyond rank ${TRACE_FULL_RANK} carries the full record set, not the triggered ones alone`, () => {
+    const items = latePickPool();
+    const { selection, rows } = rowsOf(items);
+    const late = selection.results.find((r) => r.listing_id === LATE_PICK);
+    assert.ok(late !== undefined);
+    assert.ok(late.rank !== null && late.rank > TRACE_FULL_RANK, `listing ${LATE_PICK} sits at rank ${late.rank} — the case is untested`);
+    assert.ok(late.categories.length > 0, `listing ${LATE_PICK} won no category — the case is untested`);
+
+    // nothing is dropped …
+    assert.deepEqual(rowOf(rows, LATE_PICK).stage_b_trace, late.trace);
+    // … and the rank rule alone WOULD have dropped something: this is the Run 2b finding, made a test
+    const triggeredOnly = late.trace.filter((t) => t.triggered);
+    assert.ok(triggeredOnly.length < late.trace.length, "the recommended row has nothing untriggered — the case is untested");
+
+    // the same set a rank <= TRACE_FULL_RANK row of the same kind carries, plus its pick-only records
+    const peer = selection.results.find((r) => r.rank === TRACE_FULL_RANK);
+    assert.ok(peer !== undefined && peer.categories.length === 0);
+    const peerRules = ruleNames(rowOf(rows, peer.listing_id).stage_b_trace);
+    const lateRules = ruleNames(rowOf(rows, LATE_PICK).stage_b_trace);
+    for (const rule of peerRules) assert.ok(lateRules.includes(rule), `the recommended row is missing the ${rule} record the rank-${TRACE_FULL_RANK} row carries`);
+    const PICK_ONLY = ["too_similar", "double_winner", "cheapest_runner_up"];
+    for (const rule of lateRules.filter((r) => !peerRules.includes(r))) assert.ok(PICK_ONLY.includes(rule), `${rule} is not a pick-only record`);
+    assert.ok(lateRules.length > peerRules.length, "the recommended row carries no pick-only record — the case is untested");
+  });
+
   it("traceFor() is the whole rule and nothing else decides it", () => {
-    const { selection } = run();
-    for (const r of selection.results) {
-      const expected =
-        r.rank === null
-          ? r.trace.filter((t) => t.effect !== "none" || t.triggered)
-          : r.rank <= FULL_TRACE_RANK
-            ? r.trace
-            : r.trace.filter((t) => t.triggered);
-      assert.deepEqual(traceFor(r), expected);
+    for (const { selection } of [run(), rowsOf(latePickPool())]) {
+      for (const r of selection.results) {
+        const expected =
+          r.rank === null
+            ? r.trace.filter((t) => t.effect !== "none" || t.triggered)
+            : r.rank <= TRACE_FULL_RANK || r.categories.length > 0
+              ? r.trace
+              : r.trace.filter((t) => t.triggered);
+        assert.deepEqual(traceFor(r), expected);
+      }
     }
   });
 });
 
 describe("toSearchResultRows — the recommendation (§4)", () => {
-  it("was_recommended and recommendation_categories are selectThree's own answer", () => {
+  it("recommendation_categories is selectThree's own answer, and it is the whole of 'recommended'", () => {
     const { selection, rows } = run();
     for (const r of selection.results) {
-      const row = rowOf(rows, r.listing_id);
-      assert.deepEqual(row.recommendation_categories, r.categories);
-      assert.equal(row.was_recommended, r.categories.length > 0);
+      assert.deepEqual(rowOf(rows, r.listing_id).recommendation_categories, r.categories);
     }
   });
 
@@ -203,7 +260,7 @@ describe("toSearchResultRows — the recommendation (§4)", () => {
     const picked = [...new Set(Object.values(selection.picks).filter((v): v is number => v !== null))].sort((a, b) => a - b);
     assert.deepEqual(
       rows
-        .filter((r) => r.was_recommended)
+        .filter((r) => r.recommendation_categories.length > 0)
         .map((r) => r.listing_id)
         .sort((a, b) => a - b),
       picked,
@@ -214,23 +271,23 @@ describe("toSearchResultRows — the recommendation (§4)", () => {
     assert.deepEqual(doubles[0].recommendation_categories, ["best_value", "cheapest"] as Category[]);
     // §4's invariant: the best_value winner is rank 1, and nothing without a rank is ever recommended
     assert.equal(rowOf(rows, selection.picks.best_value as number).rank, 1);
-    for (const r of rows.filter((x) => x.was_recommended)) assert.notEqual(r.rank, null);
+    for (const r of rows.filter((x) => x.recommendation_categories.length > 0)) assert.notEqual(r.rank, null);
   });
 });
 
-describe("toSearchResultRows — the snapshot (§4)", () => {
+describe("toSearchResultRows — the snapshot (§4, Run 2c §5)", () => {
   it("every snapshot column is the listing's value at that moment, copied and not recomputed", () => {
     const { items, rows } = run();
     for (const f of items) {
       const s = f.snapshot;
       const row = rowOf(rows, s.listing_id);
       assert.equal(row.total_score, s.score);
-      assert.equal(row.score_breakdown, s.breakdown); // the stored invoice itself, not a rebuild of it
-      assert.equal(row.confidence, s.breakdown.confidence.level);
+      assert.equal(row.confidence, s.breakdown.confidence.level); // read from the invoice, which is no longer copied
       assert.equal(row.market_stats_id, s.market_stats_id);
       assert.equal(row.model_stats_id, s.model_stats_id);
       assert.equal(row.pool_stats_id, s.pool_stats_id);
       assert.equal(row.new_car_price_id, s.new_car_price_id);
+      assert.equal(row.listing_scores_id, s.listing_scores_id);
       assert.equal(row.price_snapshot, s.price);
       assert.equal(row.km_snapshot, s.km_declared);
     }
@@ -238,6 +295,15 @@ describe("toSearchResultRows — the snapshot (§4)", () => {
       rows.some((r) => r.new_car_price_id === null),
       "the fixture must cover a listing whose key has no new-price row",
     );
+    assert.ok(
+      rows.some((r) => r.listing_scores_id === null) && rows.some((r) => r.listing_scores_id !== null),
+      "the fixture must cover both a scored and a never-scored listing",
+    );
+  });
+
+  it("the invoice is a POINTER, not a copy: no row carries a score_breakdown of its own (§5)", () => {
+    const { rows } = run();
+    for (const r of rows) assert.ok(!("score_breakdown" in r), `listing ${r.listing_id} still carries a copied invoice`);
   });
 
   it("a listing with no deal score keeps total_score null and still gets a row", () => {
@@ -250,7 +316,7 @@ describe("toSearchResultRows — the snapshot (§4)", () => {
     );
     assert.equal(rows.length, 2);
     assert.equal(rowOf(rows, 2).total_score, null);
-    assert.equal(rowOf(rows, 2).score_breakdown?.deal_score, null);
+    assert.equal(rowOf(rows, 2).confidence, items[1].snapshot.breakdown.confidence.level); // still read, still stored
     assert.notEqual(rowOf(rows, 2).rank, null); // a thin cell is shown; it is simply not ranked by a deal score
   });
 
@@ -263,5 +329,53 @@ describe("toSearchResultRows — the snapshot (§4)", () => {
       selection,
     );
     assert.equal(rows[0].km_snapshot, null);
+  });
+});
+
+describe("latestScoreIdByListing — the invoice pointer (§0.5)", () => {
+  const NOW = new Date("2026-09-13T12:00:00.000Z");
+  const at = (id: number, listing_id: number, iso: string): ScoreRowRef => ({ id, listing_id, scored_at: new Date(iso) });
+
+  it("picks the row with the latest scored_at", () => {
+    const map = latestScoreIdByListing(
+      [at(1, 7, "2026-09-01T00:00:00.000Z"), at(2, 7, "2026-09-11T00:00:00.000Z"), at(3, 7, "2026-09-05T00:00:00.000Z")],
+      NOW,
+    );
+    assert.equal(map.get(7), 2);
+  });
+
+  it("honours <= now: a row scored after the search's moment is not the row the search saw", () => {
+    const rows = [at(1, 7, "2026-09-01T00:00:00.000Z"), at(2, 7, "2026-09-13T18:00:00.000Z")];
+    assert.equal(latestScoreIdByListing(rows, NOW).get(7), 1);
+    // a row scored exactly AT now is the row the search saw — the bound is inclusive
+    assert.equal(latestScoreIdByListing([...rows, at(3, 7, NOW.toISOString())], NOW).get(7), 3);
+  });
+
+  it("ties on scored_at go to the highest id", () => {
+    const same = "2026-09-10T00:00:00.000Z";
+    assert.equal(latestScoreIdByListing([at(4, 7, same), at(9, 7, same), at(6, 7, same)], NOW).get(7), 9);
+  });
+
+  it("a listing with no row at or before now is absent from the map — the row stores null", () => {
+    const map = latestScoreIdByListing([at(1, 7, "2026-09-01T00:00:00.000Z"), at(2, 8, "2026-09-20T00:00:00.000Z")], NOW);
+    assert.equal(map.get(7), 1);
+    assert.equal(map.get(8), undefined);
+    assert.equal(map.get(9), undefined);
+    assert.equal(map.size, 1);
+  });
+
+  it("each listing is resolved on its own rows", () => {
+    const map = latestScoreIdByListing(
+      [at(1, 7, "2026-09-01T00:00:00.000Z"), at(2, 8, "2026-09-02T00:00:00.000Z"), at(3, 7, "2026-09-03T00:00:00.000Z"), at(4, 8, "2026-09-11T00:00:00.000Z")],
+      NOW,
+    );
+    assert.deepEqual([...map.entries()].sort((a, b) => a[0] - b[0]), [
+      [7, 3],
+      [8, 4],
+    ]);
+  });
+
+  it("no rows at all is an empty map, not a throw", () => {
+    assert.equal(latestScoreIdByListing([], NOW).size, 0);
   });
 });

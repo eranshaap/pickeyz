@@ -9,6 +9,9 @@
 //
 // One rubric per ACTIVE filter and nothing for the rest: an inactive filter has no rubric (§5). Tapping a
 // rubric opens the drawer (mobile) or focuses the panel (desktop) on that filter; "+ פילטרים" opens it whole.
+//
+// Run 2c §6: the MODEL NAME is a control too — a rubric like the others. Tapping it opens the model editor in
+// the header, in place of this line; the line comes back on cancel, still showing the asked question.
 
 import type { SearchFilters } from "@/lib/search/filters";
 import type { FilterName } from "@/app/actions/search";
@@ -35,16 +38,21 @@ export default function QuestionLine({
   filters,
   active,
   onOpen,
+  onEditModel,
 }: {
   modelDisplay: string;
   filters: SearchFilters;
   active: FilterName[];
   /** null = the whole drawer / panel; a name = opened focused on that filter. */
   onOpen: (focus: FilterName | null) => void;
+  /** §6 — the model is a rubric: tapping it opens the editor in the header. */
+  onEditModel: () => void;
 }) {
   return (
     <div className="sticky top-0 z-20 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-neutral-200 bg-white px-4 py-3">
-      <span className="font-semibold text-neutral-900">{modelDisplay}</span>
+      <button type="button" className="rounded-lg font-semibold text-neutral-900 underline-offset-4 hover:underline" onClick={onEditModel}>
+        {modelDisplay}
+      </button>
       {active.map((name) => {
         const value = rubric(name, filters);
         if (value === null) return null;

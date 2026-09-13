@@ -323,10 +323,12 @@ model searches {
 
 // 12. search_results — the full ranking of one search: one row per listing of that search's cut pool
 // (findCar-schema.md §D8). Born on Day 15 (BRIEF Run 2a §2), written by src/lib/search/run.ts in the same
-// transaction as its searches row — a search row never exists without its rows. Each row is a SNAPSHOT: the
-// score, the invoice and the price/km as they were at that moment, so a result stays reconstructable after the
-// listing moves or the next norms run lands. The three norm columns and new_car_price_id are plain nullable
-// ints, not foreign keys (BRIEF §0.2): those tables are append-only, so a pointer never dangles.
+// transaction as its searches row — a search row never exists without its rows (zero rows when the pool is
+// empty). Each row is a SNAPSHOT: the score, the confidence, the price/km as they were at that moment — plus
+// pointers (never copies) to the norm rows, the new-car price row and the listing_scores row, all append-only,
+// so a result stays reconstructable after the listing moves or the next norms run lands. The three norm
+// columns, new_car_price_id and listing_scores_id are plain nullable ints, not foreign keys (BRIEF §0.2):
+// those tables are append-only, so a pointer never dangles.
 // No forbid_change trigger (§0.2) — the test rows of Run 2b are deleted by hand, results first, searches second.
 model search_results {
   id                        Int      @id @default(autoincrement())
@@ -334,15 +336,14 @@ model search_results {
   listing_id                Int // a listing, not a car
   rank                      Int? // the final rank after Stage B, contiguous over the shown listings; null for a merged (duplicate) or excluded listing — the reason is in stage_b_trace. The best_value winner is always 1
   total_score               Float? // snapshot of listings.score at that moment; null when the listing had no deal score (thin cell)
-  score_breakdown           Json? // snapshot of listings.score_breakdown at that moment (Stage A); null when never scored
   confidence                String? // score_breakdown.confidence.level at that moment: high | medium | low
   market_stats_id           Int? // snapshot of the three norm pointers on the listing at that moment (pointers, not copies — those tables are append-only)
   model_stats_id            Int?
   pool_stats_id             Int?
   new_car_price_id          Int? // the new_car_prices row that supplied the ceiling's new price; null when the key has no row
-  was_recommended           Boolean  @default(false) // shown as one of the three
+  listing_scores_id         Int? // the listing_scores row current at that moment — latest scored_at <= the search's now, ties by id (BRIEF Run 2c §0.5); the invoice lives there, append-only: a pointer, not a copy. Null when the listing was never scored
   recommendation_categories String[] // codes: best_value | peace_of_mind | cheapest — a list, a car may win more than one; empty = not recommended
-  stage_b_trace             Json // array of rule records, one fixed shape (findCar-schema.md §D8); full for rank <= 10, triggered-only below, acted-only for rank null
+  stage_b_trace             Json // array of rule records, one fixed shape (findCar-schema.md §D8); full for rank <= TRACE_FULL_RANK (10) or a recommended row, triggered-only for other ranked rows, acted-only (+ triggered) for rank null
   price_snapshot            Int // listings.price at that moment
   km_snapshot               Int? // listings.km_declared at that moment
 

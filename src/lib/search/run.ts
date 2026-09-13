@@ -8,6 +8,10 @@
 //   the `searches` row    written on every invocation, even when the answer is empty (§3.4)
 //   its `search_results`  one row per listing of the CUT pool, in the SAME transaction (Run 2b §4) — the
 //                         mapping is src/lib/search/results.ts, which is pure and tested on its own
+//   the invoice           NOT copied (Run 2c §5). The row POINTS at the `listing_scores` row that was current
+//                         at this search's `now` (§0.5) — one query over the cut pool's listing ids, resolved
+//                         before the transaction opens. `listing_scores` is append-only, so the pointer never
+//                         dangles, and the invoice is read once instead of stored twice.
 //
 // The row carries BOTH sizes of the question (Run 1d, §2): `pool_count` is the cut pool — what survived the
 // filters and entered selectThree(), the same number counts.ts puts on the "עדכן" button — and
@@ -35,7 +39,7 @@ import {
 } from "@/lib/selection";
 import { assemblePool } from "./assemble";
 import { passes, type SearchFilters } from "./filters";
-import { toSearchResultRows, type ResultSnapshot } from "./results";
+import { latestScoreIdByListing, toSearchResultRows, type ResultSnapshot } from "./results";
 import { searchIdentity, type SearchIdentity } from "./visitor";
 
 // The display labels of the gate (§3.3). Hebrew lives only in display strings — never in a comparison.
@@ -209,16 +213,31 @@ export async function runSearch(input: {
   // neither does. An empty cut pool writes the search row alone (§0.10) — a search with no cars is still a
   // search, and it has no rows to write.
   const identity = input.identity ?? (await searchIdentity());
+
+  // Run 2c §5 — the invoice pointer, one query for the whole cut pool and before the transaction opens. Every
+  // `listing_scores` row of these listings is fetched and §0.5 is applied in memory by the pure function, so
+  // the rule lives in one tested place rather than half here and half in SQL. `assembled.now` is this search's
+  // moment: the same clock the seller-visibility cut already used.
+  const scoreRows =
+    cut.length === 0
+      ? []
+      : await db.listing_scores.findMany({
+          where: { listing_id: { in: cut.map((p) => p.listing_id) } },
+          select: { id: true, listing_id: true, scored_at: true },
+        });
+  const scoreIdOf = latestScoreIdByListing(scoreRows, assembled.now);
+
   const snapshots: ResultSnapshot[] = cut.map((p) => ({
     listing_id: p.listing_id,
     price: p.price,
     km_declared: p.km_declared,
     score: p.score,
-    breakdown: p.candidate.breakdown,
+    breakdown: p.candidate.breakdown, // read for `confidence` only — Run 2c §5 stopped copying it
     market_stats_id: p.market_stats_id,
     model_stats_id: p.model_stats_id,
     pool_stats_id: p.pool_stats_id,
     new_car_price_id: p.new_car_price_id,
+    listing_scores_id: scoreIdOf.get(p.listing_id) ?? null,
   }));
 
   const row = await db.$transaction(async (tx) => {
@@ -241,11 +260,7 @@ export async function runSearch(input: {
     if (rows.length !== cut.length) throw new Error(`runSearch: ${rows.length} result row(s) for a cut pool of ${cut.length} — the two must be equal`);
     if (rows.length > 0) {
       const written = await tx.search_results.createMany({
-        data: rows.map((r) => ({
-          ...r,
-          score_breakdown: r.score_breakdown as unknown as object,
-          stage_b_trace: r.stage_b_trace as unknown as object[],
-        })),
+        data: rows.map((r) => ({ ...r, stage_b_trace: r.stage_b_trace as unknown as object[] })),
       });
       if (written.count !== rows.length) throw new Error(`runSearch: createMany wrote ${written.count} of ${rows.length} search_results rows`);
     }

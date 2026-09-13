@@ -1,11 +1,17 @@
 "use server";
 
-// The filter counters (BRIEF Days 15–16, §4). The grey number on every option in the drawer.
+// The filter counters (BRIEF Days 15–16, §4; re-decided in Run 2c §12 after the phone test of 13/09).
 //
-// WHAT A COUNTER IS: the size of the pool AFTER pressing that option — the whole draft, with that one option
-// toggled (selected → removed, unselected → added) — plus an arrow saying whether that is more or less than
-// the draft's own size. A shelf fact, nothing more: no colours, no deltas, no ranking, no recommendation, and
-// a 0 never disables anything (the filling order is not the order of importance).
+// WHAT A COUNTER IS, since Run 2c: HOW MANY LISTINGS ARE IN THAT OPTION — counted within the draft's filters
+// of the OTHER groups only, the chip's own group ignored. Concretely (§0.11): the count is the cut-pool size
+// of a draft in which the chip's group is replaced by that single option — years -> years: [Y], km -> kmMax: C,
+// regions -> regions: [R] — with every other group exactly as the draft has it, price included.
+//
+// The consequence is the whole point: tapping inside a group never moves that group's own numbers. Run 2b's
+// counter was "the pool after tapping this option", with an up/down arrow, which made a single tap move all
+// twelve numbers on the phone at once; that was rejected on 13/09. No arrows, no colours, no deltas. The one
+// number that answers "what will I get" is on the "עדכן · N" button, and that is pool_now — the cut pool.
+// A 0 still disables nothing (the filling order is not the order of importance).
 //
 // STOCK IS NOT A VERDICT: the number counts listings that survive the cut. It does not promise that the three
 // categories will fill — a pool can be large and still leave a category empty-with-a-reason.
@@ -21,24 +27,16 @@
 
 import { db } from "@/lib/db";
 import { modelKey } from "./assemble";
-import { countPassing, kmActive, priceActive, type Filterable, type SearchFilters } from "./filters";
-
-export type Direction = "up" | "down" | "same";
+import { countPassing, kmActive, type Filterable, type SearchFilters } from "./filters";
 
 export type OptionCount = {
-  count: number; // the pool after this option is toggled, with the rest of the draft
-  direction: Direction; // against poolNow, so the UI renders the arrow without re-deriving it
+  count: number; // §0.11 — the cut pool of the draft with this option's GROUP replaced by this option alone
   selected: boolean; // is the option part of the draft right now
 };
 
 export type YearOption = OptionCount & { year: number };
 export type KmOption = OptionCount & { km_max: number };
 export type RegionOption = OptionCount & { region: string };
-export type PriceOption = OptionCount & {
-  min: number | null;
-  max: number | null;
-  in_range: number; // the pool under the draft AS TYPED — this is poolNow, kept beside the toggle count on purpose
-};
 
 export type FilterCountsView = {
   model: string;
@@ -52,7 +50,9 @@ export type FilterCountsView = {
     chips: KmOption[]; // ascending
   };
   regions: RegionOption[]; // distinct non-null region in the model pool, by name
-  price: PriceOption;
+  // §12: the price block has NO number of its own — under the per-option counters it would only repeat the
+  // button, and the button already holds while a price is being typed (§0.3). The typed bounds are the
+  // client's own draft; nothing here has to hand them back.
 };
 
 type Row = Filterable & { id: number };
@@ -149,56 +149,34 @@ export async function filterCounts(input: { model: string; draft?: SearchFilters
   const { display, key, make, rows } = await loadModelPool(input.model);
 
   const pool_total = rows.length;
-  const pool_now = countPassing(rows, draft);
-  const at = (f: SearchFilters, selected: boolean): OptionCount => {
-    const count = countPassing(rows, f);
-    return { count, direction: count > pool_now ? "up" : count < pool_now ? "down" : "same", selected };
-  };
+  const pool_now = countPassing(rows, draft); // the "עדכן · N" number: the WHOLE draft, every group applied
 
-  // years offered = years WITH STOCK in the model. Toggling one adds it to, or removes it from, the list.
+  // §0.11 — one composed draft per option: the option's own group replaced by that single option, every other
+  // group left exactly as the draft has it (price included). filters.ts does the deciding, here and in the
+  // search alike; nothing in this file knows what a filter means.
+  const at = (group: SearchFilters, selected: boolean): OptionCount => ({ count: countPassing(rows, { ...draft, ...group }), selected });
+
+  // years offered = years WITH STOCK in the model. With the group replaced by one year, a group's numbers do
+  // not move when a chip inside it is tapped — which is the whole of §12.
   const chosenYears = draft.years ?? [];
   const years: YearOption[] = [...new Set(rows.map((r) => r.year))]
     .sort((a, b) => a - b)
-    .map((year) => {
-      const selected = chosenYears.includes(year);
-      const next = selected ? chosenYears.filter((y) => y !== year) : [...chosenYears, year];
-      return { year, ...at({ ...draft, years: next }, selected) };
-    });
+    .map((year) => ({ year, ...at({ years: [year] }, chosenYears.includes(year)) }));
 
-  // regions offered = the distinct non-null region values present in the model pool. Same toggle.
+  // regions offered = the distinct non-null region values present in the model pool.
   const chosenRegions = draft.regions ?? [];
   const regions: RegionOption[] = [...new Set(rows.map((r) => r.region).filter((v): v is string => v !== null))]
     .sort((a, b) => a.localeCompare(b))
-    .map((region) => {
-      const selected = chosenRegions.includes(region);
-      const next = selected ? chosenRegions.filter((x) => x !== region) : [...chosenRegions, region];
-      return { region, ...at({ ...draft, regions: next }, selected) };
-    });
+    .map((region) => ({ region, ...at({ regions: [region] }, chosenRegions.includes(region)) }));
 
-  // km chips = the anchors the norms run wrote (§1), never computed here. The ceiling is single-valued, so
-  // toggling a chip that is not the current ceiling REPLACES the ceiling; toggling the current one clears it.
+  // km chips = the anchors the norms run wrote (§1), never computed here. The ceiling is single-valued, so the
+  // group replaced by one option is simply that ceiling — and the counts never fall as the ceiling rises.
   const { anchors, note } = await loadKmAnchors(make, display);
   const km = {
     available: anchors !== null,
     note,
-    chips: (anchors ?? []).map((km_max) => {
-      const selected = kmActive(draft) && draft.kmMax === km_max;
-      const next: SearchFilters = selected ? { ...draft, kmMax: undefined } : { ...draft, kmMax: km_max };
-      return { km_max, ...at(next, selected) };
-    }),
+    chips: (anchors ?? []).map((km_max) => ({ km_max, ...at({ kmMax: km_max }, kmActive(draft) && draft.kmMax === km_max) })),
   };
 
-  // The price block. Toggling a range can only mean REMOVING it — there is no value to add when nothing was
-  // typed — so with no bound set the count is the draft's own and the arrow says "same".
-  // in_range is the pool under the range AS TYPED, which is the plan's "הבריכה בטווח הנוכחי" and equals
-  // pool_now. Both are returned; which one the drawer prints is a UI decision (flagged in REPORT.md).
-  const priceSelected = priceActive(draft);
-  const price: PriceOption = {
-    min: draft.priceMin ?? null,
-    max: draft.priceMax ?? null,
-    in_range: pool_now,
-    ...at(priceSelected ? { ...draft, priceMin: undefined, priceMax: undefined } : draft, priceSelected),
-  };
-
-  return { model: display, model_key: key, pool_total, pool_now, years, km, regions, price };
+  return { model: display, model_key: key, pool_total, pool_now, years, km, regions };
 }

@@ -1,72 +1,103 @@
-// The `search_results` rows of one search (BRIEF Days 15–16, Run 2b §4). Pure: no database, no clock, no
-// randomness — the mapping alone, so it can be tested without a search and read without a schema in hand.
+// The `search_results` rows of one search (BRIEF Days 15–16, Run 2b §4; Run 2c §4–§5). Pure: no database, no
+// clock, no randomness — the mapping alone, so it can be tested without a search and read without a schema in
+// hand.
 //
 // WHAT A ROW IS: one row per listing of the CUT POOL — the pool after the filters, exactly what entered
 // selectThree(). `pool_count` rows, no more and no fewer, ranked and unranked alike: a merged duplicate and an
 // excluded listing are part of the answer too, and their reason is in the trace.
 //
-// WHAT A ROW IS NOT: a recomputation. Every value here is a SNAPSHOT of what the listing carried at that
-// moment — the stored score, the stored invoice, the price and the km as they read then, and the three norm
-// pointers plus the new-price pointer as the listing held them. Nothing is derived a second time, so a result
-// stays reconstructable after the listing moves or the next norms run lands.
+// WHAT A ROW IS NOT: a recomputation, and — since Run 2c §5 — not a copy of the invoice either. Every value
+// here is a SNAPSHOT of what the listing carried at that moment: the stored score, the confidence, the price
+// and the km as they read then, plus POINTERS to the three norm rows, the new-car price row and the
+// `listing_scores` row the invoice lives in. Those tables are append-only, so a pointer never dangles and a
+// result stays reconstructable after the listing moves or the next norms run lands.
 //
-// THE TRACE, §0.3 — the only place this module DROPS anything, and it drops records, never facts:
-//   rank <= 10     every rule record selectThree produced for the listing
-//   rank > 10      only the records that triggered
-//   rank = null    only the records that ACTED (effect !== 'none'), plus any triggered ones
+// THE TRACE, Run 2c §4 — the only place this module DROPS anything, and it drops records, never facts:
+//   rank <= TRACE_FULL_RANK, or the row is RECOMMENDED   every rule record selectThree produced
+//   any other ranked row                                 only the records that triggered
+//   rank = null                                          only the records that ACTED (effect !== 'none'),
+//                                                        plus any triggered ones
 // A row whose trace is truncated is still a row: the rule is about size, not about which listings are kept.
+// "Recommended" is a non-empty `recommendation_categories` and nothing else — Run 2c §1 dropped the
+// `was_recommended` column as redundant with it.
 
 import type { Category, ListingResult, RuleTrace, SelectionResult } from "@/lib/selection";
 import type { ScoreResult } from "@/lib/scoring/types";
 
-// rank <= FULL_TRACE_RANK carries the whole trace (§0.3).
+// ledger: Stage B rules block, TRACE_FULL_RANK — a guess
 //
-// §0.3 IS A RANK RULE, NOT A PICK RULE, and the two are not the same set. Only the best_value winner is
-// guaranteed rank 1; peace_of_mind and cheapest are won on their own orders and land wherever they land. A
-// recommended listing at rank 11 therefore keeps only its TRIGGERED records — and a listing that triggered
-// nothing keeps an empty trace, recommended or not. That is what the brief says, so that is what happens
-// here; the consequence is reported, not worked around.
-export const FULL_TRACE_RANK = 10;
+// Run 2b's §0.3 was a RANK RULE ONLY, and that is what Run 2c §4 changes: only the best_value winner is
+// guaranteed rank 1, so a peace_of_mind or cheapest winner could sit at rank 11 and keep its triggered
+// records alone — listing 192 read `trace 0` in Run 2b's read-back. A recommended row now carries the full
+// set whatever its rank, because the row the screen will one day explain is exactly that row.
+export const TRACE_FULL_RANK = 10;
 
-// The per-listing snapshot the caller hands over — the subset of assemble.ts's PoolItem this module reads.
-// It is stated as its own type so the mapping can be tested on a literal, with no pool to assemble.
+// The per-listing snapshot the caller hands over — the subset of assemble.ts's PoolItem this module reads,
+// plus the `listing_scores` pointer run.ts resolves (§5). It is stated as its own type so the mapping can be
+// tested on a literal, with no pool to assemble.
 export type ResultSnapshot = {
   listing_id: number;
   price: number;
   km_declared: number | null;
   score: number | null;
-  breakdown: ScoreResult;
+  breakdown: ScoreResult; // NOT copied into the row (§5) — `confidence` is read from it, nothing else
   market_stats_id: number | null;
   model_stats_id: number | null;
   pool_stats_id: number | null;
   new_car_price_id: number | null;
+  listing_scores_id: number | null; // §0.5, resolved by latestScoreIdByListing(); null when never scored
 };
 
 // One `search_results` row, column for column (prisma/schema.prisma, model search_results). `id` is the
-// database's. score_breakdown and stage_b_trace are the JSON columns and are handed over as read.
+// database's. stage_b_trace is the JSON column and is handed over as read.
 export type SearchResultRow = {
   search_id: number;
   listing_id: number;
   rank: number | null;
   total_score: number | null;
-  score_breakdown: ScoreResult | null;
   confidence: string | null;
   market_stats_id: number | null;
   model_stats_id: number | null;
   pool_stats_id: number | null;
   new_car_price_id: number | null;
-  was_recommended: boolean;
+  listing_scores_id: number | null;
   recommendation_categories: Category[];
   stage_b_trace: RuleTrace[];
   price_snapshot: number;
   km_snapshot: number | null;
 };
 
-/** §0.3 — how much of one listing's trace the row carries. */
+/** §4 — how much of one listing's trace the row carries. */
 export function traceFor(result: ListingResult): RuleTrace[] {
   if (result.rank === null) return result.trace.filter((t) => t.effect !== "none" || t.triggered);
-  if (result.rank <= FULL_TRACE_RANK) return result.trace;
+  if (result.rank <= TRACE_FULL_RANK || result.categories.length > 0) return result.trace;
   return result.trace.filter((t) => t.triggered);
+}
+
+// One `listing_scores` row as §0.5 reads it: which row, for which listing, scored when.
+export type ScoreRowRef = { id: number; listing_id: number; scored_at: Date };
+
+/**
+ * §0.5 — the `listing_scores` row current at the search's moment, per listing.
+ *
+ * The latest `scored_at` that is <= `now`; ties go to the highest id; a listing with no such row is simply
+ * absent from the map, and the row that quotes it stores null. A row scored AFTER the search's `now` is not
+ * the row the search saw, so it is skipped — the table is append-only and a re-score can land at any time.
+ *
+ * Pure on purpose: run.ts fetches, this decides, and the decision is tested without a database.
+ */
+export function latestScoreIdByListing(rows: ScoreRowRef[], now: Date): Map<number, number> {
+  const best = new Map<number, ScoreRowRef>();
+  for (const r of rows) {
+    if (r.scored_at.getTime() > now.getTime()) continue;
+    const seen = best.get(r.listing_id);
+    if (seen === undefined || r.scored_at.getTime() > seen.scored_at.getTime() || (r.scored_at.getTime() === seen.scored_at.getTime() && r.id > seen.id)) {
+      best.set(r.listing_id, r);
+    }
+  }
+  const out = new Map<number, number>();
+  for (const [listing_id, r] of best) out.set(listing_id, r.id);
+  return out;
 }
 
 /**
@@ -99,13 +130,12 @@ export function toSearchResultRows(searchId: number, poolListings: ResultSnapsho
       listing_id: p.listing_id,
       rank: r.rank,
       total_score: p.score,
-      score_breakdown: p.breakdown,
       confidence: p.breakdown.confidence.level,
       market_stats_id: p.market_stats_id,
       model_stats_id: p.model_stats_id,
       pool_stats_id: p.pool_stats_id,
       new_car_price_id: p.new_car_price_id,
-      was_recommended: r.categories.length > 0,
+      listing_scores_id: p.listing_scores_id,
       recommendation_categories: r.categories,
       stage_b_trace: traceFor(r),
       price_snapshot: p.price,

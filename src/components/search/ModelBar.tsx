@@ -1,6 +1,6 @@
 "use client";
 
-// The model bar (BRIEF Days 15–16, Run 2b §5) — a two-level autocomplete over LIVE models only.
+// The model bar (BRIEF Days 15–16, Run 2b §5; Run 2c §6) — a two-level autocomplete over LIVE models only.
 //
 // Level 1 is the manufacturer, level 2 is its models. Typing a manufacturer OPENS its models and does not
 // search, even on Enter: "מזדה" is not a question a search can answer. Typing a model jumps straight to it.
@@ -11,8 +11,15 @@
 //
 // The model is the only required field of the screen (§0.7): until one is chosen there is no filters cluster
 // and the search button is disabled, because the filter shelf is per model.
+//
+// THE EDIT MODE (Run 2c §6) — the same bar, opened IN PLACE in the results header when the model in the
+// question line is tapped. It arrives prefilled with the asked model's display name, the text selected so
+// typing replaces it (§0.2), and the list already open beneath it. Every rule above still holds inside it.
+// Cancel is a click outside the bar and its list, Esc, or Enter on the asked model's own name (§0.1) — all
+// three call `edit.onCancel()`; choosing a model calls `onChoose`, and the SCREEN decides whether that is a
+// new question or a cancel. Nothing here knows about the results, the dim or the history stack.
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LiveModel } from "@/lib/search/models";
 
 const PLACEHOLDER = "איזה רכב מעניין אותך?";
@@ -25,17 +32,29 @@ export default function ModelBar({
   chosen,
   onChoose,
   onSubmit,
+  edit = null,
 }: {
   models: LiveModel[];
   chosen: LiveModel | null;
   onChoose: (m: LiveModel | null) => void;
-  /** Enter on an already chosen model = a full search on the whole model pool (§5). */
+  /** Enter on an already chosen model = a full search on the whole model pool (§5). Not used in edit mode. */
   onSubmit: () => void;
+  /** §6 — non-null turns the bar into the results screen's model editor. */
+  edit?: { onCancel: () => void } | null;
 }) {
   const [text, setText] = useState(chosen?.display ?? "");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(edit !== null); // §0.2 — the editor arrives with its list already down
   const [openMake, setOpenMake] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const editing = edit !== null;
+
+  // §0.2 — the editor opens prefilled, with the text selected, so typing replaces it. The list is already
+  // down: `open` starts true in edit mode, which is state and not something an effect has to set.
+  useEffect(() => {
+    if (!editing) return;
+    input.current?.focus();
+    input.current?.select();
+  }, [editing]);
 
   const makes = useMemo(() => {
     const seen = new Map<string, number>();
@@ -69,22 +88,32 @@ export default function ModelBar({
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape" && edit !== null) {
+      e.preventDefault();
+      edit.onCancel(); // §6 — Esc is one of the three cancels
+      return;
+    }
     if (e.key !== "Enter") return;
     e.preventDefault();
     if (isChosenText) {
       setOpen(false);
-      onSubmit(); // §5: Enter on a chosen model searches the whole model pool
+      // §0.1 — inside the editor, the asked model again is a cancel, not a search
+      if (edit !== null) edit.onCancel();
+      else onSubmit(); // §5: Enter on a chosen model searches the whole model pool
       return;
     }
     if (modelHits.length === 1) return choose(modelHits[0]);
     if (makeHits.length === 1) {
       setOpenMake(makeHits[0]); // §5: Enter on a manufacturer OPENS its models, it does not search
       setOpen(true);
+      return;
     }
+    setOpen(true); // unresolved text: show "הדגם עוד לא אצלנו" and the live models, clickable (§6)
   }
 
   return (
-    <div className="relative w-full">
+    // In edit mode the bar must stay above its own click-away backdrop, which covers the dimmed results.
+    <div className={`relative w-full ${editing ? "z-30" : ""}`}>
       <input
         ref={input}
         type="text"
@@ -97,7 +126,9 @@ export default function ModelBar({
           setText(e.target.value);
           setOpenMake(null);
           setOpen(true);
-          if (chosen !== null && e.target.value !== chosen.display) onChoose(null);
+          // Typing over the name un-chooses the model on the opening screen. In the editor it does NOT: the
+          // asked question stays exactly as it is until a model is chosen or the editor is cancelled (§6).
+          if (!editing && chosen !== null && e.target.value !== chosen.display) onChoose(null);
         }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
@@ -147,7 +178,18 @@ export default function ModelBar({
         </div>
       )}
 
-      {open && <button type="button" aria-hidden tabIndex={-1} className="fixed inset-0 z-20 cursor-default" onClick={() => setOpen(false)} />}
+      {/* The click-away. In the editor it is always there and it CANCELS (§6): a click outside the bar and its
+          list restores the asked model. On the opening screen it only closes the list, as it always did. */}
+      {(open || editing) && (
+        <button
+          type="button"
+          aria-label={editing ? "ביטול" : undefined}
+          aria-hidden={editing ? undefined : true}
+          tabIndex={-1}
+          className="fixed inset-0 z-20 cursor-default"
+          onClick={() => (edit !== null ? edit.onCancel() : setOpen(false))}
+        />
+      )}
     </div>
   );
 }
