@@ -187,14 +187,15 @@ model market_stats {
 // Holds the model's own km slope, signed as measured (more km → negative). Append-only like market_stats;
 // no foreign key to models — the key is the pair of catalog strings, as market_stats keys on the group string.
 model model_stats {
-  id             Int      @id @default(autoincrement())
-  make           String // models.make
-  model          String // models.model (normalized spelling)
-  km_slope       Float? // percent of value per 1,000 km per year of deviation; null only when nothing could be measured
-  km_slope_n     Int // listings in the regression; 0 when km_slope is null. Below KM_SLOPE_MIN_SAMPLE the engine uses the default instead, but the row is written anyway
-  engine_version Int
-  group_version  Int
-  computed_at    DateTime // no default: the norms run writes one `now` for the whole run
+  id                Int      @id @default(autoincrement())
+  make              String // models.make
+  model             String // models.model (normalized spelling)
+  km_slope          Float? // percent of value per 1,000 km per year of deviation; null only when nothing could be measured
+  km_slope_n        Int // listings in the regression; 0 when km_slope is null. Below KM_SLOPE_MIN_SAMPLE the engine uses the default instead, but the row is written anyway
+  km_filter_anchors Json? // Day 15 (§1): the km filter chips — quartiles (P25/P50/P75) of km_declared over ALL live listings of the model, each rounded UP to 10,000, deduplicated, ascending, e.g. [60000, 90000, 120000]. Array of ints; a UI number, never a norm the engine reads. Null on rows written before the column existed
+  engine_version    Int
+  group_version     Int
+  computed_at       DateTime // no default: the norms run writes one `now` for the whole run
 
   listings       listings[]
   listing_scores listing_scores[]
@@ -295,4 +296,25 @@ model new_car_prices {
   @@unique([tozeret_cd, degem_cd, shnat_yitzur, sug_degem, published_at])
   @@index([tozeret_cd, degem_cd, shnat_yitzur, sug_degem])
   @@index([degem_code, sug_degem, shnat_yitzur])
+}
+
+// 11. searches — one row per search (findCar-schema.md part A and part D §7). Created on Day 15:
+// the table was specified from the start and never built; BRIEF §3.4 writes a row per runSearch()
+// invocation, so it is born here. Written in real time by src/lib/search/run.ts — zero manual filling.
+// TWO versions, not one: engine_version is Stage A's, rules_version is Stage B's. Without both you
+// cannot tell which of them moved a result when they change in the same week.
+// search_results (the full ranking, one row per listing per search) is born on days 27–28, not here.
+model searches {
+  id             Int      @id @default(autoincrement())
+  visitor_id     String? // anonymous visitor cookie, 1 year, httpOnly — the same browser and device ACROSS visits
+  session_id     String? // one visit; resets between visits
+  user_id        Int? // empty as long as there is no login
+  model_searched String // required: a search without a model is not a search (the model is the only mandatory field of the screen)
+  filters        Json? // the filters exactly as the action received them; null when the search carried none
+  priority       String? // code: price | km | condition. Empty when the user skipped it — not recoverable. No screen writes it yet
+  engine_version Int // Stage A's version at that moment
+  rules_version  Int // Stage B's version at that moment (RULES_VERSION)
+  results_count  Int // how many listings entered the ranking
+  pool_count     Int? // the cut pool — listings after the filters, before selectThree (the number on the "עדכן" button); results_count keeps its meaning: ranked + tail
+  created_at     DateTime @default(now())
 }

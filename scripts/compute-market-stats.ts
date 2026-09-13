@@ -31,6 +31,27 @@
 // The model slope (§5.2) and the anchor curve (§5.3) are fitted by REUSING the code of parts M5, M8 and
 // M8b of scripts/measure-constants.ts - ols(), at() and loo() are imported from it, never re-implemented.
 // Model and pool rows are measured on LIVE listings (delisted_at is null), as M5 / M8 measure them.
+//
+// Day 15 (BRIEF §1): model_stats.km_filter_anchors - the km filter chips of the search screen. They are
+// quartiles (P25/P50/P75) of km_declared over ALL LIVE listings of the model - the model's full pool, with
+// nulls ignored and no other filter applied - each rounded UP to the nearest 10,000 and then deduplicated,
+// so two quartiles that round to the same number give fewer chips and never an invented value. Written here
+// and nowhere else: the chips are measured in the norms run and stay put until the next one (the cross-cutting
+// rule of days 15-16 - a measurement of the market only on the norms beat; a derivative of what is already
+// stored is free at request time). They are a UI number, not a norm: no engine or selection code reads them.
+// The quantile is the linear interpolation that agrees with median() at p = 0.5, so P50 IS this file's median.
+//
+// Day 15 (BRIEF §1.3): the skip rule (§0.1) is now evaluated in BOTH modes. The dry run prints, per table,
+// exactly which rows a --write would append and which column made each of them differ; --write then appends
+// those same rows. Nothing else about the dry run changed - it still writes nothing.
+//
+// Day 15, Run 1b (BRIEF §1): EVERY DECIMAL THIS RUN WRITES IS ROUNDED TO DECIMALS PLACES FIRST - the five
+// pool_stats anchor values and model_stats.km_slope. A coefficient fitted here carries the full ~15
+// significant digits of a double; the same fit repeated on the same data does not have to reproduce them bit
+// for bit, and the value that comes back out of Postgres compares against a fresh one by !==. The skip rule
+// then saw a difference that no reader could see and appended a row identical in every visible digit.
+// Rounding happens where the row is BUILT, so the printed value, the compared value and the written value
+// are one number.
 
 import "dotenv/config";
 import { db } from "@/lib/db";
@@ -52,6 +73,14 @@ const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
 const X_NAME = "x (km_dev/1000/yr)";
 // P4: a curve needs at least this many model-years with a new price and a median.
 const ANCHOR_MIN_MODEL_YEARS = 3;
+// Day 15 (§1.2): the km filter chips are these quantiles of the model's live km_declared, each rounded UP to
+// KM_ANCHOR_ROUNDING. Not constants of the engine - a chip is a UI number, and the pencil book holds no UI numbers.
+const KM_ANCHOR_QUANTILES = [0.25, 0.5, 0.75] as const;
+const KM_ANCHOR_ROUNDING = 10_000;
+// Day 15, Run 1b (§1): the storage precision of every decimal a norms run writes. Not a constant of the
+// engine and not a threshold - it is how many digits of a fitted coefficient we keep, uniform across the
+// two tables that hold one, so that a stored value and a freshly computed one are comparable by ===.
+const DECIMALS = 6;
 
 type CellNorm = NonNullable<ScoringInput["market"]>;
 
@@ -81,6 +110,27 @@ function median(values: number[]): number {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+// Day 15 (§1.2): the quantile this file uses everywhere it needs one that is not the median - linear
+// interpolation between the two neighbouring order statistics. It agrees with median() at p = 0.5 by
+// construction (checked below), so the P50 chip and the file's medians are the same convention.
+function quantile(values: number[], p: number): number {
+  if (values.length === 0) throw new Error("quantile of an empty set");
+  const s = [...values].sort((a, b) => a - b);
+  const h = (s.length - 1) * p;
+  const lo = Math.floor(h);
+  const hi = Math.ceil(h);
+  return s[lo] + (h - lo) * (s[hi] - s[lo]);
+}
+
+// Day 15 (§1.2): the model's km filter chips. Quartiles of the km values given, each rounded UP to the
+// nearest KM_ANCHOR_ROUNDING, then deduplicated - two quartiles that round to the same number leave fewer
+// chips, never an invented one. Ascending. Empty when no live listing of the model states a km.
+function kmFilterAnchors(kms: number[]): number[] {
+  if (kms.length === 0) return [];
+  const rounded = KM_ANCHOR_QUANTILES.map((p) => Math.ceil(quantile(kms, p) / KM_ANCHOR_ROUNDING) * KM_ANCHOR_ROUNDING);
+  return [...new Set(rounded)].sort((a, b) => a - b);
+}
+
 function inWindow(l: PoolListing, now: Date, window: Window): boolean {
   return l.delisted_at === null || l.delisted_at.getTime() >= now.getTime() - window * DAY_MS;
 }
@@ -95,6 +145,10 @@ function mix(pool: PoolListing[]): string {
 }
 
 const f = (v: number | null, d: number) => (v === null ? "-" : v.toFixed(d));
+
+// Day 15, Run 1b (§1): the one place a written decimal is rounded. Null passes through - a null anchor is the
+// absence of a curve (P4), not a number.
+const stored = (v: number | null): number | null => (v === null ? null : Number(v.toFixed(DECIMALS)));
 
 type Cell = { key: string; year: number; count90: number };
 type CellRow = {
@@ -119,11 +173,14 @@ type ModelRow = {
   model: string;
   km_slope: number | null;
   km_slope_n: number;
+  km_filter_anchors: number[]; // Day 15 (§1.2): the search screen's km chips; [] when no live listing of the model states a km
   engine_version: number;
   group_version: number;
   computed_at: Date;
   // printed, not stored
   fit_note: string | null;
+  km_listings: number; // live listings of the model whose km_declared is not null - the anchors' own n
+  km_live: number; // live listings of the model, with a km or without
 };
 
 type PoolRow = {
@@ -343,18 +400,27 @@ async function main() {
   const modelKeys = [...new Set(live.map((l) => `${l.make}|${l.model}`))].sort();
   const modelRows: ModelRow[] = modelKeys.map((k) => {
     const [make, model] = k.split("|");
+    // Day 15 (§1.2): the chips are measured on the model's FULL LIVE POOL — every live listing of the model,
+    // nulls dropped, no cell, no window, no thin-cell test and no other filter. Not the regression pool below.
+    const modelLive = live.filter((l) => l.make === make && l.model === model);
+    const kms = modelLive.map((l) => l.km).filter((v): v is number => v !== null);
+    if (kms.length > 0 && quantile(kms, 0.5) !== median(kms)) {
+      throw new Error(`${make} ${model}: quantile(p=0.5) ${quantile(kms, 0.5)} != median() ${median(kms)} over ${kms.length} km values - the two conventions must agree (§1.2)`);
+    }
+    const anchors = { km_filter_anchors: kmFilterAnchors(kms), km_listings: kms.length, km_live: modelLive.length };
     const set = m5All.filter((r) => r.l.make === make && r.l.model === model);
     const fit: Fit = ols(set.map((r) => r.y), [{ name: X_NAME, v: set.map((r) => r.x) }]);
     if (!fit.ok) {
-      return { make, model, km_slope: null, km_slope_n: 0, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `fit dropped: ${fit.reason}` };
+      return { make, model, km_slope: null, km_slope_n: 0, ...anchors, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `fit dropped: ${fit.reason}` };
     }
     const c = at(fit, X_NAME);
     if (c === null) {
-      return { make, model, km_slope: null, km_slope_n: 0, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `column dropped: ${fit.dropped.join(", ")}` };
+      return { make, model, km_slope: null, km_slope_n: 0, ...anchors, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `column dropped: ${fit.dropped.join(", ")}` };
     }
     // §0.3: stored with its real sign — the OLS coefficient as it comes out (more km → negative).
     // M5's tables print minus this number, which is why Day 13 reads 0.64 / 1.19 there and -0.64 / -1.19 here.
-    return { make, model, km_slope: c.coef, km_slope_n: fit.n, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: null };
+    // Run 1b (§1): at DECIMALS places, like the anchor values.
+    return { make, model, km_slope: stored(c.coef), km_slope_n: fit.n, ...anchors, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: null };
   });
 
   // ---------- 5. the pool row (§5.3) ----------
@@ -398,12 +464,13 @@ async function main() {
       throw new Error(`anchor curve: ${errs.filter((e) => e === null).length} of ${errs.length} leave-one-out fits produced no error - the curve error is not measurable, stop`);
     }
     const ages = myears.map((p) => p.medianAge);
+    // Run 1b (§1): the five decimals at DECIMALS places — the values the engine will read back.
     poolRow = {
-      anchor_ratio_intercept: fit.coef[0],
-      anchor_ratio_per_year: b.coef,
-      anchor_error_pct: Math.max(...(errs as number[])), // §2: "the worst model-year"
-      anchor_age_min_years: Math.min(...ages),
-      anchor_age_max_years: Math.max(...ages),
+      anchor_ratio_intercept: stored(fit.coef[0]),
+      anchor_ratio_per_year: stored(b.coef),
+      anchor_error_pct: stored(Math.max(...(errs as number[]))), // §2: "the worst model-year"
+      anchor_age_min_years: stored(Math.min(...ages)),
+      anchor_age_max_years: stored(Math.max(...ages)),
       anchor_n: myears.length, // the points the line was fitted through
       anchor_listings: m8All.length, // the listings behind those points
       engine_version: ENGINE_VERSION,
@@ -438,10 +505,19 @@ async function main() {
 
   console.log(`\n===== MODEL ROWS (${modelRows.length}) =====`);
   console.log(`regression pool: ${m5All.length} of ${live.length} live listings (dropped: ${m5NoCell} with no cell row, ${m5Thin} in a thin cell, ${m5NoKmRow} with no scored km row)`);
-  console.log("make | model | km_slope (stored sign) | n | engine uses it? | note");
+  console.log(`make | model | km_slope (stored sign, ${DECIMALS} dp) | n | engine uses it? | note`);
   for (const r of modelRows) {
     const uses = r.km_slope !== null && r.km_slope_n >= KM_SLOPE_MIN_SAMPLE;
-    console.log(`${r.make} | ${r.model} | ${f(r.km_slope, 4)} | ${r.km_slope_n} | ${uses ? "yes" : `no - the default (n < ${KM_SLOPE_MIN_SAMPLE})`} | ${r.fit_note ?? "-"}`);
+    console.log(`${r.make} | ${r.model} | ${f(r.km_slope, DECIMALS)} | ${r.km_slope_n} | ${uses ? "yes" : `no - the default (n < ${KM_SLOPE_MIN_SAMPLE})`} | ${r.fit_note ?? "-"}`);
+  }
+  // Day 15 (§1.2 / §1.3): the km filter chips, per model, with the raw quartiles beside the stored (rounded,
+  // deduplicated) array so the rounding is visible.
+  console.log(`\nkm filter anchors (quartiles ${KM_ANCHOR_QUANTILES.join(" / ")} of km_declared over the model's FULL live pool, each rounded UP to ${KM_ANCHOR_ROUNDING}, deduplicated):`);
+  console.log("make | model | live listings | with km | raw P25 / P50 / P75 | stored km_filter_anchors");
+  for (const r of modelRows) {
+    const kms = live.filter((l) => l.make === r.make && l.model === r.model).map((l) => l.km).filter((v): v is number => v !== null);
+    const rawText = kms.length === 0 ? "-" : KM_ANCHOR_QUANTILES.map((p) => Math.round(quantile(kms, p))).join(" / ");
+    console.log(`${r.make} | ${r.model} | ${r.km_live} | ${r.km_listings} | ${rawText} | [${r.km_filter_anchors.join(", ")}]${r.km_filter_anchors.length < KM_ANCHOR_QUANTILES.length ? `  (${KM_ANCHOR_QUANTILES.length - r.km_filter_anchors.length} chip(s) lost to deduplication)` : ""}`);
   }
   console.log(`P5 (one vehicle_class per make+model): passed - ${classesByModel.size} model(s) checked`);
 
@@ -454,7 +530,8 @@ async function main() {
       console.log(`${my.model} | ${my.year} | ${my.n} | ${f(my.medianRatio, 3)} | ${f(my.medianAge, 2)} | ${f(pred, 3)} | ${f(err, 2)}`);
     }
   }
-  console.log(`THE ROW: intercept ${f(poolRow.anchor_ratio_intercept, 4)} | per_year ${f(poolRow.anchor_ratio_per_year, 4)} | error_pct ${f(poolRow.anchor_error_pct, 2)} | age ${f(poolRow.anchor_age_min_years, 2)} … ${f(poolRow.anchor_age_max_years, 2)} | n ${poolRow.anchor_n} points | ${poolRow.anchor_listings} listings`);
+  // Run 1b (§1): printed at DECIMALS places — this line is the row as it would be stored, digit for digit.
+  console.log(`THE ROW (${DECIMALS} dp): intercept ${f(poolRow.anchor_ratio_intercept, DECIMALS)} | per_year ${f(poolRow.anchor_ratio_per_year, DECIMALS)} | error_pct ${f(poolRow.anchor_error_pct, DECIMALS)} | age ${f(poolRow.anchor_age_min_years, DECIMALS)} … ${f(poolRow.anchor_age_max_years, DECIMALS)} | n ${poolRow.anchor_n} points | ${poolRow.anchor_listings} listings`);
   if (perListingFit !== null) {
     console.log(`Day 13 method, NOT STORED (M8 / M8b as coded, fitted over the ${perListingFit.n} listings): intercept ${f(perListingFit.a, 4)}, per_year ${f(perListingFit.b, 4)}, worst leave-one-out error ${f(perListingFit.looMax, 2)} % - this is Day 13's 0.83 / -0.041 / 6.5.`);
   }
@@ -476,23 +553,30 @@ async function main() {
   console.log(`pool rows                           1`);
   console.log(`engine_version                      ${ENGINE_VERSION}`);
 
-  // ---------- 8. write (§5.4) ----------
-  if (DRY) {
-    console.log("\n[DRY RUN] nothing written");
-    return;
-  }
+  // ---------- 8. the skip rule, then the write (§5.4) ----------
   // Skip rule (§0.1): a new row only when the values changed against the latest row of the same key at
   // the same versions (and window_days for cells). Write order: pool → model → cell.
+  // Day 15 (§1.3): evaluated in BOTH modes. The dry run has to be able to say which rows a --write would
+  // append and why — it still writes nothing; only the reading below moved above the DRY branch.
   const latestPool = await db.pool_stats.findFirst({ where: { engine_version: ENGINE_VERSION }, orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
-  const poolChanged =
-    latestPool === null ||
-    latestPool.anchor_ratio_intercept !== poolRow.anchor_ratio_intercept ||
-    latestPool.anchor_ratio_per_year !== poolRow.anchor_ratio_per_year ||
-    latestPool.anchor_error_pct !== poolRow.anchor_error_pct ||
-    latestPool.anchor_age_min_years !== poolRow.anchor_age_min_years ||
-    latestPool.anchor_age_max_years !== poolRow.anchor_age_max_years ||
-    latestPool.anchor_n !== poolRow.anchor_n ||
-    latestPool.anchor_listings !== poolRow.anchor_listings;
+  // Day 15 (§1.3): the same seven comparisons as before, but each one named, so the report says WHICH value
+  // made the row differ instead of only that it did. Nothing about the decision changed.
+  // Run 1b (§1): the computed side of the five decimal comparisons is already rounded to DECIMALS places
+  // (poolRow was built that way), so a stored 15-digit value and a fresh fit of the same data now agree.
+  const poolDiff = ((): string[] => {
+    if (latestPool === null) return ["no previous row at this engine_version"];
+    const cmp: [string, number | null, number | null][] = [
+      ["anchor_ratio_intercept", latestPool.anchor_ratio_intercept, poolRow.anchor_ratio_intercept],
+      ["anchor_ratio_per_year", latestPool.anchor_ratio_per_year, poolRow.anchor_ratio_per_year],
+      ["anchor_error_pct", latestPool.anchor_error_pct, poolRow.anchor_error_pct],
+      ["anchor_age_min_years", latestPool.anchor_age_min_years, poolRow.anchor_age_min_years],
+      ["anchor_age_max_years", latestPool.anchor_age_max_years, poolRow.anchor_age_max_years],
+      ["anchor_n", latestPool.anchor_n, poolRow.anchor_n],
+      ["anchor_listings", latestPool.anchor_listings, poolRow.anchor_listings],
+    ];
+    return cmp.filter(([, a, b]) => a !== b).map(([name, a, b]) => `${name} ${a === null ? "null" : a} -> ${b === null ? "null" : b}`);
+  })();
+  const poolChanged = poolDiff.length > 0;
 
   const latestModels = await db.model_stats.findMany({
     where: { engine_version: ENGINE_VERSION, group_version: GROUP_VERSION },
@@ -503,10 +587,23 @@ async function main() {
     const k = `${r.make}|${r.model}`;
     if (!latestModelOf.has(k)) latestModelOf.set(k, r);
   }
-  const modelsToWrite = modelRows.filter((r) => {
+  // Day 15 (§1.2): km_filter_anchors joins the comparison — "a row is written only if any column differs
+  // from the model's last row at the same versions". The stored value is Json; equality is element-wise on
+  // the array, and a previous null (a row from before the column existed) always differs.
+  const sameAnchors = (prev: unknown, next: number[]): boolean =>
+    Array.isArray(prev) && prev.length === next.length && prev.every((v, i) => v === next[i]);
+  const modelDiff = (r: ModelRow): string[] => {
     const prev = latestModelOf.get(`${r.make}|${r.model}`);
-    return prev === undefined || prev.km_slope !== r.km_slope || prev.km_slope_n !== r.km_slope_n;
-  });
+    if (prev === undefined) return ["no previous row"];
+    const changed: string[] = [];
+    if (prev.km_slope !== r.km_slope) changed.push(`km_slope ${prev.km_slope === null ? "null" : prev.km_slope} -> ${r.km_slope === null ? "null" : r.km_slope}`);
+    if (prev.km_slope_n !== r.km_slope_n) changed.push(`km_slope_n ${prev.km_slope_n} -> ${r.km_slope_n}`);
+    if (!sameAnchors(prev.km_filter_anchors, r.km_filter_anchors)) {
+      changed.push(`km_filter_anchors ${prev.km_filter_anchors === null ? "null" : JSON.stringify(prev.km_filter_anchors)} -> ${JSON.stringify(r.km_filter_anchors)}`);
+    }
+    return changed;
+  };
+  const modelsToWrite = modelRows.filter((r) => modelDiff(r).length > 0);
 
   const latestCells = await db.market_stats.findMany({
     where: { engine_version: ENGINE_VERSION, group_version: GROUP_VERSION },
@@ -528,11 +625,25 @@ async function main() {
     );
   });
 
+  // Day 15 (§1.3): the same three lines in both modes — what a --write would append, and for the model rows
+  // which column made each of them differ.
+  console.log(`\n===== ROWS THIS RUN WOULD APPEND (skip rule §0.1) =====`);
+  console.log(`pool_stats:   ${poolChanged ? 1 : 0} new, ${poolChanged ? 0 : 1} skipped (identical)`);
+  console.log(`model_stats:  ${modelsToWrite.length} new, ${modelRows.length - modelsToWrite.length} skipped (identical)`);
+  console.log(`market_stats: ${cellsToWrite.length} new, ${cellRows.length - cellsToWrite.length} skipped (identical)`);
+  if (poolChanged) console.log(`  pool_stats (vs row ${latestPool?.id ?? "-"}, computed_at ${latestPool?.computed_at.toISOString() ?? "-"}): ${poolDiff.join("; ")}`);
+  for (const r of modelsToWrite) console.log(`  model_stats ${r.make} ${r.model}: ${modelDiff(r).join("; ")}`);
+
+  if (DRY) {
+    console.log("\n[DRY RUN] nothing written");
+    return;
+  }
+
   const written = await db.$transaction(async (tx) => {
     const poolWritten = poolChanged ? (await tx.pool_stats.create({ data: { ...poolRow } })) : null;
     const modelWritten = modelsToWrite.length
       ? (await tx.model_stats.createMany({
-          data: modelsToWrite.map((r) => ({ make: r.make, model: r.model, km_slope: r.km_slope, km_slope_n: r.km_slope_n, engine_version: r.engine_version, group_version: r.group_version, computed_at: r.computed_at })),
+          data: modelsToWrite.map((r) => ({ make: r.make, model: r.model, km_slope: r.km_slope, km_slope_n: r.km_slope_n, km_filter_anchors: r.km_filter_anchors, engine_version: r.engine_version, group_version: r.group_version, computed_at: r.computed_at })),
         })).count
       : 0;
     const cellWritten = cellsToWrite.length

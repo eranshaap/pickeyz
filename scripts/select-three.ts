@@ -53,7 +53,7 @@ import "dotenv/config";
 import { writeFileSync } from "node:fs";
 import { db } from "@/lib/db";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
-import type { Row, ScoreResult } from "@/lib/scoring/types";
+import { assemblePool, PoolAssemblyError, type PoolItem } from "@/lib/search/assemble";
 import {
   ABOVE_NEW_PRICE_EFFECT,
   CATEGORY_PRIORITY,
@@ -73,7 +73,6 @@ import {
   distance,
   finishTest,
   selectThree,
-  type CandidateListing,
   type Category,
 } from "@/lib/selection";
 
@@ -105,10 +104,8 @@ function yearsArg(): { from: number; to: number } | null {
   if (to < from) throw new Error(`--years: to < from in '${v}'`);
   return { from, to };
 }
-// --model=<value>: compared to models.model uppercased and without whitespace, exactly as import-sheet.ts's --expect-model.
-function modelKey(s: string): string {
-  return s.toUpperCase().replace(/\s+/g, "");
-}
+// --model=<value>: compared to models.model uppercased and without whitespace, exactly as import-sheet.ts's
+// --expect-model. modelKey() lives in the assembly since Day 15 — one definition, two callers.
 function modelArg(): string | null {
   if (process.argv.includes("--model")) throw new Error("--model: missing value — write --model=<value>");
   const a = process.argv.find((x) => x.startsWith("--model="));
@@ -151,20 +148,10 @@ function median(xs: number[]): number {
 }
 
 // ---------- the loaded pool ----------
-type NewPriceKey = { degem_code: string; shnat_yitzur: number; sug_degem: string };
-const keyText = (k: NewPriceKey) => `${k.degem_code}|${k.shnat_yitzur}|${k.sug_degem}`;
-
-type Loaded = {
-  candidate: CandidateListing;
-  plate: string;
-  km_declared: number | null;
-  dealer_id: number;
-  seller: string; // display: name (dealer_type, dealer id)
-  cell: string; // "comparison_group year"
-  codes: string; // "tozeret_cd-degem_cd" (models.degem_code)
-  vehicle_class: string; // models.vehicle_class = the file's sug_degem
-  key: NewPriceKey; // the key the new price is read by (degem_code, sug_degem, shnat_yitzur)
-};
+// Day 15 (§2): the assembly moved to src/lib/search/assemble.ts — the load, the version check, the model
+// resolution, median_price, seller_visible and the new-price join. The script keeps only its own two flags
+// (--max-price, --years), which cut the assembled pool here, and everything it reports.
+type Loaded = PoolItem;
 
 // The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c, part 4 §1), for the
 // eligibility counts. The deal floor blocks peace_of_mind only under floor effect 'excluded'; under 'none' it is recorded.
@@ -177,116 +164,33 @@ const REASONS_OF: Record<Category, string[]> = {
 
 async function main() {
   const now = new Date();
-  // §13.3: open = agreement_end is null or later than this run's now. agreement_status plays no part.
-  const isOpen = (end: Date | null) => end === null || end > now;
+  // §13.3: open = agreement_end is null or later than this run's now — the assembly applies it (seller_visible).
   const filters =
     [MAX_PRICE !== null ? `max-price=${MAX_PRICE}` : null, YEARS ? `years=${YEARS.from}-${YEARS.to}` : null].filter(Boolean).join(", ") ||
     "none (whole live pool)";
 
-  // ---------- 1. load ----------
-  const rows = await db.listings.findMany({
-    where: { delisted_at: null },
-    include: {
-      car: { select: { id: true, license_plate: true, year: true, model: { select: { model: true, comparison_group: true, degem_code: true, vehicle_class: true } } } },
-      market_stats: { select: { id: true, median_price: true, engine_version: true } },
-      dealer: { select: { id: true, name: true, dealer_type: true, commercial: { select: { id: true, agreement_status: true, agreement_end: true } } } },
-    },
-    orderBy: { id: "asc" },
-  });
+  // ---------- 1. load (Day 15 §2: the assembly is src/lib/search/assemble.ts) ----------
+  // The assembly stops on a mixed engine version and on an unresolvable --model, carrying the lines this
+  // script used to print itself; they are printed here, then the stop is rethrown untouched.
+  let assembled;
+  try {
+    assembled = await assemblePool(MODEL, { now });
+  } catch (e) {
+    if (e instanceof PoolAssemblyError) for (const line of e.lines) log(line);
+    throw e;
+  }
+  const modelDisplay = assembled.model_display;
+  const modelListings = assembled.model_listings;
+  const rowsLength = assembled.live_listings;
 
-  // version check over every live listing and every norm row it points at
-  const badVersion = rows.filter((l) => l.engine_version !== ENGINE_VERSION || (l.market_stats !== null && l.market_stats.engine_version !== ENGINE_VERSION));
-  if (badVersion.length) {
-    for (const l of badVersion) {
-      log(`  listing ${l.id} (${l.car.license_plate ?? "?"}): engine_version ${l.engine_version ?? "null"}, norm row ${l.market_stats?.id ?? "none"} engine_version ${l.market_stats?.engine_version ?? "-"}`);
-    }
-    throw new Error(`${badVersion.length} live listing(s) or norm row(s) not at engine version ${ENGINE_VERSION} — see above`);
-  }
-
-  // §1: the models among the live listings, keyed the way --model is compared. The model is the search's input: with
-  // more than one model live the flag is required, an unknown value stops — both before any search is run.
-  const present = new Map<string, { display: string; n: number }>();
-  for (const l of rows) {
-    if (l.car.model.model === null) throw new Error(`listing ${l.id} (${l.car.license_plate ?? "?"}): models.model is null`);
-    const e = present.get(modelKey(l.car.model.model)) ?? { display: l.car.model.model, n: 0 };
-    e.n += 1;
-    present.set(modelKey(l.car.model.model), e);
-  }
-  const presentText = [...present.values()]
-    .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
-    .map((e) => `${e.display} (${e.n} listing${e.n === 1 ? "" : "s"})`)
-    .join(", ");
-  if (MODEL === null && present.size > 1) {
-    console.log(`models among the ${rows.length} live listings: ${presentText}`);
-    throw new Error(`--model=<value> is required: the live listings span ${present.size} models — see the list above; no search was run`);
-  }
-  if (MODEL !== null && !present.has(modelKey(MODEL))) {
-    console.log(`models among the ${rows.length} live listings: ${presentText}`);
-    throw new Error(`--model: no live listing has model '${MODEL}' — see the list above; no search was run`);
-  }
-  const modelDisplay = MODEL === null ? [...present.values()][0].display : present.get(modelKey(MODEL))!.display;
-  const modelListings = MODEL === null ? rows.length : present.get(modelKey(MODEL))!.n;
-
-  // the pool after the model and the search's filters
-  const pool: Loaded[] = [];
-  for (const l of rows) {
-    const plate = l.car.license_plate ?? "?";
-    if (l.car.year === null) throw new Error(`listing ${l.id} (${plate}): cars.year is null`);
-    if (l.car.model.comparison_group === null) throw new Error(`listing ${l.id} (${plate}): models.comparison_group is null`);
-    if (l.car.model.degem_code === null) throw new Error(`listing ${l.id} (${plate}): models.degem_code is null`);
-    if (!/^\d+-\d+$/.test(l.car.model.degem_code)) throw new Error(`listing ${l.id} (${plate}): models.degem_code '${l.car.model.degem_code}' is not 'tozeret_cd-degem_cd'`);
-    if (l.car.model.vehicle_class === null) throw new Error(`listing ${l.id} (${plate}): models.vehicle_class is null`);
-    if (l.score_breakdown === null) throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
-    if (l.car.model.model === null) throw new Error(`listing ${l.id} (${plate}): models.model is null`);
-    if (MODEL !== null && modelKey(l.car.model.model) !== modelKey(MODEL)) continue;
-    if (MAX_PRICE !== null && l.price > MAX_PRICE) continue;
-    if (YEARS && (l.car.year < YEARS.from || l.car.year > YEARS.to)) continue;
-    const breakdown = l.score_breakdown as unknown as ScoreResult;
-    const priceRow = breakdown.rows.find((r: Row) => r.row === "price");
-    if (!priceRow) throw new Error(`listing ${l.id} (${plate}): invoice has no price row`);
-    if (priceRow.status === "scored" && l.market_stats === null) throw new Error(`listing ${l.id} (${plate}): price row scored but market_stats_id is null`);
-    const median_price = priceRow.status === "scored" ? (l.market_stats?.median_price ?? null) : null;
-    const seller_visible = l.dealer.commercial.some((c) => isOpen(c.agreement_end));
-    pool.push({
-      candidate: {
-        listing_id: l.id,
-        car_id: l.car.id,
-        price: l.price,
-        first_seen_at: l.first_seen_at.toISOString(),
-        year: l.car.year,
-        comparison_group: l.car.model.comparison_group,
-        median_price,
-        new_price: null, // filled below from new_car_prices
-        seller_visible,
-        breakdown,
-      },
-      plate,
-      km_declared: l.km_declared,
-      dealer_id: l.dealer.id,
-      seller: `${l.dealer.name} (${l.dealer.dealer_type}, dealer ${l.dealer.id})`,
-      cell: `${l.car.model.comparison_group} ${l.car.year}`,
-      codes: l.car.model.degem_code,
-      vehicle_class: l.car.model.vehicle_class,
-      key: { degem_code: l.car.model.degem_code, shnat_yitzur: l.car.year, sug_degem: l.car.model.vehicle_class },
-    });
-  }
+  // the pool after the script's own filters — the assembly is the whole model pool
+  const pool: Loaded[] = assembled.items.filter(
+    (p) => (MAX_PRICE === null || p.price <= MAX_PRICE) && (YEARS === null || (p.year >= YEARS.from && p.year <= YEARS.to)),
+  );
   const byId = new Map(pool.map((p) => [p.candidate.listing_id, p]));
 
-  // part 5 §4 / part 6: new_price = the latest published_at row on the car's key (degem_code, sug_degem, shnat_yitzur); null when none.
-  // One query for the pool's keys.
-  const wanted = new Map<string, NewPriceKey>();
-  for (const p of pool) wanted.set(keyText(p.key), p.key);
-  const priceRows = wanted.size
-    ? await db.new_car_prices.findMany({ where: { OR: [...wanted.values()] }, orderBy: [{ published_at: "desc" }, { id: "desc" }] })
-    : [];
-  const latest = new Map<string, { mehir: number; published_at: Date }>();
-  for (const r of priceRows) {
-    const k = keyText(r);
-    if (!latest.has(k)) latest.set(k, { mehir: r.mehir, published_at: r.published_at }); // first = latest published_at
-  }
-  for (const p of pool) p.candidate.new_price = latest.get(keyText(p.key))?.mehir ?? null;
   const withNewPrice = pool.filter((p) => p.candidate.new_price !== null).length;
-  const publications = [...new Set([...latest.values()].map((v) => v.published_at.toISOString().slice(0, 10)))].sort();
+  const publications = [...new Set(pool.filter((p) => p.new_price_published_at !== null).map((p) => (p.new_price_published_at as Date).toISOString().slice(0, 10)))].sort();
 
   // ---------- 2. preflight ----------
   const sellers = new Set(pool.map((p) => p.dealer_id));
@@ -302,7 +206,7 @@ async function main() {
     `constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}`,
   );
   log(`model: ${modelDisplay}${MODEL === null ? " (the only model live; --model not given)" : ` (--model=${MODEL})`} — ${modelListings} live listing(s) of this model`);
-  log(`filters: ${filters}; live listings: ${rows.length}; pool after filters: ${pool.length}`);
+  log(`filters: ${filters}; live listings: ${rowsLength}; pool after filters: ${pool.length}`);
   log(`new price (new_car_prices, latest published_at per four-column key): ${withNewPrice} of ${pool.length} listings got one${publications.length ? `; publication(s) used: ${publications.join(", ")}` : ""}`);
   log(`\n===== PREFLIGHT =====`);
   log(`sellers in the pool: ${sellers.size}`);
