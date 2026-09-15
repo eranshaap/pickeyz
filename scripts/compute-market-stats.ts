@@ -238,8 +238,6 @@ async function main() {
 
   // ---------- 1. the pool ----------
   const totalListings = await db.listings.count();
-  const inactiveNotDelisted = await db.listings.count({ where: { is_active: false, delisted_at: null } });
-  const activeButDelisted = await db.listings.count({ where: { is_active: true, delisted_at: { not: null } } });
 
   const raw = await db.listings.findMany({
     where: {
@@ -542,8 +540,6 @@ async function main() {
   console.log(`listings in 90-day pool             ${pool90.length}`);
   console.log(`listings in 180-day pool            ${pool180.length}`);
   console.log(`live listings (delisted_at null)    ${live.length}`);
-  console.log(`is_active=false & delisted_at null  ${inactiveNotDelisted}`);
-  console.log(`is_active=true  & delisted_at set   ${activeButDelisted}`);
   console.log(`cells                               ${cellList.length}`);
   console.log(`cell rows                           ${cellRows.length}`);
   console.log(`rows widened to 180                 ${widened}`);
