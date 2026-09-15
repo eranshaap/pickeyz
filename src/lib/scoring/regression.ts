@@ -1,0 +1,480 @@
+// src/lib/scoring/regression.ts
+// The regression classifier, as a pure library (Day 17 run 4 §2). scripts/score-listings.ts used to
+// carry it inline; it now keeps only the loading, the recompute callback and the printing.
+//
+// One difference between a stored score and the recomputed one gets exactly one label, the first that
+// applies: VERSION (with its two named sub-rules), NEW, CLOCK, DATA, NORM, NORM (…), else UNEXPLAINED.
+// Only UNEXPLAINED counts as a regression (decision, Eran 09/09: a difference explained by the clock is
+// not one). Every label keeps the meaning and the identity it was given on the day it was written:
+//
+//   VERSION           Day 14 §6.3 — a v2 -> v3 move, checked term by term against the per-cell constant.
+//   VERSION (anchor)  Day 14 Q13 (a) — the thin-cell anchor (§0.5).
+//   VERSION (typical) Day 14 Q13 (b) — the re-sourced history (§0.4).
+//   NEW               no stored score at all: first scoring.
+//   CLOCK             the same inputs and the same norm rows, only `now` moved back to scored_at.
+//   DATA              an input the stored breakdown carries has changed since.
+//   NORM              the cell's SET moved (sample_size / window_days / the row itself appearing).
+//   NORM (…)          Day 17 run 4 §2 — the composed norm identity, below.
+//
+// The composed norm identity (Day 17 run 4 §2, replacing run 3's two separate checks): if any of the
+// three norm rows the stored score points at — the cell row (market_stats), the slope row (model_stats),
+// the anchor row (pool_stats) — is not the row the current score used, the engine is re-run with ALL the
+// stored rows at the stored run's own clock. Reproduces the stored score exactly -> the label names the
+// rows that differ: NORM (median), NORM (slope), NORM (anchor), NORM (median, slope), and so on. Does not
+// reproduce it -> UNEXPLAINED, with the attempt printed under the line. The identity is never widened to
+// make a line pass, and it is never an exemption: a label is earned by recomputation or it is not given.
+//
+// This module opens no database and reads no argv. `scoreWith(normRows, at)` is the caller's — it is the
+// engine re-run with those rows and that clock over the listing's CURRENT data (DATA is checked first, so
+// by the time the identity runs the inputs are already known to be unchanged).
+
+import { KM_SLOPE_MIN_SAMPLE, MIN_SAMPLE } from "./constants";
+import type { CellNorm, ModelNorm, PoolNorm, ScoreResult, ScoringInput } from "./types";
+import { dateToIso, round } from "./util";
+
+// ---------- labels ----------
+export const NORM_KINDS = ["median", "slope", "anchor"] as const;
+export type NormKind = (typeof NORM_KINDS)[number];
+
+export type Label =
+  | "VERSION" | "VERSION (anchor)" | "VERSION (typical)"
+  | "NEW" | "CLOCK" | "DATA"
+  | "NORM"
+  | "NORM (median)" | "NORM (slope)" | "NORM (anchor)"
+  | "NORM (median, slope)" | "NORM (median, anchor)" | "NORM (slope, anchor)"
+  | "NORM (median, slope, anchor)"
+  | "UNEXPLAINED";
+export const LABELS: Label[] = [
+  "VERSION", "VERSION (anchor)", "VERSION (typical)", "NEW", "CLOCK", "DATA",
+  "NORM", "NORM (median)", "NORM (slope)", "NORM (anchor)",
+  "NORM (median, slope)", "NORM (median, anchor)", "NORM (slope, anchor)", "NORM (median, slope, anchor)",
+  "UNEXPLAINED",
+];
+export const LABEL_WIDTH = Math.max(...LABELS.map((l) => l.length));
+/** The composed NORM label for the rows that differ, in NORM_KINDS order. */
+export function normLabel(kinds: readonly NormKind[]): Label {
+  return `NORM (${kinds.join(", ")})` as Label;
+}
+
+// ---------- the three norm rows, as one thing ----------
+// `median` is the cell row (market_stats), `slope` the model row (model_stats), `anchor` the pool row
+// (pool_stats) — the names the labels use, so a label and the row it blames read the same.
+export type NormRows = { median: CellNorm | null; slope: ModelNorm | null; anchor: PoolNorm | null };
+export type ScoreWith = (norms: NormRows, at: Date) => ScoreResult;
+
+export const normId = (n: NormRows, kind: NormKind): number | null => n[kind]?.id ?? null;
+
+// ---------- what the caller passes ----------
+export type StoredSide = {
+  score: number | null;
+  condition_score: number | null;
+  confidence: string | null;
+  engine_version: number | null;
+  scored_at: Date | null;
+  breakdown: unknown; // a stored ScoreResult (listings.score_breakdown or listing_scores.breakdown)
+  // The norm rows that stored score used: the rows its ids point at, or — where an id is null — the row
+  // that was current at its scored_at. The caller resolves them; this module only compares and re-runs.
+  norms: NormRows;
+  // Levels whose stored id points at a row that is gone from its table. Not the same as "there was no
+  // row": the stored score cannot be reproduced without it, so the identity is not attempted.
+  missing: NormKind[];
+};
+
+export type RegressionInput = {
+  make: string;
+  model: string;
+  result: ScoreResult; // the current invoice
+  input: ScoringInput; // the listing's data as it is now
+  norms: NormRows; // the norm rows the current invoice used
+  stored: StoredSide;
+  engine_version: number; // ENGINE_VERSION — the version the current invoice carries
+  scoreWith: ScoreWith;
+};
+
+export type Classified = { label: Label; head: string; detail: string[] };
+
+// ---------- printing helpers ----------
+export function fmt(n: number | null | undefined): string {
+  return n === null || n === undefined ? "-" : (n > 0 ? "+" : "") + String(n);
+}
+const num = (n: number | null | undefined): string => (n === null || n === undefined ? "-" : String(n));
+
+// ---------- what this module reads out of a stored breakdown ----------
+export type StoredBreakdown = {
+  rows?: { row?: string; status?: string; value?: number; raw?: Record<string, unknown> }[];
+  checks?: { check?: string; status?: string; reason?: string; declared?: number; official?: number; official_date?: string }[];
+  facts?: Record<string, unknown>;
+  typical_condition?: number | null; // v2's name for the cell's typical
+  typical_history?: number | null; // v3's name for it (§3.4)
+};
+
+// Day 14 run B (§6.2): the two values the dropped columns used to hold, read from the stored invoice.
+// A listing that has never been scored has no invoice — both are null, exactly as the columns were.
+export function storedSums(breakdown: unknown): { condition_score: number | null; confidence: string | null } {
+  const bd = (breakdown ?? null) as { condition_score?: number | null; confidence?: { level?: string } } | null;
+  if (bd === null) return { condition_score: null, confidence: null };
+  return { condition_score: bd.condition_score ?? null, confidence: bd.confidence?.level ?? null };
+}
+
+/** The stored typical under whichever name that engine wrote it (§0.2 renamed it, it is the same slot). */
+export function storedTypical(bd: StoredBreakdown): number | null {
+  if (typeof bd.typical_history === "number") return bd.typical_history;
+  if (typeof bd.typical_condition === "number") return bd.typical_condition;
+  return null;
+}
+/** A row's value as the stored breakdown carries it; null when the row is absent or was not scored. */
+export function storedRowValue(bd: StoredBreakdown, row: string): number | null {
+  const r = bd.rows?.find((x) => x.row === row);
+  if (!r || r.status !== "scored" || typeof r.value !== "number") return null;
+  return r.value;
+}
+
+// The engine's inputs (ScoringInput) as the stored breakdown carries them, and the ones it does not
+// carry at all — the DATA check is partial by exactly this second list.
+export const DATA_COVERS = [
+  "listing.price", "listing.km_declared", "car.hand", "car.ownership_history", "car.test_expiry",
+  "listing.hand_declared (unless the hand check was skipped)",
+  "car.km_at_last_test, car.mivchan_acharon_dt (unless the km check was skipped or had no declaration)",
+];
+export const DATA_MISSING = ["listing.first_seen_at", "listing.seller_type (dealers.dealer_type)", "listing.owners_at_first_seen", "car.year", "car.first_registration"];
+
+export const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+function show(v: unknown): string {
+  if (v === undefined) return "absent";
+  if (v === null) return "null";
+  return typeof v === "string" ? v : JSON.stringify(v);
+}
+// The ownership record as one comparable string; key order in the stored JSON is not part of the input.
+function ownersKey(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (!Array.isArray(v)) return `not-an-array:${JSON.stringify(v)}`;
+  return v.map((e) => {
+    const { ym, type } = (e ?? {}) as { ym?: unknown; type?: unknown };
+    return `${String(ym)}:${String(type)}`;
+  }).join(",");
+}
+// Compare every key the stored side carries; a key the current side lacks reads as 'absent'.
+function diffMaps(stored: Map<string, unknown>, current: Map<string, unknown>): string[] {
+  const diffs: string[] = [];
+  for (const [k, a] of stored) {
+    const b = current.get(k);
+    if (!same(a, b)) diffs.push(`${k}: ${show(a)} -> ${show(b)}`);
+  }
+  return diffs;
+}
+
+const rawOf = (bd: StoredBreakdown, row: string) => bd.rows?.find((r) => r.row === row)?.raw;
+const checkOf = (bd: StoredBreakdown, check: string) => bd.checks?.find((c) => c.check === check);
+
+export function storedInputs(bd: StoredBreakdown): Map<string, unknown> {
+  const m = new Map<string, unknown>();
+  const price = rawOf(bd, "price"), km = rawOf(bd, "km"), history = rawOf(bd, "history");
+  if (price && "price" in price) m.set("listing.price", price.price);
+  if (km && "km_declared" in km) m.set("listing.km_declared", km.km_declared);
+  if (history && "paper_hand" in history) m.set("car.hand", history.paper_hand);
+  if (history && "owners" in history) m.set("car.ownership_history", ownersKey(history.owners));
+  if (bd.facts && "test_expiry" in bd.facts) m.set("car.test_expiry", bd.facts.test_expiry);
+  // hand_declared: checks.hand carries it unless the check was skipped (§18.8); 'no_declaration' means null.
+  const hand = checkOf(bd, "hand");
+  if (hand && hand.status !== "skipped") m.set("listing.hand_declared", hand.reason === "no_declaration" ? null : hand.declared ?? null);
+  // km check, in its own order (checks.ts): 'no_declaration' carries neither value; 'no_official_km' means
+  // km_at_last_test null and says nothing about the test date; every later branch carries both.
+  const kc = checkOf(bd, "km");
+  if (kc && kc.status !== "skipped" && kc.reason !== "no_declaration") {
+    m.set("car.km_at_last_test", kc.reason === "no_official_km" ? null : kc.official ?? null);
+    if (kc.reason !== "no_official_km") m.set("car.mivchan_acharon_dt", kc.reason === "no_test_date" ? null : kc.official_date ?? null);
+  }
+  return m;
+}
+export function currentInputs(input: ScoringInput): Map<string, unknown> {
+  const { listing, car } = input;
+  return new Map<string, unknown>([
+    ["listing.price", listing.price],
+    ["listing.km_declared", listing.km_declared],
+    ["listing.hand_declared", listing.hand_declared],
+    ["car.hand", car.hand],
+    ["car.ownership_history", ownersKey(car.ownership_history)],
+    ["car.km_at_last_test", car.km_at_last_test],
+    ["car.mivchan_acharon_dt", car.mivchan_acharon_dt === null ? null : dateToIso(car.mivchan_acharon_dt)],
+    ["car.test_expiry", car.test_expiry === null ? null : dateToIso(car.test_expiry)],
+  ]);
+}
+
+// The norm values the stored breakdown carries. The cell's typical only through typical_condition (v2) /
+// typical_history (v3), which the engine writes only when the price row scored — when it is absent the
+// stored typical is unknown and stays out of the comparison. market_row records whether there was a row.
+export function storedNorm(bd: StoredBreakdown): Map<string, unknown> {
+  const m = new Map<string, unknown>();
+  const price = rawOf(bd, "price"), km = rawOf(bd, "km");
+  m.set("market_row", price && "median_price" in price ? "present" : "none");
+  if (price && "median_price" in price) m.set("median_price", price.median_price);
+  if (price && "sample_size" in price) m.set("sample_size", price.sample_size);
+  if (price && "window_days" in price) m.set("window_days", price.window_days);
+  if (km && "median_km" in km) m.set("median_km", km.median_km);
+  if (typeof storedTypical(bd) === "number") m.set("typical", storedTypical(bd));
+  return m;
+}
+export function currentNorm(market: ScoringInput["market"]): Map<string, unknown> {
+  const m = new Map<string, unknown>();
+  m.set("market_row", market === null ? "none" : "present");
+  if (market === null) return m;
+  m.set("median_price", market.median_price);
+  m.set("sample_size", market.sample_size);
+  m.set("window_days", market.window_days);
+  m.set("median_km", market.median_km);
+  m.set("typical", market.median_history === null ? null : round(market.median_history));
+  return m;
+}
+
+// ---------- Day 14 §6.3: the VERSION identity ----------
+// The whole v2 -> v3 move of one listing's deal, checked term by term:
+//   the price row is unchanged, the history row is unchanged, and
+//   deal_v3 - deal_v2 = (old typical_condition - new median_history) + (new km row - old km row).
+// `constant` is the per-cell part — (old typical - new typical) — which must be the same for every
+// listing of the cell; the km term is the listing's own and is zero wherever the slope did not change.
+// Q13: `sub` names which of the two sub-rules carried the line, null when the general rule did.
+export type VersionSub = "anchor" | "typical" | null;
+export type VersionCheck = { ok: boolean; sub: VersionSub; detail: string[]; constant: number | null; km_term: number | null; used_allowance: boolean };
+/** What versionExpectation() needs of a listing: the stored deal, the current invoice, the current data. */
+export type VersionSubject = { stored_score: number | null; result: ScoreResult; input: ScoringInput };
+const EPS = 1e-9;
+// Q11: v2 computed round(round(history + km) - typical), v3 computes round(history - typical + km) in
+// ONE rounding. On a .05 boundary the two differ by exactly one ROUND_DECIMALS step, so a line whose only
+// miss is that step is still VERSION — the deviation is printed and the lines that used it are counted.
+// Anything larger is a real move and stays UNEXPLAINED.
+export const ROUNDING_ALLOWANCE = 0.1;
+export function versionExpectation(s: VersionSubject, bd: StoredBreakdown | null): VersionCheck {
+  const detail: string[] = [];
+  if (bd === null) return { ok: false, sub: null, detail: ["listings.score_breakdown is null: the v2 -> v3 move cannot be checked"], constant: null, km_term: null, used_allowance: false };
+
+  const curRow = (name: string) => s.result.rows.find((r) => r.row === name);
+  const curValue = (name: string) => {
+    const r = curRow(name);
+    return r && r.status === "scored" && typeof r.value === "number" ? r.value : null;
+  };
+  const oldPrice = storedRowValue(bd, "price"), newPrice = curValue("price");
+  const oldHistory = storedRowValue(bd, "history"), newHistory = curValue("history");
+  const oldKm = storedRowValue(bd, "km"), newKm = curValue("km");
+  const oldTypical = storedTypical(bd), newTypical = s.result.typical_history;
+
+  // Q13 (a) — the thin-cell anchor (§0.5). Neither version has a deal score, the history and km rows are
+  // identical, and the ONLY move is a price row that goes from absent to a scored anchor. Everything the
+  // sub-rule asserts is checked; a thin-cell listing that moved anything else falls through to the general
+  // rule below and is UNEXPLAINED there.
+  const priceSource = curRow("price")?.source ?? null;
+  if (
+    s.stored_score === null && s.result.deal_score === null &&
+    oldHistory === newHistory && oldKm === newKm &&
+    oldPrice === null && newPrice !== null && priceSource === "anchor"
+  ) {
+    detail.push(
+      `thin cell (sample_size ${s.input.market?.sample_size ?? "-"} < ${MIN_SAMPLE}): price row absent -> ${fmt(newPrice)} from the anchor (§0.5); ` +
+        `history ${fmt(oldHistory)} and km ${fmt(oldKm)} unchanged; no deal score on either side`,
+    );
+    return { ok: true, sub: "anchor", detail, constant: null, km_term: null, used_allowance: false };
+  }
+
+  // Q13 (b) — the re-sourced history (§0.4). The car has no ownership row, so v2 scored the hand the ad
+  // declared and v3 takes the cell's typical instead. The deal must move by the cell constant plus that
+  // history move plus the km move; the price row still may not move. Checked below, after the terms.
+  const historySource = curRow("history")?.source ?? null;
+  const reSourced =
+    s.input.car.ownership_history === null && historySource === "typical" &&
+    newHistory !== null && newTypical !== null && newHistory === round(newTypical) &&
+    oldPrice === newPrice && s.stored_score !== null && s.result.deal_score !== null &&
+    oldTypical !== null && oldHistory !== null;
+
+  // The two rows the brief says must not move.
+  if (oldPrice !== newPrice) detail.push(`price row moved ${fmt(oldPrice)} -> ${fmt(newPrice)} — §0.7 says it must not`);
+  if (!reSourced && oldHistory !== newHistory) detail.push(`history row moved ${fmt(oldHistory)} -> ${fmt(newHistory)} — §0.7 says it must not`);
+
+  if (s.stored_score === null || s.result.deal_score === null) {
+    // A deal that appears or disappears is a move §0.7 does not describe; say so rather than pass it.
+    detail.push(`deal ${fmt(s.stored_score)} -> ${fmt(s.result.deal_score)}: one side has no deal score, so the constant does not apply`);
+    return { ok: false, sub: null, detail, constant: null, km_term: null, used_allowance: false };
+  }
+  if (oldTypical === null || newTypical === null) {
+    detail.push(`typical ${fmt(oldTypical)} -> ${fmt(newTypical)}: one side has no typical, so the constant does not apply`);
+    return { ok: false, sub: null, detail, constant: null, km_term: null, used_allowance: false };
+  }
+
+  if (reSourced) {
+    const constant = round(oldTypical - newTypical);
+    const km_term = round((newKm ?? 0) - (oldKm ?? 0));
+    const history_term = round((newHistory as number) - (oldHistory as number));
+    const expected = round(constant + history_term + km_term);
+    const actual = round(s.result.deal_score - s.stored_score);
+    detail.push(
+      `car has no ownership record: history row ${fmt(oldHistory)} (ad's declared hand, v2) -> ${fmt(newHistory)} = the cell's typical (§0.4, ${history_term >= 0 ? "+" : ""}${history_term}); ` +
+        `typical ${fmt(oldTypical)} -> ${fmt(newTypical)} (cell constant ${fmt(constant)}); ` +
+        `km row ${fmt(oldKm)} -> ${fmt(newKm)} (${fmt(km_term)}, slope_source ${String(curRow("km")?.raw?.slope_source ?? "-")}); ` +
+        `price row ${fmt(oldPrice)} unchanged; deal ${fmt(s.stored_score)} -> ${fmt(s.result.deal_score)} = ${fmt(actual)}, expected ${fmt(expected)}`,
+    );
+    const miss = Math.abs(actual - expected);
+    const exact = miss < EPS;
+    const used = !exact && miss <= ROUNDING_ALLOWANCE + EPS;
+    if (used) detail.push(`off by ${fmt(round(actual - expected))} — within the ±${ROUNDING_ALLOWANCE} rounding allowance, counted as VERSION (typical)`);
+    else if (!exact) detail.push(`the move is ${fmt(round(actual - expected))} away from the expected one — beyond the ±${ROUNDING_ALLOWANCE} rounding allowance`);
+    // `reSourced` already required the price row to hold, so the identity is the only thing left to pass.
+    return { ok: exact || used, sub: "typical", detail, constant, km_term, used_allowance: used };
+  }
+  const constant = round(oldTypical - newTypical);
+  const km_term = round((newKm ?? 0) - (oldKm ?? 0));
+  const expected = round(constant + km_term);
+  const actual = round(s.result.deal_score - s.stored_score);
+  detail.push(
+    `typical ${fmt(oldTypical)} -> ${fmt(newTypical)} (cell constant ${fmt(constant)}); ` +
+      `km row ${fmt(oldKm)} -> ${fmt(newKm)} (${fmt(km_term)}, slope_source ${String(curRow("km")?.raw?.slope_source ?? "-")}); ` +
+      `deal ${fmt(s.stored_score)} -> ${fmt(s.result.deal_score)} = ${fmt(actual)}, expected ${fmt(expected)}`,
+  );
+  // detail.length === 1 means neither the price nor the history row moved: those two lines come first.
+  const rowsHeld = detail.length === 1;
+  const miss = Math.abs(actual - expected);
+  const exact = miss < EPS;
+  const used_allowance = !exact && miss <= ROUNDING_ALLOWANCE + EPS;
+  if (used_allowance) {
+    detail.push(`off by ${fmt(round(actual - expected))} — within the ±${ROUNDING_ALLOWANCE} rounding allowance (v2 rounded twice, v3 rounds once), counted as VERSION`);
+  } else if (!exact) {
+    detail.push(`the move is ${fmt(round(actual - expected))} away from the expected one — beyond the ±${ROUNDING_ALLOWANCE} rounding allowance`);
+  }
+  return { ok: rowsHeld && (exact || used_allowance), sub: null, detail, constant, km_term, used_allowance: rowsHeld && used_allowance };
+}
+/** Q13: the label a passing check carries. */
+export const versionLabel = (v: VersionCheck): Label => (v.sub === null ? "VERSION" : (`VERSION (${v.sub})` as Label));
+
+// ---------- Day 17 run 4 §2: the composed norm identity ----------
+export type Triple = { score: number | null; condition_score: number | null; confidence: string | null };
+const triple = (r: ScoreResult): Triple => ({ score: r.deal_score, condition_score: r.condition_score, confidence: r.confidence.level as string });
+const showTriple = (t: Triple) => `${fmt(t.score)} / ${fmt(t.condition_score)} / ${t.confidence ?? "-"}`;
+
+/** One line describing how one of the three rows moved, stored -> current. */
+function describeMove(kind: NormKind, x: RegressionInput): string {
+  const a = normId(x.stored.norms, kind), b = normId(x.norms, kind);
+  if (kind === "median") {
+    const s = x.stored.norms.median, c = x.norms.median;
+    const sameSet = s !== null && c !== null && s.sample_size === c.sample_size && s.window_days === c.window_days;
+    return (
+      `cell row market_stats ${num(a)} -> ${num(b)}: ` +
+      `median_price ${num(s?.median_price)} -> ${num(c?.median_price)}, median_km ${num(s?.median_km)} -> ${num(c?.median_km)}, ` +
+      `median_history ${num(s?.median_history)} -> ${num(c?.median_history)}; ` +
+      `sample_size ${num(s?.sample_size)} -> ${num(c?.sample_size)}, window_days ${num(s?.window_days)} -> ${num(c?.window_days)}` +
+      (sameSet ? " - the same set, different medians" : "")
+    );
+  }
+  if (kind === "slope") {
+    const s = x.stored.norms.slope, c = x.norms.slope;
+    return (
+      `model row model_stats ${num(a)} -> ${num(b)} (${x.make} ${x.model}): ` +
+      `km_slope ${num(s?.km_slope)} -> ${num(c?.km_slope)}, km_slope_n ${num(s?.km_slope_n)} -> ${num(c?.km_slope_n)} ` +
+      `(floor ${KM_SLOPE_MIN_SAMPLE}; slope_source now ${String(x.result.rows.find((r) => r.row === "km")?.raw?.slope_source ?? "-")})`
+    );
+  }
+  const s = x.stored.norms.anchor, c = x.norms.anchor;
+  return (
+    `pool row pool_stats ${num(a)} -> ${num(b)}: ` +
+    `anchor_ratio_intercept ${num(s?.anchor_ratio_intercept)} -> ${num(c?.anchor_ratio_intercept)}, ` +
+    `anchor_ratio_per_year ${num(s?.anchor_ratio_per_year)} -> ${num(c?.anchor_ratio_per_year)}, ` +
+    `anchor_error_pct ${num(s?.anchor_error_pct)} -> ${num(c?.anchor_error_pct)}, ` +
+    `anchor_n ${num(s?.anchor_n)} -> ${num(c?.anchor_n)}`
+  );
+}
+
+/**
+ * The composed identity. Every norm row the stored score used that is not the row the current score used
+ * is named; the engine is re-run with ALL of them at the stored clock, and the label is given only when
+ * that reproduces the stored score exactly. Otherwise nothing is returned and the attempt is printed.
+ */
+export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: Label; detail: string[] } | null; tried: string[] } {
+  const when = x.stored.scored_at;
+  if (when === null) return { hit: null, tried: [] };
+  if (x.stored.missing.length > 0) {
+    return {
+      hit: null,
+      tried: [`the ${x.stored.missing.join(", ")} row(s) the stored score points at are no longer in their table — the identity cannot be checked`],
+    };
+  }
+  const differ = NORM_KINDS.filter((k) => normId(x.stored.norms, k) !== normId(x.norms, k));
+  if (differ.length === 0) return { hit: null, tried: [] };
+
+  const label = normLabel(differ);
+  const moved = differ.map((k) => describeMove(k, x));
+  const ids = NORM_KINDS.map((k) => `${k} ${num(normId(x.stored.norms, k))}`).join(", ");
+  const got = triple(x.scoreWith(x.stored.norms, when));
+  if (same(got, sto)) {
+    return {
+      hit: {
+        label,
+        detail: [
+          ...moved,
+          `identity: recomputed with the STORED norm rows (${ids}) at the stored scored_at ${when.toISOString()} -> ${showTriple(got)} = the stored values`,
+        ],
+      },
+      tried: [],
+    };
+  }
+  return {
+    hit: null,
+    tried: [
+      ...moved,
+      `${label}: recomputed with the stored norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(got)}, not the stored ${showTriple(sto)} - the identity does not hold`,
+    ],
+  };
+}
+
+// ---------- the classifier ----------
+/**
+ * One listing -> one labelled line, or null when the stored and the recomputed score agree (no line).
+ * First match wins; the order is the one Day 13 §1 fixed and Day 14 / Day 17 extended.
+ */
+export function classify(x: RegressionInput): Classified | null {
+  const cur: Triple = { score: x.result.deal_score, condition_score: x.result.condition_score, confidence: x.result.confidence.level as string };
+  const sto: Triple = { score: x.stored.score, condition_score: x.stored.condition_score, confidence: x.stored.confidence };
+  const head = `score ${fmt(sto.score)} -> ${fmt(cur.score)}; condition_score ${fmt(sto.condition_score)} -> ${fmt(cur.condition_score)}; confidence ${sto.confidence ?? "-"} -> ${cur.confidence}`;
+  const detail: string[] = [];
+  const bd = (x.stored.breakdown ?? null) as StoredBreakdown | null;
+
+  if (x.stored.engine_version !== null && x.stored.engine_version !== x.engine_version) {
+    // Day 14 §6.3: v2 -> v3 is not "listed, not compared" any more — the move is known exactly.
+    //   deal_v3 - deal_v2 = (old typical_condition - new median_history) + (new km row - old km row)
+    // with the price row and the history row identical. Anything else is UNEXPLAINED.
+    const v = versionExpectation({ stored_score: x.stored.score, result: x.result, input: x.input }, bd);
+    detail.push(`stored engine_version ${x.stored.engine_version} -> ${x.engine_version}`);
+    for (const d of v.detail) detail.push(d);
+    return { label: v.ok ? versionLabel(v) : "UNEXPLAINED", head, detail };
+  }
+  if (x.stored.scored_at === null) {
+    detail.push(`no stored score at all (scored_at null, engine_version ${x.stored.engine_version ?? "null"}): first scoring`);
+    return { label: "NEW", head, detail };
+  }
+  if (same(sto, cur)) return null; // stored and recomputed agree — no line
+
+  // CLOCK: the same inputs and the same norm rows, only `now` moved back to scored_at.
+  const then = triple(x.scoreWith(x.norms, x.stored.scored_at));
+  const dataDiffs = bd === null ? [] : diffMaps(storedInputs(bd), currentInputs(x.input));
+  const normDiffs = bd === null ? [] : diffMaps(storedNorm(bd), currentNorm(x.input.market));
+  const cellMoved = normDiffs.some((d) => d.startsWith("sample_size") || d.startsWith("window_days") || d.startsWith("market_row"));
+  if (same(then, sto)) {
+    detail.push(`recomputed with now = stored scored_at ${x.stored.scored_at.toISOString()}: ${showTriple(then)} = the stored values (same inputs, same norm row as today)`);
+    return { label: "CLOCK", head, detail };
+  }
+  if (dataDiffs.length) {
+    for (const d of dataDiffs) detail.push(`input ${d}`);
+    return { label: "DATA", head, detail };
+  }
+  if (normDiffs.length && cellMoved) {
+    for (const d of normDiffs) detail.push(`norm ${d}`);
+    return { label: "NORM", head, detail };
+  }
+  // Day 17 run 4 §2: before calling it unexplained, the composed identity — ONE recomputation with every
+  // stored norm row at the stored clock. It has to reproduce the stored score, or it does not count.
+  const named = composedNorm(x, sto);
+  if (named.hit !== null) {
+    for (const d of named.hit.detail) detail.push(d);
+    return { label: named.hit.label, head, detail };
+  }
+  if (bd === null) detail.push(`the stored breakdown is null: neither DATA nor NORM could be checked`);
+  detail.push(`at the stored scored_at ${x.stored.scored_at.toISOString()}: ${showTriple(then)} - not the stored values`);
+  for (const d of normDiffs) detail.push(`norm ${d} (same sample_size and window_days: same set, different norm)`);
+  for (const t of named.tried) detail.push(t);
+  return { label: "UNEXPLAINED", head, detail };
+}

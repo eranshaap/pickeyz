@@ -49,6 +49,22 @@
 // the score used (or null), engine_version = ENGINE_VERSION (and updated_at, which Prisma's update would
 // have touched). Prisma's default transaction timeout. The report is printed in both modes.
 //
+// Day 17 run 4 §2 — the classifier itself is no longer here: it lives in src/lib/scoring/regression.ts
+// as a pure module that opens no database. This script keeps the three things the module cannot do — it
+// LOADS (the current norm rows, the stored side, and the norm rows that stored score used), it provides
+// the recompute CALLBACK scoreWith(normRows, at), and it PRINTS. Every label keeps the meaning and the
+// identity it already had, and --against keeps run 3's semantics.
+//   Run 3 had two separate NORM sub-checks; they are now ONE composed identity. Whichever of the three
+//   norm rows the stored score used — the cell row (market_stats), the slope row (model_stats), the
+//   anchor row (pool_stats) — is not the row the current score used, the engine is re-run with ALL the
+//   stored rows at the stored run's own clock; reproducing the stored score exactly earns a label naming
+//   the rows that differ: NORM (median), NORM (slope), NORM (anchor), NORM (median, slope), and so on.
+//   A recomputation that does not reproduce it leaves the line UNEXPLAINED, with the attempt printed.
+//
+// Day 17 run 3 §2 — `--against YYYY-MM-DD` moves the comparison target: the stored side becomes, per
+// listing, its latest listing_scores row with scored_at on that day or earlier (UTC), instead of what
+// listings holds now. Nothing is re-scored and nothing is written; the engine version is untouched.
+//
 // Day 14 run B (BRIEF rules v5, §6.2): the derived copy columns condition_score and confidence are gone from
 // both tables, so neither statement writes them. Nothing else about the write changed — the invoice is
 // untouched, ENGINE_VERSION stays 3, and the invoice keeps carrying the condition sum and the confidence
@@ -62,7 +78,12 @@ import { Prisma } from "@/generated/prisma/client";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
 import { scoreListing, type ScoreResult, type ScoringInput } from "@/lib/scoring";
 import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
-import { round, dateToIso } from "@/lib/scoring/util";
+import {
+  classify, fmt, storedRowValue, storedSums, versionExpectation,
+  DATA_COVERS, DATA_MISSING, LABELS, LABEL_WIDTH, ROUNDING_ALLOWANCE,
+  type Label, type NormKind, type NormRows, type StoredBreakdown, type VersionCheck,
+} from "@/lib/scoring/regression";
+import { round } from "@/lib/scoring/util";
 import { scoringSubject } from "@/lib/scoring-input";
 
 const WRITE = process.argv.includes("--write");
@@ -70,6 +91,20 @@ const PLATES = (() => {
   const a = process.argv.find((x) => x.startsWith("--plates="));
   return a ? a.slice("--plates=".length).split(",").map((p) => p.trim()).filter(Boolean) : [];
 })();
+// Day 17 §2: the comparison target. Parsed inside main() so a malformed date stops the run through the
+// same STOPPED path as everything else. `--against 2026-09-11` and `--against=2026-09-11` both read.
+type Against = { day: string; before: Date };
+function parseAgainst(): Against | null {
+  const i = process.argv.indexOf("--against");
+  const raw = i >= 0 ? process.argv[i + 1] : process.argv.find((x) => x.startsWith("--against="))?.slice("--against=".length);
+  if (raw === undefined) return null;
+  const t = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) throw new Error(`--against: expected YYYY-MM-DD, got ${JSON.stringify(raw)}`);
+  const day = new Date(`${t}T00:00:00.000Z`);
+  if (Number.isNaN(day.getTime())) throw new Error(`--against: not a real date: ${JSON.stringify(t)}`);
+  // "on that day or earlier" = strictly before the next midnight UTC.
+  return { day: t, before: new Date(day.getTime() + 24 * 60 * 60 * 1000) };
+}
 const REPORT_FILE = "REPORT-score-listings.md"; // §22.3: never REPORT.md
 
 type Scored = {
@@ -78,8 +113,9 @@ type Scored = {
   year: number;
   price: number;
   cell_key: string; // "comparison_group year" — the per-cell VERSION constant is checked over this
-  make: string;
-  model: string;
+  group: string | null; // models.comparison_group — the key a stored cell row is looked up by
+  make: string | null;
+  model: string | null;
   market_stats_id: number | null;
   model_stats_id: number | null; // Day 14 §6.2: the score points at the row it used from each level
   pool_stats_id: number | null;
@@ -95,6 +131,11 @@ type Scored = {
     engine_version: number | null;
     scored_at: Date | null;
     breakdown: unknown; // listings.score_breakdown — a stored ScoreResult
+    // Day 17 §2: the norm rows the stored score actually used. The composed NORM identity re-runs the
+    // engine with exactly these rows, so the label is earned by recomputation rather than inferred.
+    market_stats_id: number | null;
+    model_stats_id: number | null;
+    pool_stats_id: number | null;
   };
 };
 type Failed = { listing_id: number; plate: string; error: string };
@@ -104,264 +145,21 @@ function log(line = "") {
   out.push(line);
   console.log(line);
 }
-function fmt(n: number | null | undefined): string {
-  return n === null || n === undefined ? "-" : (n > 0 ? "+" : "") + String(n);
-}
 function count<T>(items: T[], key: (t: T) => string): [string, number][] {
   const m = new Map<string, number>();
   for (const it of items) m.set(key(it), (m.get(key(it)) ?? 0) + 1);
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
-// ---------- Day 13 §1: the classifier ----------
-// One label per differing listing, first match wins.
-type Label = "VERSION" | "VERSION (anchor)" | "VERSION (typical)" | "NEW" | "CLOCK" | "DATA" | "NORM" | "UNEXPLAINED";
-const LABELS: Label[] = ["VERSION", "VERSION (anchor)", "VERSION (typical)", "NEW", "CLOCK", "DATA", "NORM", "UNEXPLAINED"];
-const LABEL_WIDTH = Math.max(...LABELS.map((l) => l.length));
-
-// What this script reads out of listings.score_breakdown (a stored ScoreResult, src/lib/scoring/types.ts).
-type StoredBreakdown = {
-  rows?: { row?: string; status?: string; value?: number; raw?: Record<string, unknown> }[];
-  checks?: { check?: string; status?: string; reason?: string; declared?: number; official?: number; official_date?: string }[];
-  facts?: Record<string, unknown>;
-  typical_condition?: number | null; // v2's name for the cell's typical
-  typical_history?: number | null; // v3's name for it (§3.4)
-};
-
-// The stored typical under whichever name that engine wrote it (§0.2 renamed it, it is the same slot).
-// Day 14 run B (§6.2): the two values the dropped columns used to hold, read from the stored invoice.
-// A listing that has never been scored has no invoice — both are null, exactly as the columns were.
-function storedSums(breakdown: unknown): { condition_score: number | null; confidence: string | null } {
-  const bd = (breakdown ?? null) as { condition_score?: number | null; confidence?: { level?: string } } | null;
-  if (bd === null) return { condition_score: null, confidence: null };
-  return { condition_score: bd.condition_score ?? null, confidence: bd.confidence?.level ?? null };
-}
-
-function storedTypical(bd: StoredBreakdown): number | null {
-  if (typeof bd.typical_history === "number") return bd.typical_history;
-  if (typeof bd.typical_condition === "number") return bd.typical_condition;
-  return null;
-}
-// A row's value as the stored breakdown carries it; null when the row is absent or was not scored.
-function storedRowValue(bd: StoredBreakdown, row: string): number | null {
-  const r = bd.rows?.find((x) => x.row === row);
-  if (!r || r.status !== "scored" || typeof r.value !== "number") return null;
-  return r.value;
-}
-
-// The engine's inputs (ScoringInput) as the stored breakdown carries them, and the ones it does not
-// carry at all — the DATA check is partial by exactly this second list.
-const DATA_COVERS = [
-  "listing.price", "listing.km_declared", "car.hand", "car.ownership_history", "car.test_expiry",
-  "listing.hand_declared (unless the hand check was skipped)",
-  "car.km_at_last_test, car.mivchan_acharon_dt (unless the km check was skipped or had no declaration)",
-];
-const DATA_MISSING = ["listing.first_seen_at", "listing.seller_type (dealers.dealer_type)", "listing.owners_at_first_seen", "car.year", "car.first_registration"];
-
-const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-function show(v: unknown): string {
-  if (v === undefined) return "absent";
-  if (v === null) return "null";
-  return typeof v === "string" ? v : JSON.stringify(v);
-}
-// The ownership record as one comparable string; key order in the stored JSON is not part of the input.
-function ownersKey(v: unknown): string | null {
-  if (v === null || v === undefined) return null;
-  if (!Array.isArray(v)) return `not-an-array:${JSON.stringify(v)}`;
-  return v.map((e) => {
-    const { ym, type } = (e ?? {}) as { ym?: unknown; type?: unknown };
-    return `${String(ym)}:${String(type)}`;
-  }).join(",");
-}
-// Compare every key the stored side carries; a key the current side lacks reads as 'absent'.
-function diffMaps(stored: Map<string, unknown>, current: Map<string, unknown>): string[] {
-  const diffs: string[] = [];
-  for (const [k, a] of stored) {
-    const b = current.get(k);
-    if (!same(a, b)) diffs.push(`${k}: ${show(a)} -> ${show(b)}`);
-  }
-  return diffs;
-}
-
-const rawOf = (bd: StoredBreakdown, row: string) => bd.rows?.find((r) => r.row === row)?.raw;
-const checkOf = (bd: StoredBreakdown, check: string) => bd.checks?.find((c) => c.check === check);
-
-function storedInputs(bd: StoredBreakdown): Map<string, unknown> {
-  const m = new Map<string, unknown>();
-  const price = rawOf(bd, "price"), km = rawOf(bd, "km"), history = rawOf(bd, "history");
-  if (price && "price" in price) m.set("listing.price", price.price);
-  if (km && "km_declared" in km) m.set("listing.km_declared", km.km_declared);
-  if (history && "paper_hand" in history) m.set("car.hand", history.paper_hand);
-  if (history && "owners" in history) m.set("car.ownership_history", ownersKey(history.owners));
-  if (bd.facts && "test_expiry" in bd.facts) m.set("car.test_expiry", bd.facts.test_expiry);
-  // hand_declared: checks.hand carries it unless the check was skipped (§18.8); 'no_declaration' means null.
-  const hand = checkOf(bd, "hand");
-  if (hand && hand.status !== "skipped") m.set("listing.hand_declared", hand.reason === "no_declaration" ? null : hand.declared ?? null);
-  // km check, in its own order (checks.ts): 'no_declaration' carries neither value; 'no_official_km' means
-  // km_at_last_test null and says nothing about the test date; every later branch carries both.
-  const kc = checkOf(bd, "km");
-  if (kc && kc.status !== "skipped" && kc.reason !== "no_declaration") {
-    m.set("car.km_at_last_test", kc.reason === "no_official_km" ? null : kc.official ?? null);
-    if (kc.reason !== "no_official_km") m.set("car.mivchan_acharon_dt", kc.reason === "no_test_date" ? null : kc.official_date ?? null);
-  }
-  return m;
-}
-function currentInputs(input: ScoringInput): Map<string, unknown> {
-  const { listing, car } = input;
-  return new Map<string, unknown>([
-    ["listing.price", listing.price],
-    ["listing.km_declared", listing.km_declared],
-    ["listing.hand_declared", listing.hand_declared],
-    ["car.hand", car.hand],
-    ["car.ownership_history", ownersKey(car.ownership_history)],
-    ["car.km_at_last_test", car.km_at_last_test],
-    ["car.mivchan_acharon_dt", car.mivchan_acharon_dt === null ? null : dateToIso(car.mivchan_acharon_dt)],
-    ["car.test_expiry", car.test_expiry === null ? null : dateToIso(car.test_expiry)],
-  ]);
-}
-
-// The norm values the stored breakdown carries. The cell's typical only through typical_condition (v2) /
-// typical_history (v3), which the engine writes only when the price row scored — when it is absent the
-// stored typical is unknown and stays out of the comparison. market_row records whether there was a row.
-function storedNorm(bd: StoredBreakdown): Map<string, unknown> {
-  const m = new Map<string, unknown>();
-  const price = rawOf(bd, "price"), km = rawOf(bd, "km");
-  m.set("market_row", price && "median_price" in price ? "present" : "none");
-  if (price && "median_price" in price) m.set("median_price", price.median_price);
-  if (price && "sample_size" in price) m.set("sample_size", price.sample_size);
-  if (price && "window_days" in price) m.set("window_days", price.window_days);
-  if (km && "median_km" in km) m.set("median_km", km.median_km);
-  if (typeof storedTypical(bd) === "number") m.set("typical", storedTypical(bd));
-  return m;
-}
-function currentNorm(market: ScoringInput["market"]): Map<string, unknown> {
-  const m = new Map<string, unknown>();
-  m.set("market_row", market === null ? "none" : "present");
-  if (market === null) return m;
-  m.set("median_price", market.median_price);
-  m.set("sample_size", market.sample_size);
-  m.set("window_days", market.window_days);
-  m.set("median_km", market.median_km);
-  m.set("typical", market.median_history === null ? null : round(market.median_history));
-  return m;
-}
-
-// Day 14 §6.3. The whole v2 -> v3 move of one listing's deal, checked term by term:
-//   the price row is unchanged, the history row is unchanged, and
-//   deal_v3 - deal_v2 = (old typical_condition - new median_history) + (new km row - old km row).
-// `constant` is the per-cell part — (old typical - new typical) — which must be the same for every
-// listing of the cell; the km term is the listing's own and is zero wherever the slope did not change.
-// Q13: `sub` names which of the two sub-rules carried the line, null when the general rule did.
-type VersionSub = "anchor" | "typical" | null;
-type VersionCheck = { ok: boolean; sub: VersionSub; detail: string[]; constant: number | null; km_term: number | null; used_allowance: boolean };
-const EPS = 1e-9;
-// Q11: v2 computed round(round(history + km) - typical), v3 computes round(history - typical + km) in
-// ONE rounding. On a .05 boundary the two differ by exactly one ROUND_DECIMALS step, so a line whose only
-// miss is that step is still VERSION — the deviation is printed and the lines that used it are counted.
-// Anything larger is a real move and stays UNEXPLAINED.
-const ROUNDING_ALLOWANCE = 0.1;
-function versionExpectation(s: Scored, bd: StoredBreakdown | null): VersionCheck {
-  const detail: string[] = [];
-  if (bd === null) return { ok: false, sub: null, detail: ["listings.score_breakdown is null: the v2 -> v3 move cannot be checked"], constant: null, km_term: null, used_allowance: false };
-
-  const curRow = (name: string) => s.result.rows.find((r) => r.row === name);
-  const curValue = (name: string) => {
-    const r = curRow(name);
-    return r && r.status === "scored" && typeof r.value === "number" ? r.value : null;
-  };
-  const oldPrice = storedRowValue(bd, "price"), newPrice = curValue("price");
-  const oldHistory = storedRowValue(bd, "history"), newHistory = curValue("history");
-  const oldKm = storedRowValue(bd, "km"), newKm = curValue("km");
-  const oldTypical = storedTypical(bd), newTypical = s.result.typical_history;
-
-  // Q13 (a) — the thin-cell anchor (§0.5). Neither version has a deal score, the history and km rows are
-  // identical, and the ONLY move is a price row that goes from absent to a scored anchor. Everything the
-  // sub-rule asserts is checked; a thin-cell listing that moved anything else falls through to the general
-  // rule below and is UNEXPLAINED there.
-  const priceSource = curRow("price")?.source ?? null;
-  if (
-    s.stored.score === null && s.result.deal_score === null &&
-    oldHistory === newHistory && oldKm === newKm &&
-    oldPrice === null && newPrice !== null && priceSource === "anchor"
-  ) {
-    detail.push(
-      `thin cell (sample_size ${s.input.market?.sample_size ?? "-"} < ${MIN_SAMPLE}): price row absent -> ${fmt(newPrice)} from the anchor (§0.5); ` +
-        `history ${fmt(oldHistory)} and km ${fmt(oldKm)} unchanged; no deal score on either side`,
-    );
-    return { ok: true, sub: "anchor", detail, constant: null, km_term: null, used_allowance: false };
-  }
-
-  // Q13 (b) — the re-sourced history (§0.4). The car has no ownership row, so v2 scored the hand the ad
-  // declared and v3 takes the cell's typical instead. The deal must move by the cell constant plus that
-  // history move plus the km move; the price row still may not move. Checked below, after the terms.
-  const historySource = curRow("history")?.source ?? null;
-  const reSourced =
-    s.input.car.ownership_history === null && historySource === "typical" &&
-    newHistory !== null && newTypical !== null && newHistory === round(newTypical) &&
-    oldPrice === newPrice && s.stored.score !== null && s.result.deal_score !== null &&
-    oldTypical !== null && oldHistory !== null;
-
-  // The two rows the brief says must not move.
-  if (oldPrice !== newPrice) detail.push(`price row moved ${fmt(oldPrice)} -> ${fmt(newPrice)} — §0.7 says it must not`);
-  if (!reSourced && oldHistory !== newHistory) detail.push(`history row moved ${fmt(oldHistory)} -> ${fmt(newHistory)} — §0.7 says it must not`);
-
-  if (s.stored.score === null || s.result.deal_score === null) {
-    // A deal that appears or disappears is a move §0.7 does not describe; say so rather than pass it.
-    detail.push(`deal ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)}: one side has no deal score, so the constant does not apply`);
-    return { ok: false, sub: null, detail, constant: null, km_term: null, used_allowance: false };
-  }
-  if (oldTypical === null || newTypical === null) {
-    detail.push(`typical ${fmt(oldTypical)} -> ${fmt(newTypical)}: one side has no typical, so the constant does not apply`);
-    return { ok: false, sub: null, detail, constant: null, km_term: null, used_allowance: false };
-  }
-
-  if (reSourced) {
-    const constant = round(oldTypical - newTypical);
-    const km_term = round((newKm ?? 0) - (oldKm ?? 0));
-    const history_term = round((newHistory as number) - (oldHistory as number));
-    const expected = round(constant + history_term + km_term);
-    const actual = round(s.result.deal_score - s.stored.score);
-    detail.push(
-      `car has no ownership record: history row ${fmt(oldHistory)} (ad's declared hand, v2) -> ${fmt(newHistory)} = the cell's typical (§0.4, ${history_term >= 0 ? "+" : ""}${history_term}); ` +
-        `typical ${fmt(oldTypical)} -> ${fmt(newTypical)} (cell constant ${fmt(constant)}); ` +
-        `km row ${fmt(oldKm)} -> ${fmt(newKm)} (${fmt(km_term)}, slope_source ${String(curRow("km")?.raw?.slope_source ?? "-")}); ` +
-        `price row ${fmt(oldPrice)} unchanged; deal ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)} = ${fmt(actual)}, expected ${fmt(expected)}`,
-    );
-    const miss = Math.abs(actual - expected);
-    const exact = miss < EPS;
-    const used = !exact && miss <= ROUNDING_ALLOWANCE + EPS;
-    if (used) detail.push(`off by ${fmt(round(actual - expected))} — within the ±${ROUNDING_ALLOWANCE} rounding allowance, counted as VERSION (typical)`);
-    else if (!exact) detail.push(`the move is ${fmt(round(actual - expected))} away from the expected one — beyond the ±${ROUNDING_ALLOWANCE} rounding allowance`);
-    // `reSourced` already required the price row to hold, so the identity is the only thing left to pass.
-    return { ok: exact || used, sub: "typical", detail, constant, km_term, used_allowance: used };
-  }
-  const constant = round(oldTypical - newTypical);
-  const km_term = round((newKm ?? 0) - (oldKm ?? 0));
-  const expected = round(constant + km_term);
-  const actual = round(s.result.deal_score - s.stored.score);
-  detail.push(
-    `typical ${fmt(oldTypical)} -> ${fmt(newTypical)} (cell constant ${fmt(constant)}); ` +
-      `km row ${fmt(oldKm)} -> ${fmt(newKm)} (${fmt(km_term)}, slope_source ${String(curRow("km")?.raw?.slope_source ?? "-")}); ` +
-      `deal ${fmt(s.stored.score)} -> ${fmt(s.result.deal_score)} = ${fmt(actual)}, expected ${fmt(expected)}`,
-  );
-  // detail.length === 1 means neither the price nor the history row moved: those two lines come first.
-  const rowsHeld = detail.length === 1;
-  const miss = Math.abs(actual - expected);
-  const exact = miss < EPS;
-  const used_allowance = !exact && miss <= ROUNDING_ALLOWANCE + EPS;
-  if (used_allowance) {
-    detail.push(`off by ${fmt(round(actual - expected))} — within the ±${ROUNDING_ALLOWANCE} rounding allowance (v2 rounded twice, v3 rounds once), counted as VERSION`);
-  } else if (!exact) {
-    detail.push(`the move is ${fmt(round(actual - expected))} away from the expected one — beyond the ±${ROUNDING_ALLOWANCE} rounding allowance`);
-  }
-  return { ok: rowsHeld && (exact || used_allowance), sub: null, detail, constant, km_term, used_allowance: rowsHeld && used_allowance };
-}
-// Q13: the label a passing check carries.
-const versionLabel = (v: VersionCheck): Label => (v.sub === null ? "VERSION" : (`VERSION (${v.sub})` as Label));
-
 async function main() {
   const now = new Date();
+  const AGAINST = parseAgainst();
   log(`${WRITE ? "" : "[DRY RUN] "}score-listings - now = ${now.toISOString()}, engine_version = ${ENGINE_VERSION}, group_version = ${GROUP_VERSION}`);
+  log(
+    AGAINST === null
+      ? `comparison target: the latest score, as listings holds it now (no --against)`
+      : `comparison target: --against ${AGAINST.day} - per listing, its latest listing_scores row with scored_at before ${AGAINST.before.toISOString()} (that day or earlier, UTC)`,
+  );
 
   const listings = await db.listings.findMany({
     where: { delisted_at: null },
@@ -394,6 +192,40 @@ async function main() {
   }
   // P3: pool_stats carries no group_version — the curve is measured per model-year, not per cell.
   const poolNormRow = await db.pool_stats.findFirst({ orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
+
+  // ---------- Day 17 §2: the stored side the classifier compares against ----------
+  // Without --against it is the listings row itself — the latest score, as it has always been. With
+  // --against it is, per listing, the latest listing_scores row of that day or earlier; a listing with
+  // no such row has no stored score at all and takes NEW, exactly as an unscored listing does.
+  type Stored = Scored["stored"];
+  const NO_STORED: Stored = {
+    score: null, condition_score: null, confidence: null, engine_version: null,
+    scored_at: null, breakdown: null, market_stats_id: null, model_stats_id: null, pool_stats_id: null,
+  };
+  const storedOf = new Map<number, Stored>();
+  if (AGAINST !== null) {
+    const rows = await db.listing_scores.findMany({
+      where: { listing_id: { in: listings.map((l) => l.id) }, scored_at: { lt: AGAINST.before } },
+      orderBy: [{ scored_at: "desc" }, { id: "desc" }],
+    });
+    for (const r of rows) {
+      if (storedOf.has(r.listing_id)) continue; // ordered newest first: the first row per listing is the one
+      storedOf.set(r.listing_id, {
+        ...storedSums(r.breakdown), score: r.deal_score, engine_version: r.engine_version,
+        scored_at: r.scored_at, breakdown: r.breakdown,
+        market_stats_id: r.market_stats_id, model_stats_id: r.model_stats_id, pool_stats_id: r.pool_stats_id,
+      });
+    }
+    log(`stored rows found at or before ${AGAINST.day}: ${storedOf.size} of ${listings.length} listings`);
+  }
+  const storedFor = (l: { id: number; score: number | null; score_breakdown: unknown; engine_version: number | null; scored_at: Date | null; market_stats_id: number | null; model_stats_id: number | null; pool_stats_id: number | null }): Stored =>
+    AGAINST === null
+      ? {
+          ...storedSums(l.score_breakdown), score: l.score, engine_version: l.engine_version,
+          scored_at: l.scored_at, breakdown: l.score_breakdown,
+          market_stats_id: l.market_stats_id, model_stats_id: l.model_stats_id, pool_stats_id: l.pool_stats_id,
+        }
+      : storedOf.get(l.id) ?? NO_STORED;
 
   // The new-car price, joined exactly as select-three.ts and compute-market-stats.ts join it: the latest
   // published_at row of new_car_prices on (degem_code, sug_degem = vehicle_class, shnat_yitzur = year).
@@ -489,10 +321,10 @@ async function main() {
       scored.push({
         listing_id: l.id, plate, year: subject.car.year, price: l.price,
         cell_key: `${m.comparison_group ?? "(no group)"} ${subject.car.year}`,
-        make: m.make ?? "?", model: m.model ?? "?",
+        group: m.comparison_group, make: m.make, model: m.model,
         market_stats_id: market?.id ?? null, model_stats_id: model_stats?.id ?? null, pool_stats_id: pool_stats?.id ?? null,
         input, result,
-        stored: { ...storedSums(l.score_breakdown), score: l.score, engine_version: l.engine_version, scored_at: l.scored_at, breakdown: l.score_breakdown },
+        stored: storedFor(l),
       });
     } catch (e) {
       failed.push({ listing_id: l.id, plate, error: (e as Error).message });
@@ -539,55 +371,115 @@ async function main() {
   const noHistory = scored.filter((s) => s.input.car.ownership_history === null);
   const thin = scored.filter((s) => s.input.market !== null && s.input.market.sample_size < MIN_SAMPLE);
 
-  // ---------- Day 13 §1: regression against listings, every difference classified ----------
-  log(`\n===== REGRESSION vs listings (score, condition_score, confidence; engine_version) =====`);
+  // ---------- Day 17 run 4 §2: the norm rows the stored scores used ----------
+  // The script's whole part in the composed identity is this: load the rows. Per listing and per level,
+  // the row the stored score points at by id; where that id is null, the row that was current at the
+  // stored scored_at (the latest computed_at at or before it, at the same key). A dangling id — one whose
+  // row is gone from its table — is recorded rather than read as "there was no row": the module then says
+  // the identity cannot be checked and the line stays UNEXPLAINED.
+  type CellRow = NonNullable<Awaited<ReturnType<typeof db.market_stats.findFirst>>>;
+  type ModelRow = NonNullable<Awaited<ReturnType<typeof db.model_stats.findFirst>>>;
+  type PoolRow = NonNullable<Awaited<ReturnType<typeof db.pool_stats.findFirst>>>;
+  const idsOf = (pick: (x: Scored) => number | null) => [...new Set(scored.map(pick).filter((x): x is number => x !== null))];
+  const byId = <T extends { id: number }>(rows: T[]) => new Map<number, T>(rows.map((r) => [r.id, r]));
+  const storedCellRows = byId(await db.market_stats.findMany({ where: { id: { in: idsOf((x) => x.stored.market_stats_id) } } }));
+  const storedModelRows = byId(await db.model_stats.findMany({ where: { id: { in: idsOf((x) => x.stored.model_stats_id) } } }));
+  const storedPoolRows = byId(await db.pool_stats.findMany({ where: { id: { in: idsOf((x) => x.stored.pool_stats_id) } } }));
+  const asMarket = (r: CellRow): NonNullable<ScoringInput["market"]> => ({
+    id: r.id, median_price: r.median_price, median_km: r.median_km, median_history: r.median_history,
+    sample_size: r.sample_size, window_days: r.window_days, group_version: r.group_version, engine_version: r.engine_version,
+  });
+  const asModelStats = (r: ModelRow): NonNullable<ScoringInput["model_stats"]> => ({ id: r.id, km_slope: r.km_slope, km_slope_n: r.km_slope_n });
+  const asPool = (r: PoolRow): NonNullable<ScoringInput["pool_stats"]> => ({
+    id: r.id, anchor_ratio_intercept: r.anchor_ratio_intercept, anchor_ratio_per_year: r.anchor_ratio_per_year,
+    anchor_error_pct: r.anchor_error_pct, anchor_age_min_years: r.anchor_age_min_years,
+    anchor_age_max_years: r.anchor_age_max_years, anchor_n: r.anchor_n, anchor_listings: r.anchor_listings,
+  });
+
+  // "the row current at the stored scored_at" — one query per (key, moment), cached.
+  const cellAt = new Map<string, CellRow | null>();
+  async function cellRowAt(group: string, year: number, at: Date): Promise<CellRow | null> {
+    const k = `${group}|${year}|${at.toISOString()}`;
+    if (!cellAt.has(k)) {
+      cellAt.set(k, await db.market_stats.findFirst({
+        where: { comparison_group: group, year, group_version: GROUP_VERSION, computed_at: { lte: at } },
+        orderBy: [{ computed_at: "desc" }, { id: "desc" }],
+      }));
+    }
+    return cellAt.get(k) ?? null;
+  }
+  const modelAt = new Map<string, ModelRow | null>();
+  async function modelRowAt(make: string, model: string, at: Date): Promise<ModelRow | null> {
+    const k = `${make}|${model}|${at.toISOString()}`;
+    if (!modelAt.has(k)) {
+      modelAt.set(k, await db.model_stats.findFirst({
+        where: { make, model, group_version: GROUP_VERSION, computed_at: { lte: at } },
+        orderBy: [{ computed_at: "desc" }, { id: "desc" }],
+      }));
+    }
+    return modelAt.get(k) ?? null;
+  }
+  const poolAt = new Map<string, PoolRow | null>();
+  async function poolRowAt(at: Date): Promise<PoolRow | null> {
+    const k = at.toISOString();
+    if (!poolAt.has(k)) {
+      poolAt.set(k, await db.pool_stats.findFirst({ where: { computed_at: { lte: at } }, orderBy: [{ computed_at: "desc" }, { id: "desc" }] }));
+    }
+    return poolAt.get(k) ?? null;
+  }
+
+  const storedNorms = new Map<number, { norms: NormRows; missing: NormKind[] }>();
+  let byPointer = 0, byMoment = 0, dangling = 0; // how each stored row was found — printed with the block
+  for (const s of scored) {
+    const when = s.stored.scored_at;
+    const missing: NormKind[] = [];
+    let median: ScoringInput["market"] = null;
+    if (s.stored.market_stats_id !== null) {
+      const r = storedCellRows.get(s.stored.market_stats_id);
+      if (r === undefined) missing.push("median");
+      else { median = asMarket(r); byPointer++; }
+    } else if (when !== null && s.group !== null) {
+      const r = await cellRowAt(s.group, s.year, when);
+      if (r !== null) { median = asMarket(r); byMoment++; }
+    }
+    let slope: ScoringInput["model_stats"] = null;
+    if (s.stored.model_stats_id !== null) {
+      const r = storedModelRows.get(s.stored.model_stats_id);
+      if (r === undefined) missing.push("slope");
+      else { slope = asModelStats(r); byPointer++; }
+    } else if (when !== null && s.make !== null && s.model !== null) {
+      const r = await modelRowAt(s.make, s.model, when);
+      if (r !== null) { slope = asModelStats(r); byMoment++; }
+    }
+    let anchor: ScoringInput["pool_stats"] = null;
+    if (s.stored.pool_stats_id !== null) {
+      const r = storedPoolRows.get(s.stored.pool_stats_id);
+      if (r === undefined) missing.push("anchor");
+      else { anchor = asPool(r); byPointer++; }
+    } else if (when !== null) {
+      const r = await poolRowAt(when);
+      if (r !== null) { anchor = asPool(r); byMoment++; }
+    }
+    dangling += missing.length;
+    storedNorms.set(s.listing_id, { norms: { median, slope, anchor }, missing });
+  }
+
+  // ---------- Day 13 §1: regression against the stored score, every difference classified ----------
+  log(`\n===== REGRESSION vs ${AGAINST === null ? "listings" : `listing_scores at or before ${AGAINST.day}`} (score, condition_score, confidence; engine_version) =====`);
+  log(`stored norm rows: ${byPointer} by the id the stored score carries, ${byMoment} by the row current at its scored_at, ${dangling} id(s) whose row is gone (must be 0)`);
   const labelled: { s: Scored; label: Label; head: string; detail: string[] }[] = [];
   for (const s of scored) {
-    const cur = { score: s.result.deal_score, condition_score: s.result.condition_score, confidence: s.result.confidence.level as string };
-    const sto = { score: s.stored.score, condition_score: s.stored.condition_score, confidence: s.stored.confidence };
-    const head = `score ${fmt(sto.score)} -> ${fmt(cur.score)}; condition_score ${fmt(sto.condition_score)} -> ${fmt(cur.condition_score)}; confidence ${sto.confidence ?? "-"} -> ${cur.confidence}`;
-    const detail: string[] = [];
-    let label: Label;
-
-    if (s.stored.engine_version !== null && s.stored.engine_version !== ENGINE_VERSION) {
-      // Day 14 §6.3: v2 -> v3 is not "listed, not compared" any more — the move is known exactly.
-      //   deal_v3 - deal_v2 = (old typical_condition - new median_history) + (new km row - old km row)
-      // with the price row and the history row identical. Anything else is UNEXPLAINED.
-      const bd = (s.stored.breakdown ?? null) as StoredBreakdown | null;
-      const v = versionExpectation(s, bd);
-      label = v.ok ? versionLabel(v) : "UNEXPLAINED";
-      detail.push(`stored engine_version ${s.stored.engine_version} -> ${ENGINE_VERSION}`);
-      for (const d of v.detail) detail.push(d);
-    } else if (s.stored.scored_at === null) {
-      label = "NEW";
-      detail.push(`no stored score at all (scored_at null, engine_version ${s.stored.engine_version ?? "null"}): first scoring`);
-    } else if (same(sto, cur)) {
-      continue; // stored and recomputed agree — no line
-    } else {
-      const bd = (s.stored.breakdown ?? null) as StoredBreakdown | null;
-      // CLOCK: the same inputs and the same (today's) norm row, only `now` moved back to scored_at.
-      const back = scoreListing(s.input, s.stored.scored_at);
-      const then = { score: back.deal_score, condition_score: back.condition_score, confidence: back.confidence.level as string };
-      const dataDiffs = bd === null ? [] : diffMaps(storedInputs(bd), currentInputs(s.input));
-      const normDiffs = bd === null ? [] : diffMaps(storedNorm(bd), currentNorm(s.input.market));
-      const cellMoved = normDiffs.some((d) => d.startsWith("sample_size") || d.startsWith("window_days") || d.startsWith("market_row"));
-      if (same(then, sto)) {
-        label = "CLOCK";
-        detail.push(`recomputed with now = stored scored_at ${s.stored.scored_at.toISOString()}: ${fmt(then.score)} / ${fmt(then.condition_score)} / ${then.confidence} = the stored values (same inputs, same norm row as today)`);
-      } else if (dataDiffs.length) {
-        label = "DATA";
-        for (const d of dataDiffs) detail.push(`input ${d}`);
-      } else if (normDiffs.length && cellMoved) {
-        label = "NORM";
-        for (const d of normDiffs) detail.push(`norm ${d}`);
-      } else {
-        label = "UNEXPLAINED";
-        if (bd === null) detail.push(`listings.score_breakdown is null: neither DATA nor NORM could be checked`);
-        detail.push(`at the stored scored_at ${s.stored.scored_at.toISOString()}: ${fmt(then.score)} / ${fmt(then.condition_score)} / ${then.confidence} - not the stored values`);
-        for (const d of normDiffs) detail.push(`norm ${d} (same sample_size and window_days: same set, different norm)`);
-      }
-    }
-    labelled.push({ s, label, head, detail });
+    const sn = storedNorms.get(s.listing_id) ?? { norms: { median: null, slope: null, anchor: null }, missing: [] };
+    const c = classify({
+      make: s.make ?? "?", model: s.model ?? "?",
+      result: s.result, input: s.input,
+      norms: { median: s.input.market, slope: s.input.model_stats, anchor: s.input.pool_stats },
+      stored: { ...s.stored, norms: sn.norms, missing: sn.missing },
+      engine_version: ENGINE_VERSION,
+      // The callback: the engine, this listing's current data, the norm rows and the clock it is asked for.
+      scoreWith: (norms, at) => scoreListing({ ...s.input, market: norms.median, model_stats: norms.slope, pool_stats: norms.anchor }, at),
+    });
+    if (c !== null) labelled.push({ s, label: c.label, head: c.head, detail: c.detail });
   }
   const labelCount = (l: Label) => labelled.filter((x) => x.label === l).length;
   log(`regression count: ${labelCount("UNEXPLAINED")} (must be 0) = UNEXPLAINED only; ${LABELS.map((l) => `${l} ${labelCount(l)}`).join(", ")}; unchanged ${scored.length - labelled.length} of ${scored.length}`);
@@ -617,7 +509,7 @@ async function main() {
   for (const s of scored) {
     const bd = (s.stored.breakdown ?? null) as StoredBreakdown | null;
     if (s.stored.engine_version === null || s.stored.engine_version === ENGINE_VERSION) continue;
-    const v = versionExpectation(s, bd);
+    const v = versionExpectation({ stored_score: s.stored.score, result: s.result, input: s.input }, bd);
     if (!byCell.has(s.cell_key)) byCell.set(s.cell_key, []);
     (byCell.get(s.cell_key) as { s: Scored; v: VersionCheck }[]).push({ s, v });
   }

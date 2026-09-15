@@ -5,7 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  absentFromSheet, apply, checkDelistedColumn, decide, firstPriceObservedAt, parseSeen,
+  absentFromSheet, apply, checkDelistedColumn, decide, firstPriceObservedAt, lastVerifiedAtOnInsert, parseSeen,
   type Client, type Decision, type ListingState, type Observation, type Write,
 } from "./observe";
 
@@ -135,6 +135,11 @@ describe("R1 — the first price row of an inserted listing", () => {
 
     // without --seen nothing changes: the price was observed when the row was viewed.
     assert.equal(firstPriceObservedAt(viewed, null).toISOString(), "2026-09-02T00:00:00.000Z");
+  });
+
+  it("last_verified_at on insert: seen in a --seen run, null without one", () => {
+    assert.equal(lastVerifiedAtOnInsert(SEEN)?.toISOString(), "2026-09-15T00:00:00.000Z");
+    assert.equal(lastVerifiedAtOnInsert(null), null);
   });
 });
 

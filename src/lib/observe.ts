@@ -213,6 +213,16 @@ export function firstPriceObservedAt(firstSeenAt: Date, seen: Date | null): Date
   return seen ?? firstSeenAt;
 }
 
+/**
+ * R1, the `last_verified_at` of a listing the run inserts. A `--seen` run walked the ad and found it
+ * up with its price, so the insert is itself an observation of `seen` — exactly what R4 writes for a
+ * listing that already existed. Without `--seen` the run makes no claim about today, and the field
+ * stays null as it has always been.
+ */
+export function lastVerifiedAtOnInsert(seen: Date | null): Date | null {
+  return seen;
+}
+
 // ---------- applying one decision ----------
 export type Client = Prisma.TransactionClient;
 export type RecordPrice = (listingId: number, price: number, observedAt: Date, client: Client) => Promise<void>;
