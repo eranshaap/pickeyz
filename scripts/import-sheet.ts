@@ -1,6 +1,7 @@
 // scripts/import-sheet.ts
 // Imports the manual collection sheet (data/raw/sheet.csv — the רכבים tab, CSV UTF-8)
-// into models -> dealers -> cars -> listings. `--dry-run` reads, fetches and reports, writes nothing.
+// into models -> dealers -> cars -> listings. Day 12's rule holds in every mode: the run is a DRY
+// RUN unless `--write` is given — it reads, fetches and reports, and writes nothing.
 //
 // Rules (Day 6):
 // - The sheet is the first-seen observation: an existing listing is never updated here.
@@ -18,7 +19,11 @@
 //   verified, re-priced, or delisted per the sheet's `ירד` column. Every rule lives in src/lib/observe.ts;
 //   this file only maps rows to observations, calls it, and counts. Without `--seen` nothing changes:
 //   the `ירד` column is ignored and an existing listing is still never touched.
-// - With `--seen` the run is a dry run unless `--write` is given.
+// - G1 narrowed (15/09): a row this script cannot import — no asking price, or a plate the registry
+//   reports cancelled / not_found — is outside the observation whatever its `ירד` value. It is
+//   counted and listed under skipped:* exactly as before, never a stop and never a write.
+// - R4′: an existing listing marked `לא` whose sheet row has no asking price has left our market
+//   (the pool holds priced ads only) — delisted_at = seen, counted apart from the `כן` delistings.
 
 import "dotenv/config";
 import { readFileSync } from "node:fs";
@@ -29,8 +34,9 @@ import { Prisma } from "@/generated/prisma/client";
 import { getVehicleData, type VehicleData } from "@/lib/mot/vehicle";
 import { normalizeName } from "@/lib/names";
 import {
-  absentFromSheet, apply as applyObservation, checkDelistedColumn, decide, DELISTED_HEADER, parseSeen,
-  type Decision, type ListingState, type Violation,
+  absentFromSheet, apply as applyObservation, checkDelistedColumn, decide, DELISTED_HEADER,
+  firstPriceObservedAt, parseSeen,
+  type Decision, type ListingState, type Observation, type Violation,
 } from "@/lib/observe";
 
 // `--seen YYYY-MM-DD` (or `--seen=YYYY-MM-DD`). Absent -> null, and the run behaves exactly as before.
@@ -41,8 +47,9 @@ const SEEN_ARG = ((): string | null => {
   return eq ? eq.slice("--seen=".length) : null;
 })();
 
-// Without --seen the old flag decides. An observation run writes only when told to: `--write`.
-const DRY = SEEN_ARG === null ? process.argv.includes("--dry-run") : !process.argv.includes("--write");
+// Day 12, in every mode: dry by default, `--write` is the only thing that writes. `--dry-run` is
+// still accepted — it is what this script used to need — and is now simply the default, so ignored.
+const DRY = !process.argv.includes("--write");
 const FILE = process.argv.find((a) => a.endsWith(".csv")) ?? "data/raw/sheet.csv";
 
 // --expect-model "MAZDA 3": the registry's commercial model name every row must carry.
@@ -266,7 +273,7 @@ function counterLine(label: string, n: number, note = ""): string {
 
 async function main() {
   const { rows, headers } = readSheet(FILE);
-  console.log(`${DRY ? "[DRY RUN] " : ""}${FILE}: ${rows.length} rows, headers OK`);
+  console.log(`${DRY ? "[DRY RUN]" : "[WRITE]"} ${FILE}: ${rows.length} rows, headers OK`);
 
   // ---------- Day 17: G1, every guard before any write ----------
   let seen: Date | null = null;
@@ -290,11 +297,16 @@ async function main() {
     const offending: { row: Row; violation: Violation }[] = [];
     for (const row of rows) {
       const existing = known.get(key(row.source, row.external_id)) ?? null;
-      // A row the import never turns into a listing has no observation rule; stop rather than choose one.
-      if (existing && row.price === null) {
-        throw new Error(`row ${row.n}: ${row.plate} has no asking price but its listing already exists — no rule covers this row`);
+      const observation = (importable: boolean): Observation =>
+        ({ price: row.price, km: row.km, hand: row.hand, cell: row.delisted_cell, importable });
+      // Importability costs a registry lookup, so the registry is asked only where its answer can
+      // change the outcome: a row this pass would stop for being a new listing marked כן. Every other
+      // row is decided on what the sheet says alone (a row without a price imports nothing either way).
+      let r = decide(existing, observation(row.price !== null), seen);
+      if (!r.ok && r.violation.guard === "new_row_delisted") {
+        const status = (await getVehicleData(row.plate)).status;
+        r = decide(existing, observation(status === "active" || status === "inactive"), seen);
       }
-      const r = decide(existing, { price: row.price, km: row.km, hand: row.hand, cell: row.delisted_cell }, seen);
       if (!r.ok) offending.push({ row, violation: r.violation });
     }
     if (offending.length > 0) {
@@ -308,18 +320,26 @@ async function main() {
 
   const obs = {
     new: 0, existing: 0, verified: 0, priceChanged: 0, kmHandChanged: 0,
-    delistedNow: 0, alreadyDelisted: 0, findings: 0,
+    delistedNow: 0, priceRemoved: 0, alreadyDelisted: 0, findings: 0,
   };
   const wrote = { history: 0, price: 0, kmhand: 0, lastVerified: 0, delisted: 0 };
   const priceLines: string[] = [];
   const kmHandLines: string[] = [];
+  const priceRemovedLines: string[] = [];
   const findingLines: string[] = [];
+  const skippedLines: string[] = []; // the rows outside the observation, with their `ירד` value
 
   const tally = (row: Row, d: Decision) => {
+    if (d.outcome === "outside") return; // counted under skipped:* and listed there, not here
     if (d.outcome === "insert") { obs.new++; return; }
     obs.existing++;
     if (d.outcome === "verified") obs.verified++;
     if (d.outcome === "delist") obs.delistedNow++;
+    if (d.outcome === "delist_price_removed") {
+      obs.priceRemoved++;
+      const was = known.get(key(row.source, row.external_id))?.price;
+      priceRemovedLines.push(`  ${row.external_id} (${row.plate}): DB price ${was ?? "—"}, none in the sheet -> delisted`);
+    }
     if (d.outcome === "already_delisted") obs.alreadyDelisted++;
     if (d.finding) { obs.findings++; findingLines.push(`  ${row.external_id} (${row.plate}): ${d.finding}`); }
     const kmHand: string[] = [];
@@ -346,7 +366,24 @@ async function main() {
 
   for (const [i, row] of rows.entries()) {
     const tag = `[${i + 1}/${rows.length}] ${row.plate}`;
-    if (row.price === null) { bump("skipped:no_price"); console.log(`${tag} skipped — no asking price`); continue; }
+    if (row.price === null) {
+      // Not imported, exactly as before: an ad enters the pool with a price, so this row creates nothing.
+      bump("skipped:no_price");
+      // Day 17 (R4′): if it is already a listing, the missing price is the observation — the ad has
+      // left the pool. No registry lookup is needed: the only write is delisted_at.
+      const existing = seen ? known.get(key(row.source, row.external_id)) ?? null : null;
+      if (seen && existing) {
+        const r = decide(existing, { price: null, km: row.km, hand: row.hand, cell: row.delisted_cell, importable: false }, seen);
+        if (!r.ok) fail(row.n, `${row.plate}: ${r.violation.message}`); // G1 already passed; the data moved under us
+        if (!DRY) await db.$transaction((tx) => applyObservation(tx, r.decision));
+        tally(row, r.decision);
+        console.log(`${tag} no asking price | listing:existing ${r.decision.outcome}`);
+        continue;
+      }
+      if (seen) skippedLines.push(`  row ${row.n} | ${row.external_id} (${row.plate}) | ירד ${JSON.stringify(row.delisted_cell)} | no asking price`);
+      console.log(`${tag} skipped — no asking price`);
+      continue;
+    }
 
     const lookup = await getVehicleData(row.plate);
     if (lookup.status !== "active" && lookup.status !== "inactive") {
@@ -354,7 +391,9 @@ async function main() {
       if (seen && known.has(key(row.source, row.external_id))) {
         fail(row.n, `${row.plate}: registry says ${lookup.status} but its listing already exists — no rule covers this row`);
       }
-      bump(`skipped:${lookup.status}`); console.log(`${tag} skipped — ${lookup.status}`); continue;
+      bump(`skipped:${lookup.status}`);
+      if (seen) skippedLines.push(`  row ${row.n} | ${row.external_id} (${row.plate}) | ירד ${JSON.stringify(row.delisted_cell)} | ${lookup.status}`);
+      console.log(`${tag} skipped — ${lookup.status}`); continue;
     }
     // An inactive car carries the same registry fields; its expired tokef_dt is data, not a reason to skip.
     const v = lookup.data;
@@ -377,7 +416,7 @@ async function main() {
       if (exists) {
         // Day 17: without --seen an existing listing still changes nothing.
         if (!seen) return { dealer: null, car, listing: "existing", decision: null };
-        const r = decide(exists, { price: row.price, km: row.km, hand: row.hand, cell: row.delisted_cell }, seen);
+        const r = decide(exists, { price: row.price, km: row.km, hand: row.hand, cell: row.delisted_cell, importable: true }, seen);
         if (!r.ok) fail(row.n, `${row.plate}: ${r.violation.message}`); // G1 already passed; the data moved under us
         if (!DRY) await applyObservation(tx, r.decision);
         return { dealer: null, car, listing: "existing", decision: r.decision };
@@ -394,7 +433,10 @@ async function main() {
           },
         });
         // Day 11 (§19.2): the first observed price, at first sight. Later changes go through recordPrice().
-        await tx.listing_price_history.create({ data: { listing_id: created.id, price: row.price!, observed_at: first_seen_at } });
+        // Day 17 (R1): in a --seen run the walk is what confirmed that price, so it was observed on seen.
+        await tx.listing_price_history.create({
+          data: { listing_id: created.id, price: row.price!, observed_at: firstPriceObservedAt(first_seen_at, seen) },
+        });
       }
       return { dealer, car, listing: "new", decision: null };
     };
@@ -434,6 +476,7 @@ async function main() {
     console.log(counterLine("  price changed", obs.priceChanged, "old -> new per listing, listed below"));
     console.log(counterLine("  km/hand changed", obs.kmHandChanged, "per listing, listed below"));
     console.log(counterLine("  delisted now (כן)", obs.delistedNow));
+    console.log(counterLine("  delisted: price removed (לא, no price)", obs.priceRemoved, "listed"));
     console.log(counterLine("  already delisted (skipped)", obs.alreadyDelisted));
     console.log(counterLine("  findings: delisted in DB, לא in sheet", obs.findings, "listed"));
     console.log(counterLine("blank / invalid cells", 0, "listed -> STOP"));
@@ -442,7 +485,9 @@ async function main() {
 
     if (priceLines.length) { console.log("\nprice changed"); for (const l of priceLines) console.log(l); }
     if (kmHandLines.length) { console.log("\nkm/hand changed"); for (const l of kmHandLines) console.log(l); }
+    if (priceRemovedLines.length) { console.log("\ndelisted: price removed (לא, no price)"); for (const l of priceRemovedLines) console.log(l); }
     if (findingLines.length) { console.log("\nfindings: delisted in DB, לא in sheet"); for (const l of findingLines) console.log(l); }
+    if (skippedLines.length) { console.log("\nskipped — outside the observation"); for (const l of skippedLines) console.log(l); }
     if (notInSheet.length) { console.log("\nin DB, not in sheet"); for (const id of notInSheet) console.log(`  ${id}`); }
   }
 

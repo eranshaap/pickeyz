@@ -32,6 +32,9 @@ export type Observation = {
   km: number | null;
   hand: number | null;
   cell: string; // the raw `ירד` cell, as the sheet has it
+  // G1, narrowed 15/09: whether the feed can turn this row into a listing — it carries a price and
+  // the registry backs its plate. A row it cannot import is outside the observation (see below).
+  importable: boolean;
 };
 
 export type ListingState = {
@@ -53,9 +56,11 @@ export type Write =
   | { field: "delisted_at"; from: null; to: Date };
 
 export type Outcome =
+  | "outside" // G1: the feed cannot import this row — it is no observation at all
   | "insert" // R1: a new row — the import inserts it exactly as it does today
-  | "verified" // R4: existing, live, לא
+  | "verified" // R4: existing, live, לא, with a price
   | "delist" // R3: existing, live, כן
+  | "delist_price_removed" // R4′: existing, live, לא, and the ad has lost its asking price
   | "already_delisted"; // R2: existing with delisted_at already set
 
 export type Decision = {
@@ -116,8 +121,12 @@ export function absentFromSheet(inDb: readonly string[], inSheet: Iterable<strin
 export function decide(existing: ListingState | null, obs: Observation, seen: Date): DecideResult {
   const cell = readCell(obs.cell);
 
-  // R1 / G1: a new row is an ad collected today — it cannot already be gone.
+  // R1 / G1: a new row is an ad collected today — it cannot already be gone. The guard asks about a
+  // row that WOULD be inserted: one the feed cannot import (no price, or a plate the registry reports
+  // cancelled / not_found) never becomes a listing, so it is outside the observation whatever its
+  // `ירד` value — the caller counts and lists it among its skipped rows (Run 2b decision, 15/09).
   if (existing === null) {
+    if (!obs.importable) return { ok: true, decision: { outcome: "outside", listing_id: null, writes: [], finding: null } };
     if (cell === "gone") return stop("new_row_delisted", `a new listing cannot be marked ${CELL_GONE}`);
     return { ok: true, decision: { outcome: "insert", listing_id: null, writes: [], finding: null } };
   }
@@ -143,7 +152,7 @@ export function decide(existing: ListingState | null, obs: Observation, seen: Da
         outcome: "already_delisted",
         listing_id: existing.id,
         writes: [],
-        finding: cell === "up" ? "delisted in DB, still up in sheet" : null,
+        finding: cell === "up" && obs.price !== null ? "delisted in DB, still up in sheet" : null,
       },
     };
   }
@@ -161,9 +170,24 @@ export function decide(existing: ListingState | null, obs: Observation, seen: Da
     };
   }
 
-  // R4: still up.
+  // R4′: still up, but the ad has lost its asking price. The pool holds priced ads only — an ad
+  // enters with a price and leaves when it loses it. delisted_at and nothing else: there is no
+  // price to verify, so no last_verified_at either.
+  if (obs.price === null) {
+    return {
+      ok: true,
+      decision: {
+        outcome: "delist_price_removed",
+        listing_id: existing.id,
+        writes: [{ field: "delisted_at", from: null, to: seen }],
+        finding: null,
+      },
+    };
+  }
+
+  // R4: still up, with a price.
   const writes: Write[] = [];
-  if (obs.price !== null && obs.price !== existing.price) {
+  if (obs.price !== existing.price) {
     writes.push({ field: "price", from: existing.price, to: obs.price, observed_at: seen });
   }
   if (obs.km !== null && obs.km !== existing.km_declared) {
@@ -177,6 +201,16 @@ export function decide(existing: ListingState | null, obs: Observation, seen: Da
     writes.push({ field: "last_verified_at", from: existing.last_verified_at, to: seen });
   }
   return { ok: true, decision: { outcome: "verified", listing_id: existing.id, writes, finding: null } };
+}
+
+/**
+ * R1, the first price row of a listing the run inserts. Without `--seen` it is the row's viewing
+ * date, as it has always been. In a `--seen` run the walk is the observation that confirmed the
+ * price, so the price was observed on `seen` — while `first_seen_at` stays the viewing date (a row
+ * viewed without a price and priced later keeps its true dates on both sides).
+ */
+export function firstPriceObservedAt(firstSeenAt: Date, seen: Date | null): Date {
+  return seen ?? firstSeenAt;
 }
 
 // ---------- applying one decision ----------

@@ -5,7 +5,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  absentFromSheet, apply, checkDelistedColumn, decide, parseSeen,
+  absentFromSheet, apply, checkDelistedColumn, decide, firstPriceObservedAt, parseSeen,
   type Client, type Decision, type ListingState, type Observation, type Write,
 } from "./observe";
 
@@ -27,7 +27,7 @@ function listing(over: Partial<ListingState> = {}): ListingState {
 }
 
 function obs(over: Partial<Observation> = {}): Observation {
-  return { price: 100_000, km: 80_000, hand: 2, cell: "לא", ...over };
+  return { price: 100_000, km: 80_000, hand: 2, cell: "לא", importable: true, ...over };
 }
 
 /** decide() must have said yes; hands back the decision. */
@@ -87,6 +87,22 @@ describe("G1 — the guards, before any write", () => {
     assert.equal(stopped(null, obs({ cell: "כן" })), "new_row_delisted");
   });
 
+  it("a row the import cannot import is outside the observation, whatever its ירד value", () => {
+    // Row 72 of the walked sheet, 15/09: a plate the registry reports not_found, marked כן. It never
+    // becomes a listing, so the new-row guard does not fire on it — the run counts it as skipped.
+    const notImportable = obs({ cell: "כן", importable: false });
+    const d = ok(null, notImportable);
+    assert.equal(d.outcome, "outside");
+    assert.equal(d.listing_id, null);
+    assert.deepEqual(d.writes, []);
+    assert.equal(d.finding, null);
+
+    // לא and an empty cell are outside in the same way, and a row the import CAN import still stops.
+    assert.equal(ok(null, obs({ cell: "לא", importable: false })).outcome, "outside");
+    assert.equal(ok(null, obs({ cell: "", importable: false })).outcome, "outside");
+    assert.equal(stopped(null, obs({ cell: "כן", importable: true })), "new_row_delisted");
+  });
+
   it("seen before first_seen_at of an existing listing", () => {
     const early = listing({ first_seen_at: new Date("2026-09-20T00:00:00Z") });
     assert.equal(stopped(early, obs()), "seen_before_first_seen");
@@ -108,6 +124,17 @@ describe("R1 — a new row is inserted exactly as today", () => {
     const d = ok(null, obs({ cell: "לא" }));
     assert.equal(d.outcome, "insert");
     assert.deepEqual(d.writes, []);
+  });
+});
+
+describe("R1 — the first price row of an inserted listing", () => {
+  it("in a --seen run the price was observed on seen; first_seen_at stays the viewing date", () => {
+    const viewed = new Date("2026-09-02T00:00:00Z"); // the row's תאריך צפייה
+    assert.equal(firstPriceObservedAt(viewed, SEEN).toISOString(), "2026-09-15T00:00:00.000Z");
+    assert.equal(viewed.toISOString(), "2026-09-02T00:00:00.000Z"); // untouched: first_seen_at is the viewing date
+
+    // without --seen nothing changes: the price was observed when the row was viewed.
+    assert.equal(firstPriceObservedAt(viewed, null).toISOString(), "2026-09-02T00:00:00.000Z");
   });
 });
 
@@ -178,6 +205,34 @@ describe("R4 — existing, live, לא", () => {
     assert.deepEqual(fields(ok(listing(), obs({ hand: null })).writes), ["last_verified_at"]);
     const d = ok(listing({ hand_declared: null }), obs({ hand: 2 }));
     assert.deepEqual(d.writes[0], { field: "hand_declared", from: null, to: 2 });
+  });
+});
+
+describe("R4′ — existing, live, לא, and the ad has lost its asking price", () => {
+  it("delisted_at = seen and nothing else — no last_verified_at, no km/hand", () => {
+    const d = ok(listing(), obs({ cell: "לא", price: null, km: 84_500, hand: 3 }));
+    assert.equal(d.outcome, "delist_price_removed");
+    assert.equal(d.listing_id, 1);
+    assert.deepEqual(d.writes, [{ field: "delisted_at", from: null, to: SEEN }]);
+    assert.equal(d.finding, null);
+
+    // and it does not come back: the second run sees delisted_at set (R2), and a לא row with no
+    // price on a delisted listing is that same ad, not a contradiction — no finding.
+    const second = ok(listing({ delisted_at: SEEN }), obs({ cell: "לא", price: null }));
+    assert.equal(second.outcome, "already_delisted");
+    assert.deepEqual(second.writes, []);
+    assert.equal(second.finding, null);
+
+    // only a restored price makes it the R2 finding.
+    const restored = ok(listing({ delisted_at: SEEN }), obs({ cell: "לא", price: 95_000 }));
+    assert.equal(restored.finding, "delisted in DB, still up in sheet");
+    assert.deepEqual(restored.writes, []);
+  });
+
+  it("כן wins over a missing price: it is a plain R3 delisting", () => {
+    const d = ok(listing(), obs({ cell: "כן", price: null }));
+    assert.equal(d.outcome, "delist");
+    assert.deepEqual(d.writes, [{ field: "delisted_at", from: null, to: SEEN }]);
   });
 });
 
