@@ -12,6 +12,13 @@
 // - cars: a listing fills an empty color, never overwrites; official snapshot fields are refreshed.
 // - Day 11: a new listing writes its first listing_price_history row (price, first_seen_at); a car's
 //   (mivchan_acharon_dt, km_at_last_test) reading is appended to car_test_readings when that test date is new.
+//
+// Day 17 — the observation layer:
+// - `--seen YYYY-MM-DD` turns the run into an observation of the whole sheet: existing listings are
+//   verified, re-priced, or delisted per the sheet's `ירד` column. Every rule lives in src/lib/observe.ts;
+//   this file only maps rows to observations, calls it, and counts. Without `--seen` nothing changes:
+//   the `ירד` column is ignored and an existing listing is still never touched.
+// - With `--seen` the run is a dry run unless `--write` is given.
 
 import "dotenv/config";
 import { readFileSync } from "node:fs";
@@ -21,8 +28,21 @@ import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { getVehicleData, type VehicleData } from "@/lib/mot/vehicle";
 import { normalizeName } from "@/lib/names";
+import {
+  absentFromSheet, apply as applyObservation, checkDelistedColumn, decide, DELISTED_HEADER, parseSeen,
+  type Decision, type ListingState, type Violation,
+} from "@/lib/observe";
 
-const DRY = process.argv.includes("--dry-run");
+// `--seen YYYY-MM-DD` (or `--seen=YYYY-MM-DD`). Absent -> null, and the run behaves exactly as before.
+const SEEN_ARG = ((): string | null => {
+  const i = process.argv.indexOf("--seen");
+  if (i >= 0) return process.argv[i + 1] ?? "";
+  const eq = process.argv.find((a) => a.startsWith("--seen="));
+  return eq ? eq.slice("--seen=".length) : null;
+})();
+
+// Without --seen the old flag decides. An observation run writes only when told to: `--write`.
+const DRY = SEEN_ARG === null ? process.argv.includes("--dry-run") : !process.argv.includes("--write");
 const FILE = process.argv.find((a) => a.endsWith(".csv")) ?? "data/raw/sheet.csv";
 
 // --expect-model "MAZDA 3": the registry's commercial model name every row must carry.
@@ -55,7 +75,8 @@ const HEADERS = [
   "מספר רישוי", "מחיר", "קילומטראז'", "יד לפי המודעה", "צבע", "אזור",
   "שם המוכר", "סוג המוכר", "טלפון", "קישור למודעה", "תאריך צפייה", "הערות שלי",
 ] as const;
-type SheetRow = Record<(typeof HEADERS)[number], string>;
+// The `ירד` column (Day 17) is not part of this contract: it may be absent, and --seen checks for it.
+type SheetRow = Record<string, string>;
 
 const SELLER_TYPE: Record<string, string> = {
   "מגרש": "lot", "פרטי": "private", "ליסינג": "leasing", "השכרה": "rental", "יבואן": "importer",
@@ -65,6 +86,7 @@ type Row = {
   n: number; plate: string; price: number | null; km: number | null; hand: number | null;
   color: string | null; region: string | null; seller_name: string; seller_type: string;
   phone: string | null; source: string; external_id: string; first_seen: string;
+  link: string; delisted_cell: string; // Day 17: the ad's url as written, and the raw `ירד` cell
 };
 
 function fail(n: number, msg: string): never {
@@ -97,7 +119,7 @@ function parseLink(s: string | undefined, n: number): { source: string; external
   return { source: "yad2", external_id: m[1] };
 }
 
-function readSheet(file: string): Row[] {
+function readSheet(file: string): { rows: Row[]; headers: string[] } {
   const raw = parse(readFileSync(path.join(process.cwd(), file), "utf8"), {
     columns: true, bom: true, skip_empty_lines: true, trim: true,
   }) as SheetRow[];
@@ -112,7 +134,7 @@ function readSheet(file: string): Row[] {
     .map((r, i) => ({ r, n: i + 2 })) // sheet row number (1 = header)
     .filter(({ r }) => HEADERS.some((h) => (r[h] ?? "").trim() !== ""));
 
-  return rows.map(({ r, n }) => {
+  const mapped = rows.map(({ r, n }) => {
     const plate = (r["מספר רישוי"] ?? "").replace(/\D/g, "");
     if (!/^\d{7,8}$/.test(plate)) fail(n, `plate: expected 7-8 digits, got ${JSON.stringify(r["מספר רישוי"])}`);
     const sellerHe = (r["סוג המוכר"] ?? "").trim();
@@ -133,8 +155,11 @@ function readSheet(file: string): Row[] {
       seller_name, seller_type,
       phone: phoneOrNull(r["טלפון"]),
       source, external_id, first_seen,
+      link: (r["קישור למודעה"] ?? "").trim(),
+      delisted_cell: r[DELISTED_HEADER] ?? "",
     };
   });
+  return { rows: mapped, headers: got };
 }
 
 // ---------- 2. writing, with a memory of what a dry run "would" have created ----------
@@ -226,9 +251,90 @@ async function recordTestReading(tx: Tx, car_id: number, test_date: Date | null,
 // ---------- 3. the run ----------
 type Check = { plate: string; declared: number | null; official: number | null; test_dt: string | null; note: string };
 
+// Day 17: the four listing fields an observation reads back, plus what identifies the row.
+const LISTING_STATE = {
+  id: true, source: true, external_id: true, price: true, km_declared: true,
+  hand_declared: true, last_verified_at: true, delisted_at: true, first_seen_at: true,
+} as const;
+
+const key = (source: string, external_id: string) => `${source}|${external_id}`;
+
+// Day 17: the counters block, printed for every --seen run. The labels are the brief's, verbatim.
+function counterLine(label: string, n: number, note = ""): string {
+  return `${label.padEnd(42)}${n}${note ? `   ${note}` : ""}`;
+}
+
 async function main() {
-  const rows = readSheet(FILE);
+  const { rows, headers } = readSheet(FILE);
   console.log(`${DRY ? "[DRY RUN] " : ""}${FILE}: ${rows.length} rows, headers OK`);
+
+  // ---------- Day 17: G1, every guard before any write ----------
+  let seen: Date | null = null;
+  const known = new Map<string, ListingState>();
+  let notInSheet: string[] = [];
+  if (SEEN_ARG !== null) {
+    const parsed = parseSeen(SEEN_ARG, new Date());
+    if (!parsed.ok) throw new Error(parsed.violation.message);
+    seen = parsed.seen;
+    const column = checkDelistedColumn(headers);
+    if (!column.ok) throw new Error(column.violation.message);
+
+    const sources = [...new Set(rows.map((r) => r.source))].sort();
+    const stored = await db.listings.findMany({ where: { source: { in: sources } }, select: LISTING_STATE });
+    for (const l of stored) known.set(key(l.source, l.external_id), l);
+    notInSheet = absentFromSheet(
+      stored.map((l) => l.external_id),
+      rows.map((r) => r.external_id),
+    );
+
+    const offending: { row: Row; violation: Violation }[] = [];
+    for (const row of rows) {
+      const existing = known.get(key(row.source, row.external_id)) ?? null;
+      // A row the import never turns into a listing has no observation rule; stop rather than choose one.
+      if (existing && row.price === null) {
+        throw new Error(`row ${row.n}: ${row.plate} has no asking price but its listing already exists — no rule covers this row`);
+      }
+      const r = decide(existing, { price: row.price, km: row.km, hand: row.hand, cell: row.delisted_cell }, seen);
+      if (!r.ok) offending.push({ row, violation: r.violation });
+    }
+    if (offending.length > 0) {
+      console.log(`\nG1 — ${offending.length} row(s) stop the run; nothing was written:`);
+      for (const o of offending) {
+        console.log(`  row ${o.row.n} | ${o.row.link} | ${JSON.stringify(o.row.delisted_cell)} | ${o.violation.guard}: ${o.violation.message}`);
+      }
+      throw new Error(`G1: ${offending.length} row(s) — nothing written`);
+    }
+  }
+
+  const obs = {
+    new: 0, existing: 0, verified: 0, priceChanged: 0, kmHandChanged: 0,
+    delistedNow: 0, alreadyDelisted: 0, findings: 0,
+  };
+  const wrote = { history: 0, price: 0, kmhand: 0, lastVerified: 0, delisted: 0 };
+  const priceLines: string[] = [];
+  const kmHandLines: string[] = [];
+  const findingLines: string[] = [];
+
+  const tally = (row: Row, d: Decision) => {
+    if (d.outcome === "insert") { obs.new++; return; }
+    obs.existing++;
+    if (d.outcome === "verified") obs.verified++;
+    if (d.outcome === "delist") obs.delistedNow++;
+    if (d.outcome === "already_delisted") obs.alreadyDelisted++;
+    if (d.finding) { obs.findings++; findingLines.push(`  ${row.external_id} (${row.plate}): ${d.finding}`); }
+    const kmHand: string[] = [];
+    for (const w of d.writes) {
+      if (w.field === "price") {
+        obs.priceChanged++; wrote.price++; wrote.history++;
+        priceLines.push(`  ${row.external_id} (${row.plate}): ${w.from} -> ${w.to}`);
+      } else if (w.field === "km_declared" || w.field === "hand_declared") {
+        wrote.kmhand++;
+        kmHand.push(`${w.field === "km_declared" ? "km" : "hand"} ${w.from ?? "—"} -> ${w.to}`);
+      } else if (w.field === "last_verified_at") wrote.lastVerified++;
+      else wrote.delisted++;
+    }
+    if (kmHand.length > 0) { obs.kmHandChanged++; kmHandLines.push(`  ${row.external_id} (${row.plate}): ${kmHand.join(" · ")}`); }
+  };
 
   const counts: Record<string, number> = {};
   const bump = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
@@ -244,6 +350,10 @@ async function main() {
 
     const lookup = await getVehicleData(row.plate);
     if (lookup.status !== "active" && lookup.status !== "inactive") {
+      // Day 17: same reason as a row without a price — an existing listing must not be silently skipped.
+      if (seen && known.has(key(row.source, row.external_id))) {
+        fail(row.n, `${row.plate}: registry says ${lookup.status} but its listing already exists — no rule covers this row`);
+      }
       bump(`skipped:${lookup.status}`); console.log(`${tag} skipped — ${lookup.status}`); continue;
     }
     // An inactive car carries the same registry fields; its expired tokef_dt is data, not a reason to skip.
@@ -264,7 +374,14 @@ async function main() {
     const work = async (tx: Tx) => {
       const car = await upsertCar(tx, row, v, model.id);
       const exists = await tx.listings.findUnique({ where: { source_external_id: { source: row.source, external_id: row.external_id } } });
-      if (exists) return { dealer: null, car, listing: "existing" };
+      if (exists) {
+        // Day 17: without --seen an existing listing still changes nothing.
+        if (!seen) return { dealer: null, car, listing: "existing", decision: null };
+        const r = decide(exists, { price: row.price, km: row.km, hand: row.hand, cell: row.delisted_cell }, seen);
+        if (!r.ok) fail(row.n, `${row.plate}: ${r.violation.message}`); // G1 already passed; the data moved under us
+        if (!DRY) await applyObservation(tx, r.decision);
+        return { dealer: null, car, listing: "existing", decision: r.decision };
+      }
       const dealer = await resolveDealer(tx, row);
       if (!DRY) {
         const first_seen_at = new Date(`${row.first_seen}T00:00:00.000Z`);
@@ -279,10 +396,13 @@ async function main() {
         // Day 11 (§19.2): the first observed price, at first sight. Later changes go through recordPrice().
         await tx.listing_price_history.create({ data: { listing_id: created.id, price: row.price!, observed_at: first_seen_at } });
       }
-      return { dealer, car, listing: "new" };
+      return { dealer, car, listing: "new", decision: null };
     };
     const r = DRY ? await work(db as unknown as Tx) : await db.$transaction(work);
 
+    if (seen) {
+      tally(row, r.decision ?? { outcome: "insert", listing_id: null, writes: [], finding: null });
+    }
     bump(`car:${r.car.created ? "new" : "existing"}`);
     if (lookup.status === "inactive") bump("car:inactive");
     bump(`listing:${r.listing}`);
@@ -303,6 +423,27 @@ async function main() {
     if (row.km !== null && v.km_at_last_test !== null && row.km < v.km_at_last_test) {
       kmBelowTest.push({ plate: row.plate, declared: row.km, official: v.km_at_last_test, test_dt: v.mivchan_acharon_dt, note: row.seller_name });
     }
+  }
+
+  if (seen) {
+    console.log(`\n===== OBSERVATION ${seen.toISOString().slice(0, 10)} =====`);
+    console.log(counterLine("sheet rows", rows.length));
+    console.log(counterLine("new listings", obs.new, DRY ? "(dry: would insert)" : ""));
+    console.log(counterLine("existing listings", obs.existing));
+    console.log(counterLine("  verified (לא)", obs.verified));
+    console.log(counterLine("  price changed", obs.priceChanged, "old -> new per listing, listed below"));
+    console.log(counterLine("  km/hand changed", obs.kmHandChanged, "per listing, listed below"));
+    console.log(counterLine("  delisted now (כן)", obs.delistedNow));
+    console.log(counterLine("  already delisted (skipped)", obs.alreadyDelisted));
+    console.log(counterLine("  findings: delisted in DB, לא in sheet", obs.findings, "listed"));
+    console.log(counterLine("blank / invalid cells", 0, "listed -> STOP"));
+    console.log(counterLine("in DB, not in sheet", notInSheet.length, "listed"));
+    console.log(`writes: history rows ${wrote.history} · price ${wrote.price} · km/hand ${wrote.kmhand} · last_verified_at ${wrote.lastVerified} · delisted_at ${wrote.delisted}`);
+
+    if (priceLines.length) { console.log("\nprice changed"); for (const l of priceLines) console.log(l); }
+    if (kmHandLines.length) { console.log("\nkm/hand changed"); for (const l of kmHandLines) console.log(l); }
+    if (findingLines.length) { console.log("\nfindings: delisted in DB, לא in sheet"); for (const l of findingLines) console.log(l); }
+    if (notInSheet.length) { console.log("\nin DB, not in sheet"); for (const id of notInSheet) console.log(`  ${id}`); }
   }
 
   console.log("\n===== REPORT =====");
