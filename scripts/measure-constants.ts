@@ -47,6 +47,9 @@ const M4B_REFERENCE_FLOOR = 15; // §M4b: plus every MAZDA cell with at least th
 const M4B_TAIL = 3; // §M4b: inside a cell n runs only up to its size − 3
 const M4B_BOOT_FLOOR = 8; // rule (b): below this many listings a cell's own error is NOT ESTIMABLE
 const M8B_MIN_OTHER_YEARS = 2; // §M8b: a per-model curve needs at least this many other model-years
+const M10_SEED = 18; // Day 18 §1: M10's fixed random seed
+const M10_DRAWS = 1000; // §1: 1,000 random subsets per (model-year, n)
+const M10_NS = [5, 7, 10, 15];
 const M1_FLOOR_CARS = 20;
 const M2_FLOOR_CASES = 15;
 const M3_FLOOR_CASES = 50;
@@ -386,10 +389,16 @@ async function main() {
   });
 
   const pool: Loaded[] = [];
+  // Day 18 §0.5: live listings imported after the last scoring run get their first score at the v4 write, by
+  // decision. They are excluded here, and counted in the line under the header instead of stopping the run.
+  const unscored: string[] = [];
   for (const l of rows) {
     const plate = l.car.license_plate;
     if (plate === null) throw new Error(`listing ${l.id}: cars.license_plate is null`);
-    if (l.score_breakdown === null) throw new Error(`listing ${l.id} (${plate}): score_breakdown is null — score the pool first`);
+    if (l.score_breakdown === null) {
+      unscored.push(plate);
+      continue;
+    }
     if (l.engine_version !== ENGINE_VERSION) {
       throw new Error(`listing ${l.id} (${plate}): engine_version ${l.engine_version ?? "null"} != ${ENGINE_VERSION}`);
     }
@@ -426,6 +435,7 @@ async function main() {
       hclass: historyClass(bd, plate),
     });
   }
+  log(`unscored live listings excluded: ${unscored.length} (plates: ${unscored.length ? unscored.join(", ") : "none"})`);
 
   // The new-car price, joined exactly as select-three.ts joins it: the latest published_at row on
   // (degem_code, sug_degem, shnat_yitzur); null when no row matches.
@@ -1373,6 +1383,150 @@ async function main() {
     }
   }
 
+  // ======================================================================== M10
+  h2("M10 — anchor year-point stability: the point and the line, built from n listings");
+  log("The points are M8b's model-year points on M8's listing set: r_full = the median ratio (price / new_price) of the model-year's listings, a_year = their median age.");
+  log("The line is ratio = a + b × age fitted through those points, equal weight — the anchor fit compute-market-stats.ts §5.3 stores in pool_stats (ols() of this file on the same points).");
+  log(
+    `For n in ${M10_NS.join(", ")}, only where n < N: ${M10_DRAWS} random subsets of n listings without replacement, seed ${M10_SEED} (mulberry32, restarted at the top of each model-year). ` +
+      "err = |median_n − r_full| × 100; shift = max over the fitted ages of |predicted_refit − predicted_full| × 100, the refit replacing only this year's point by (a_year, median_n). Both in percentage points of new price.",
+  );
+  log("");
+  {
+    if (myears.length !== 6) note(`M10: M8 has ${myears.length} model-year point(s); the brief expected six.`);
+    const ages = myears.map((my) => my.medianAge);
+    const line = (ys: number[], tag: string): { a: number; b: number } => {
+      const fit = ols(ys, [{ name: "age", v: ages }]);
+      if (!fit.ok) throw new Error(`M10: the fit through ${ys.length} model-year points was dropped (${tag}) — ${fit.reason}`);
+      const b = at(fit, "age");
+      if (b === null) throw new Error(`M10: the age column was dropped (${tag}) — ${fit.dropped.join(", ")}`);
+      return { a: fit.coef[0], b: b.coef };
+    };
+    const full = line(
+      myears.map((my) => my.medianRatio),
+      "full",
+    );
+    const fullLoo = myears.map((my) => loo(my, myears.filter((x) => x.key !== my.key).map((x) => ({ ratio: x.medianRatio, age: x.medianAge })), `M10 full fit, holding out ${my.model} ${my.year}`));
+    const fullErrs = fullLoo.map((r) => r.err);
+    const fullErrorPct = fullErrs.every((e): e is number => e !== null) ? Math.max(...fullErrs) : null;
+
+    log("**Reference — the points**");
+    table(
+      ["model-year", "N", "r_full (median ratio)", "a_year (median age, yrs)"],
+      myears.map((my) => [`${my.model} ${my.year}`, my.n, f(my.medianRatio, 4), f(my.medianAge, 3)]),
+    );
+    log("");
+    log(
+      `**Reference — the full fit** through the ${myears.length} points: intercept ${f(full.a, 6)}, slope ${f(full.b, 6)} per year, ` +
+        `error % ${fullErrorPct === null ? "NOT MEASURABLE (a leave-one-out fit produced no error)" : f(fullErrorPct, 6)} (the worst model-year's leave-one-out error, as pool_stats.anchor_error_pct is computed).`,
+    );
+    log(
+      `stored pool_stats id ${m8cCurve.id}: intercept ${f(m8cCurve.anchor_ratio_intercept, 6)}, slope ${f(m8cCurve.anchor_ratio_per_year, 6)}, error % ${f(m8cCurve.anchor_error_pct, 6)}, ` +
+        `${m8cCurve.anchor_n} points, ${m8cCurve.anchor_listings} listings.`,
+    );
+    // Day 18 §0.5: the six-point fit against the stored row, field by field. compute-market-stats.ts writes each
+    // decimal rounded to 6 places (its stored()), so the fit is rounded the same way before the === comparison.
+    {
+      const at6 = (v: number | null): number | null => (v === null ? null : Number(v.toFixed(6)));
+      const fields: [string, number | null, number | null][] = [
+        ["intercept", full.a, m8cCurve.anchor_ratio_intercept],
+        ["slope", full.b, m8cCurve.anchor_ratio_per_year],
+        ["error %", fullErrorPct, m8cCurve.anchor_error_pct],
+        ["age min", Math.min(...ages), m8cCurve.anchor_age_min_years],
+        ["age max", Math.max(...ages), m8cCurve.anchor_age_max_years],
+      ];
+      const differing = fields.filter(([, fit, row]) => at6(fit) !== row);
+      log(
+        `six-point fit vs stored pool_stats id ${m8cCurve.id} (fit rounded to 6 dp, as stored): ` +
+          fields.map(([name, fit, row]) => `${name} ${f(at6(fit), 6)} / ${f(row, 6)}`).join(" · ") +
+          " — " +
+          (differing.length === 0
+            ? "**identical** in all five fields."
+            : `**not identical** — difference (fit − stored): ${differing
+                .map(([name, fit, row]) => `${name} ${fit === null || row === null ? `${fit === null ? "fit" : "stored"} is null` : sgn((at6(fit) as number) - row, 6)}`)
+                .join(" · ")}.`),
+      );
+    }
+    const m8Both = m8Fits.find((x) => x.name === "both");
+    log(
+      `M8's own table above fits over LISTINGS, not points: both — ` +
+        (m8Both && m8Both.fit.ok ? `intercept ${f(m8Both.fit.coef[0], 4)}, slope ${f(m8Both.fit.coef[1], 4)}, n ${m8Both.fit.n}.` : "fit dropped."),
+    );
+    log("");
+
+    type M10Cell = { p50Err: number; p90Err: number; p90Shift: number } | null;
+    const cells = new Map<string, Map<number, M10Cell>>();
+    for (const [yi, my] of myears.entries()) {
+      const ratios = m8All.filter((r) => yearKey(r) === my.key).map((r) => r.ratio);
+      if (ratios.length !== my.n) throw new Error(`M10: ${my.model} ${my.year} has ${ratios.length} listing ratios, its point says N = ${my.n}`);
+      const rand = mulberry32(M10_SEED);
+      const perN = new Map<number, M10Cell>();
+      const idx = ratios.map((_, i) => i);
+      for (const n of M10_NS) {
+        if (!(n < my.n)) {
+          perN.set(n, null);
+          continue;
+        }
+        const errs: number[] = [];
+        const shifts: number[] = [];
+        for (let s = 0; s < M10_DRAWS; s++) {
+          const sub: number[] = [];
+          for (let i = 0; i < n; i++) {
+            const j = i + Math.floor(rand() * (idx.length - i));
+            [idx[i], idx[j]] = [idx[j], idx[i]];
+            sub.push(ratios[idx[i]]);
+          }
+          const medianN = median(sub);
+          errs.push(Math.abs(medianN - my.medianRatio) * 100);
+          const refit = line(
+            myears.map((x, k) => (k === yi ? medianN : x.medianRatio)),
+            `${my.model} ${my.year}, n ${n}, draw ${s}`,
+          );
+          shifts.push(Math.max(...ages.map((age) => Math.abs(refit.a + refit.b * age - (full.a + full.b * age)))) * 100);
+        }
+        perN.set(n, { p50Err: percentile(errs, 0.5), p90Err: percentile(errs, 0.9), p90Shift: percentile(shifts, 0.9) });
+      }
+      cells.set(my.key, perN);
+    }
+
+    const m10Table = (title: string, pick: (c: NonNullable<M10Cell>) => number) => {
+      log(`**${title}** (percentage points of new price)`);
+      table(
+        ["model-year", "N", ...M10_NS.map((n) => `n = ${n}`)],
+        myears.map((my) => [
+          `${my.model} ${my.year}`,
+          my.n,
+          ...M10_NS.map((n) => {
+            const c = cells.get(my.key)?.get(n) ?? null;
+            return c === null ? `not drawn (n ≥ N)` : f(pick(c), 2);
+          }),
+        ]),
+      );
+      log("");
+    };
+    m10Table("p50 err — the point", (c) => c.p50Err);
+    m10Table("p90 err — the point", (c) => c.p90Err);
+    m10Table("p90 shift — the line", (c) => c.p90Shift);
+
+    log("**Per n — the worst year**");
+    log("");
+    for (const n of M10_NS) {
+      const rows = myears
+        .map((my) => ({ my, c: cells.get(my.key)?.get(n) ?? null }))
+        .filter((x): x is { my: MYear; c: NonNullable<M10Cell> } => x.c !== null);
+      if (rows.length === 0) {
+        log(`- n = ${n}: no model-year has more than ${n} listings — nothing drawn.`);
+        continue;
+      }
+      const worstErr = rows.reduce((w, x) => (x.c.p90Err > w.c.p90Err ? x : w));
+      const worstShift = rows.reduce((w, x) => (x.c.p90Shift > w.c.p90Shift ? x : w));
+      log(
+        `- n = ${n}: worst p90 err **${f(worstErr.c.p90Err, 2)}** pp (${worstErr.my.model} ${worstErr.my.year}) · ` +
+          `worst p90 shift **${f(worstShift.c.p90Shift, 2)}** pp (${worstShift.my.model} ${worstShift.my.year}) · over ${rows.length} of ${myears.length} model-years`,
+      );
+    }
+  }
+
   // ======================================================================== the comparison
   h2("The comparison — two candidate rules");
   log(
@@ -1592,6 +1746,7 @@ async function main() {
   log("- The candidate constant is printed twice, once against the max leave-one-out curve error and once against the mean, because the brief asks for both n and names neither as the constant. The count line uses the max-error candidate, the same bar rule (b) switches on, and repeats the count for the mean-error candidate when the two differ.");
   log("- M8b holds out a MODEL-YEAR, not a listing: the fit that predicts a model-year's median ratio contains none of that model-year's listings. 'age' and 'ratio' are M8's, unchanged.");
   log("- M8c reads the anchor curve off the latest pool_stats row (highest computed_at, ties by id — the row score-listings.ts reads) and measures each listing's residual off it. The listing set is the one the norms script fits the anchor on; compute-market-stats.ts selects it INLINE, so M8c mirrors the selection through M8's own set instead of importing a function, and prints its count next to the row's anchor_listings. A listing whose age falls outside the row's age range is counted and excluded, as it is in the fit. M8c is split per model only, not three ways: a trim belongs to one model, so a 'both' column would mix trims that never compete.");
+  log(`- M10's line is the model-year-point fit (the pool_stats anchor, compute-market-stats.ts §5.3), not M8's listing fit: the brief refits 'the line through the six points'. compute-market-stats.ts composes that fit inline and runs on import, so M10 composes it from this file's ols() and loo() on M8b's points, and prints the stored pool_stats row beside it. The RNG restarts at seed ${M10_SEED} at the top of each model-year and walks n = ${M10_NS.join(", ")} on that one stream. The per-n worst is taken over the model-years where n < N only.`);
   log("- Verdicts are computed mechanically on the 'both' split: HOLDS = the value in use lies strictly inside the measured empty gap, or inside the 95 % interval, or (MIN_SAMPLE) is at least the smallest n the measurement needs. SAME BALLPARK = leasing within ±8 points of the coefficient; slope inside the interval widened by 0.1; a threshold within 20 % of the nearer edge of the gap. FLAG = outside. NOT MEASURABLE = below the floor.");
   log("");
   const uniqueNotes = [...new Set(notes)];
