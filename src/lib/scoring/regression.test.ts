@@ -4,6 +4,11 @@
 // with given norm rows at a given clock returns, and the test is about which label that earns. The
 // stored breakdown is a ScoreResult-shaped object, as listings.score_breakdown / listing_scores.breakdown
 // really hold one.
+//
+// Day 17 run 5 §3: the composed label names only the rows that BOTH moved and were READ by the stored
+// score — the cell row always, the slope row only when that invoice's km row used the model slope, the
+// anchor row only when that invoice's price row came from the anchor. storedBreakdown() can set either
+// mark, and the cases below pin both halves: named, and printed-but-not-named.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -57,7 +62,9 @@ const CURRENT = result(); // deal 6, condition -5, high
 const STORED_TRIPLE = { score: 6.5, condition_score: -5, confidence: "high" };
 
 /** The stored invoice: the same inputs, the deal the stored side holds; `over` moves one raw value. */
-function storedBreakdown(over: { median_price?: number; sample_size?: number; price?: number } = {}): ScoreResult {
+function storedBreakdown(
+  over: { median_price?: number; sample_size?: number; price?: number; price_from_anchor?: boolean; slope_source?: "model" | "default" } = {},
+): ScoreResult {
   const r = result({ deal_score: 6.5, price_advantage: 5.5 });
   r.rows[0].raw = {
     price: over.price ?? 100_000,
@@ -65,6 +72,15 @@ function storedBreakdown(over: { median_price?: number; sample_size?: number; pr
     sample_size: over.sample_size ?? 20,
     window_days: 90,
   };
+  // §3's two marks, exactly as the engine writes them: price.ts writes source 'anchor' with note
+  // 'vs_new_price' on the thin-cell path, km.ts writes raw.slope_source 'model' or 'default'. The price
+  // row's raw stays the market one either way, so storedNorm()'s earlier set check never fires — these
+  // cases are about which rows the LABEL names, not about the cell's set moving.
+  if (over.price_from_anchor) {
+    r.rows[0].source = "anchor";
+    r.rows[0].note = "vs_new_price";
+  }
+  if (over.slope_source) (r.rows[2].raw as Record<string, unknown>).slope_source = over.slope_source;
   return r;
 }
 
@@ -134,8 +150,10 @@ describe("the composed norm identity (§2.2)", () => {
   });
 
   it("the anchor row moved and reproduces the stored score -> NORM (anchor)", () => {
+    // §3: the anchor row is named only when the stored score read it, so the stored invoice here is a
+    // thin-cell one (price row marked vs_new_price). The case and its assertions are otherwise unchanged.
     const c = run(
-      { norms: { ...CURRENT_NORMS, anchor: poolNorm({ id: 2, anchor_n: 5 }) } },
+      { norms: { ...CURRENT_NORMS, anchor: poolNorm({ id: 2, anchor_n: 5 }) }, breakdown: storedBreakdown({ price_from_anchor: true }) },
       reproduces((n) => idsOf(n) === "104/5/2"),
     );
     assert.equal(c?.label, "NORM (anchor)");
@@ -153,6 +171,101 @@ describe("the composed norm identity (§2.2)", () => {
     const c = run({ norms: { ...CURRENT_NORMS, slope: null }, missing: ["slope"] }, NEVER);
     assert.equal(c?.label, "UNEXPLAINED");
     assert.ok(c?.detail.some((d) => d.includes("no longer in their table")));
+  });
+});
+
+describe("the composed label names only the rows the old score READ (Day 17 run 5 §3)", () => {
+  // A second anchor row, so a test can move the anchor without touching anything else.
+  const OTHER_ANCHOR = poolNorm({ id: 2, anchor_n: 5 });
+
+  it("cell row only: it moved, the other two did not -> NORM (median)", () => {
+    // The stored invoice used the DEFAULT slope and a market price row, so neither of the other two rows
+    // was read — and neither moved. The cell row is read by every score, so it is named.
+    const c = run(
+      {
+        norms: { ...CURRENT_NORMS, median: STORED_CELL },
+        breakdown: storedBreakdown({ median_price: 93_150, slope_source: "default" }),
+      },
+      reproduces((n) => idsOf(n) === "88/5/3"),
+    );
+    assert.equal(c?.label, "NORM (median)");
+    assert.ok(c?.detail.some((d) => d.includes("cell row market_stats 88 -> 104")));
+    assert.ok(!c?.detail.some((d) => d.includes("not named")));
+  });
+
+  it("slope row only, with the model slope in use -> NORM (slope)", () => {
+    const c = run(
+      { norms: { ...CURRENT_NORMS, slope: STORED_SLOPE }, breakdown: storedBreakdown({ slope_source: "model" }) },
+      reproduces((n) => idsOf(n) === "104/1/3"),
+    );
+    assert.equal(c?.label, "NORM (slope)");
+    assert.ok(c?.detail.some((d) => d.includes("model row model_stats 1 -> 5")));
+    assert.ok(!c?.detail.some((d) => d.includes("not named")));
+  });
+
+  it("the slope row differs but the stored score used the DEFAULT slope -> slope is not named", () => {
+    // The cell row moved too, so there is still a label; the slope line is printed with its reason.
+    const c = run(
+      {
+        norms: { median: STORED_CELL, slope: STORED_SLOPE, anchor: INPUT.pool_stats },
+        breakdown: storedBreakdown({ median_price: 93_150, slope_source: "default" }),
+      },
+      reproduces((n) => idsOf(n) === "88/1/3"),
+    );
+    assert.equal(c?.label, "NORM (median)");
+    assert.ok(c?.detail.some((d) => d.includes("model row model_stats 1 -> 5") && d.includes("not named: the stored score's km row used the default slope")));
+    // the identity itself is unchanged: still one recomputation with ALL three stored rows
+    assert.ok(c?.detail.some((d) => d.includes("recomputed with the STORED norm rows (median 88, slope 1, anchor 3)")));
+  });
+
+  it("the anchor row differs but the stored price row came from the cell -> anchor is not named", () => {
+    const c = run(
+      {
+        norms: { median: STORED_CELL, slope: INPUT.model_stats, anchor: OTHER_ANCHOR },
+        breakdown: storedBreakdown({ median_price: 93_150 }), // price row source 'market' — the anchor was never read
+      },
+      reproduces((n) => idsOf(n) === "88/5/2"),
+    );
+    assert.equal(c?.label, "NORM (median)");
+    assert.ok(c?.detail.some((d) => d.includes("pool row pool_stats 2 -> 3") && d.includes("not named: the stored score's price row came from the cell")));
+  });
+
+  it("a thin cell (price row marked vs_new_price) with the anchor row differing -> NORM (anchor)", () => {
+    const c = run(
+      { norms: { ...CURRENT_NORMS, anchor: OTHER_ANCHOR }, breakdown: storedBreakdown({ price_from_anchor: true }) },
+      reproduces((n) => idsOf(n) === "104/5/2"),
+    );
+    assert.equal(c?.label, "NORM (anchor)");
+    assert.ok(c?.detail.some((d) => d.includes("pool row pool_stats 2 -> 3")));
+    assert.ok(!c?.detail.some((d) => d.includes("not named")));
+  });
+
+  it("several read rows differing -> the composed name", () => {
+    // A thin-cell invoice on the model slope: all three rows were read, and all three moved.
+    const c = run(
+      {
+        norms: { median: STORED_CELL, slope: STORED_SLOPE, anchor: OTHER_ANCHOR },
+        breakdown: storedBreakdown({ median_price: 93_150, price_from_anchor: true, slope_source: "model" }),
+      },
+      reproduces((n) => idsOf(n) === "88/1/2"),
+    );
+    assert.equal(c?.label, "NORM (median, slope, anchor)");
+    assert.ok(!c?.detail.some((d) => d.includes("not named")));
+    assert.ok(c?.detail.some((d) => d.includes("recomputed with the STORED norm rows (median 88, slope 1, anchor 2)")));
+  });
+
+  it("every row that moved is one the stored score never read -> no NORM (...) is claimed", () => {
+    // The rule names no row, and there is no label for that: the line stays UNEXPLAINED and says so
+    // rather than widening back to the rows that moved. (Not reachable on today's data — see REPORT.md.)
+    const c = run(
+      {
+        norms: { median: INPUT.market, slope: STORED_SLOPE, anchor: OTHER_ANCHOR },
+        breakdown: storedBreakdown({ slope_source: "default" }), // default slope, market price row
+      },
+      reproduces((n) => idsOf(n) === "104/1/2"),
+    );
+    assert.equal(c?.label, "UNEXPLAINED");
+    assert.ok(c?.detail.some((d) => d.includes("no row that moved was read by the stored score")));
   });
 });
 

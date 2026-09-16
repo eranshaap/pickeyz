@@ -48,6 +48,10 @@
 //   each pick's line gains `price / new = N%`; RANK LIST gains a `% of new` column;
 //   NEW PRICE               the distribution of the value over the pool (min / median / max, per year), the count at or above the
 //                           ceiling, and every listing without a new price (plate, codes, year, type).
+// Day 17 (plan, §1): DIFFERENTIATION, printed right after THE THREE — the three picks against the three cheapest
+// listings and the three most recent listings of the same pool (Cheapest-3 by price, Newest-3 by first_seen_at,
+// which is a proxy for the ad's own date), with the overlap counted by plate. A measurement only: if the lists
+// coincide the ranking does not differentiate, and the verdict on that is Eran's. No rule is re-implemented here.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
@@ -287,6 +291,90 @@ async function main() {
       log(`    ${i + 1}. ${qp.plate} | listing ${q.listing_id} | rank ${q.rank} | price ${qp.candidate.price} | ${KEY_TEXT[c](q.listing_id)} — ${label}`);
       log(`       distance to picks — ${dists.join(" · ")}`);
     });
+  }
+
+  // ---------- 4a. DIFFERENTIATION (plan, Day 17) ----------
+  // A measurement, not a rule, and not a verdict: do the three picks differ from the three cheapest listings and
+  // the three most recent listings of the same pool? If the lists coincide, the ranking does not differentiate.
+  // Pool = the listings handed to selectThree (the assembly's pool, cut only by this script's own flags — the
+  // Day 17 runs pass none). Cheapest-3 = lowest price, ties first_seen_at ascending then listing id ascending.
+  // Newest-3 = latest first_seen_at, ties listing id ascending; first_seen_at is a proxy for the ad's own date,
+  // a known limitation and not something this block fixes. Overlap is counted by plate. Nothing here is decided.
+  log(`\n===== DIFFERENTIATION (the picks vs the 3 cheapest and the 3 newest of the pool) =====`);
+  {
+    const seenAt = (id: number) => Date.parse(P(id).candidate.first_seen_at);
+    const ids = pool.map((p) => p.candidate.listing_id);
+    const byPrice = [...ids].sort((a, b) => P(a).candidate.price - P(b).candidate.price || seenAt(a) - seenAt(b) || a - b);
+    const byRecency = [...ids].sort((a, b) => seenAt(b) - seenAt(a) || a - b);
+    const priceRank = new Map(byPrice.map((id, i) => [id, i + 1]));
+    const recencyRank = new Map(byRecency.map((id, i) => [id, i + 1]));
+    const cheapest3 = byPrice.slice(0, 3);
+    const newest3 = byRecency.slice(0, 3);
+    const cars = new Set(pool.map((p) => p.plate)).size;
+    log(`pool: ${pool.length} listing(s) / ${cars} car(s) — filters: ${filters}`);
+    log(`price rank: 1 = the cheapest listing of the pool (ties first_seen_at asc, then listing id asc); recency rank: 1 = the newest (ties listing id asc)`);
+    // first_seen_at carries day granularity here, so Newest-3 can be decided almost entirely by the id tie-break.
+    // The reader is told how much of the order is a real date difference and how much is the tie-break.
+    const dates = pool.map((p) => p.candidate.first_seen_at);
+    const newestDate = [...dates].sort().at(-1) as string;
+    log(
+      `first_seen_at: ${new Set(dates).size} distinct value(s) over the pool; ${dates.filter((d) => d === newestDate).length} listing(s) share the newest (${newestDate}), so that many are separated only by the id tie-break`,
+    );
+
+    // Table A — the picks, exactly the three the script printed above.
+    log(`\n-- Table A — the picks`);
+    log(`category | plate | listing | year | price | km_declared | deal score | condition score | first_seen_at | price rank | recency rank`);
+    for (const c of CATEGORY_PRIORITY) {
+      const id = res.picks[c];
+      if (id === null) {
+        log(`${c} | (empty) | - | - | - | - | - | - | - | - | -   — no pick: ${res.missing[c]}`);
+        continue;
+      }
+      const p = P(id);
+      const b = bd(id);
+      log(
+        `${c} | ${p.plate} | ${id} | ${p.candidate.year} | ${p.candidate.price} | ${p.km_declared ?? "-"} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${p.candidate.first_seen_at} | ${priceRank.get(id)} | ${recencyRank.get(id)}`,
+      );
+    }
+
+    // Tables B and C — the same columns. `rank` is the listing's place in this script's rank list (the Stage A
+    // order among the shown listings); a listing that is not shown has none, and the rule that removed or merged
+    // it is named instead — the same derivation section 5 (EXCLUDED and MERGED) prints.
+    const rankText = (id: number): string => {
+      const r = R(id);
+      if (r.rank !== null) return String(r.rank);
+      const rule = r.status === "merged" ? "duplicate" : (r.excluded_by ?? "not shown");
+      return `no rank (${rule})`;
+    };
+    const pickText = (id: number): string => (R(id).categories.length ? R(id).categories.join(" + ") : "—");
+    const listTable = (title: string, list: number[]) => {
+      log(`\n-- ${title}`);
+      log(`plate | listing | year | price | km_declared | first_seen_at | rank | deal score | condition score | pick?`);
+      for (const id of list) {
+        const p = P(id);
+        const b = bd(id);
+        log(
+          `${p.plate} | ${id} | ${p.candidate.year} | ${p.candidate.price} | ${p.km_declared ?? "-"} | ${p.candidate.first_seen_at} | ${rankText(id)} | ${fmt(b.deal_score)} | ${fmt(b.condition_score)} | ${pickText(id)}`,
+        );
+      }
+      // two listings of one car inside the three — the overlap below counts plates, so this is worth saying out loud
+      const plates = list.map((id) => P(id).plate);
+      for (const [plate, n] of count(plates)) {
+        if (n > 1) log(`  note: plate ${plate} appears ${n} times in this table — ${n} listings of one car.`);
+      }
+    };
+    listTable("Table B — Cheapest-3 (lowest price; ties first_seen_at asc, then listing id asc)", cheapest3);
+    listTable("Table C — Newest-3 (latest first_seen_at; ties listing id asc)", newest3);
+
+    // Overlap by plate. The word restates the count; it is not a judgment.
+    const word = (k: number) => (k === 3 ? "identical" : k > 0 ? "partial" : "disjoint");
+    const pickPlates = [...new Set(CATEGORY_PRIORITY.map((c) => res.picks[c]).filter((x): x is number => x !== null).map((id) => P(id).plate))];
+    log(`\n-- Overlap (by plate). Picks: ${pickPlates.length ? pickPlates.join(", ") : "none"}`);
+    for (const [label, list] of [["Cheapest-3", cheapest3], ["Newest-3", newest3]] as [string, number[]][]) {
+      const platesHere = [...new Set(list.map((id) => P(id).plate))];
+      const shared = platesHere.filter((pl) => pickPlates.includes(pl));
+      log(`picks ∩ ${label} = ${shared.length} of ${list.length} — ${word(shared.length)}${shared.length ? ` — plates: ${shared.join(", ")}` : ""}`);
+    }
   }
 
   // ---------- 4b. RUNNER-UP for cheapest (part 3 §2b / §4) ----------

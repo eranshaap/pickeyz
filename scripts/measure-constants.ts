@@ -8,6 +8,8 @@
 // functions imported from src/lib/scoring/. Nothing is re-implemented. Prices are asking prices.
 //
 // Every table is split three ways: MAZDA 3 · IONIQ HYBRID · both. Every number carries its n.
+// The one exception is M8c (trim residuals off the anchor curve): a trim belongs to one model, so it is split per
+// model only — there is no 'both' table.
 // Where a measurement has a floor on n, below the floor the line prints NOT MEASURABLE, never a
 // number. Every derivation that was not read straight out of the breakdown, every floor that bit
 // and every fit that was dropped is listed in the INTERPRETED, NOT READ section.
@@ -337,6 +339,7 @@ type Loaded = {
   cell_label: string;
   degem_code: string;
   vehicle_class: string;
+  sub_model: string | null; // models.sub_model = the catalog's ramat_gimur; the trim M8c groups by
   new_price: number | null;
   bd: ScoreResult;
   input: ScoringInput;
@@ -415,6 +418,7 @@ async function main() {
       cell_label: `${m.model}${m.sub_model ? ` ${m.sub_model}` : ""} ${l.car.year}`,
       degem_code: m.degem_code,
       vehicle_class: m.vehicle_class,
+      sub_model: m.sub_model,
       new_price: null,
       bd,
       input: { ...subject, market: null },
@@ -1242,6 +1246,124 @@ async function main() {
   log("");
   log("Reported separately, as the brief asks. The two rules below are measured against the POOLED curve, not this one.");
 
+  // ======================================================================== M8c
+  h2("M8c — a trim's residual off the anchor curve, across model years");
+  log('The anchor the engine uses is new price × the pool_stats curve per model-year, blind to trim (constants ledger, "עקומת העוגן — M8c"; plan, Day 18 item (ג)).');
+  log("This measures only whether a trim's residual off that curve is stable across model years. Read-only, and the verdict is Eran's.");
+  log("");
+  log("residual % = (price ÷ (new_price × ratio(age)) − 1) × 100 per listing, with ratio(age) = anchor_ratio_intercept + anchor_ratio_per_year × age.");
+  log(
+    "Listing set = exactly the listings the norms script fits the anchor on. compute-market-stats.ts (§5.3) selects them INLINE — a live listing " +
+      "with a new price > 0 and a first_registration — so M8c mirrors that selection rather than importing it; the mirror is M8's own set above, " +
+      "built from the same predicate, the same age and the same new-price join.",
+  );
+  log("Age and new price are M8's, unchanged: age = first_registration → first_seen_at in 365.25-day years; new price = the latest published_at row of new_car_prices on (degem_code, sug_degem, shnat_yitzur).");
+  log("Trim = models.sub_model (the catalog's ramat_gimur); empty = its own group `(none)`.");
+  log("");
+
+  // The curve: the row the engine reads — highest computed_at, ties by id, exactly as score-listings.ts reads it.
+  const m8cCurve = await db.pool_stats.findFirst({ orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
+  if (m8cCurve === null) throw new Error("M8c: pool_stats has no row — there is no anchor curve to measure against.");
+  log(
+    `**The curve** — pool_stats id ${m8cCurve.id}, computed_at ${m8cCurve.computed_at.toISOString()}: ` +
+      `anchor_ratio_intercept ${f(m8cCurve.anchor_ratio_intercept, 6)}, anchor_ratio_per_year ${f(m8cCurve.anchor_ratio_per_year, 6)}, ` +
+      `anchor_error_pct ${f(m8cCurve.anchor_error_pct, 6)}, anchor_age_min_years ${f(m8cCurve.anchor_age_min_years, 6)}, ` +
+      `anchor_age_max_years ${f(m8cCurve.anchor_age_max_years, 6)}, anchor_n ${m8cCurve.anchor_n} model-year point(s), anchor_listings ${m8cCurve.anchor_listings}.`,
+  );
+  log("");
+  {
+    const aI = m8cCurve.anchor_ratio_intercept;
+    const aP = m8cCurve.anchor_ratio_per_year;
+    const ageMin = m8cCurve.anchor_age_min_years;
+    const ageMax = m8cCurve.anchor_age_max_years;
+    if (aI === null || aP === null || ageMin === null || ageMax === null) {
+      log("NOT MEASURABLE — the row carries no curve (the five anchor values are null together, P4). M8c needs one.");
+      note("M8c: the latest pool_stats row has null anchor values, so no residual can be computed — M8c is NOT MEASURABLE.");
+    } else {
+      // The listing set, and the count the brief asks to print next to anchor_listings. A difference is a finding, not a stop.
+      const sameCount = m8All.length === m8cCurve.anchor_listings;
+      log(
+        `**The listing set** — ${m8All.length} listing(s) satisfy the norms script's inline selection here, against anchor_listings ${m8cCurve.anchor_listings} on the row` +
+          (sameCount ? " — equal, as expected." : ` — **they differ by ${Math.abs(m8All.length - m8cCurve.anchor_listings)}**; the row was fitted on a different pool state. Reported, not a stop.`),
+      );
+      if (!sameCount) {
+        note(`M8c: the listing set is ${m8All.length}, the curve row's anchor_listings is ${m8cCurve.anchor_listings} — a difference of ${Math.abs(m8All.length - m8cCurve.anchor_listings)}.`);
+      }
+
+      type M8cRow = { l: Loaded; trim: string; residual: number };
+      const inSet: M8cRow[] = [];
+      const outOfRange: M8Row[] = [];
+      for (const r of m8All) {
+        if (r.age < ageMin || r.age > ageMax) {
+          outOfRange.push(r);
+          continue;
+        }
+        const ratio = aI + aP * r.age;
+        if (!(ratio > 0)) throw new Error(`M8c: ratio(age) = ${ratio} at age ${r.age} (listing ${r.l.id}, ${r.l.plate}) — the curve gives a non-positive anchor, stop`);
+        inSet.push({
+          l: r.l,
+          trim: r.l.sub_model !== null && r.l.sub_model.trim() !== "" ? r.l.sub_model : "(none)",
+          residual: (r.l.price / ((r.l.new_price as number) * ratio) - 1) * 100,
+        });
+      }
+      // The two exclusions the fit itself makes, plus the age-range cut this measurement makes.
+      const noNew = pool.filter((p) => p.new_price === null || p.new_price <= 0);
+      const noReg = pool.filter((p) => !(p.new_price === null || p.new_price <= 0) && p.first_registration === null);
+      log("");
+      log(
+        `**Excluded** — no new price on the key: ${noNew.length}; no first_registration: ${noReg.length} (both are out of the fit too); ` +
+          `age outside the curve's range ${f(ageMin, 3)} … ${f(ageMax, 3)} yrs: ${outOfRange.length}. Measured: ${inSet.length} of ${pool.length} live listing(s).`,
+      );
+      log("");
+
+      const m8cCell = (rows: M8cRow[]): string => {
+        if (rows.length === 0) return "-";
+        const v = rows.map((r) => r.residual);
+        return `${rows.length} · ${sgn(median(v), 1)} % · (${sgn(percentile(v, 0.25), 1)} … ${sgn(percentile(v, 0.75), 1)})`;
+      };
+
+      for (const modelName of ordered) {
+        const mine = inSet.filter((r) => r.l.model_label === modelName);
+        log(`**${modelName}** — ${mine.length} measured listing(s). Cell = n · median % · IQR (P25 … P75).`);
+        log("");
+        if (mine.length === 0) {
+          log("NOT MEASURABLE — no measured listing of this model.");
+          log("");
+          continue;
+        }
+        const years = [...new Set(mine.map((r) => r.l.year))].sort((a, b) => a - b);
+        const trims = [...new Set(mine.map((r) => r.trim))].sort();
+        table(
+          ["trim (models.sub_model)", ...years.map(String), "overall (n · median %)", "range of the per-year medians (max − min)"],
+          trims.map((t) => {
+            const its = mine.filter((r) => r.trim === t);
+            const perYear = years
+              .map((y) => its.filter((r) => r.l.year === y))
+              .filter((rows) => rows.length > 0)
+              .map((rows) => median(rows.map((r) => r.residual)));
+            const spread = perYear.length >= 2 ? f(Math.max(...perYear) - Math.min(...perYear), 1) : `NOT MEASURABLE (${perYear.length} year with listings)`;
+            return [t, ...years.map((y) => m8cCell(its.filter((r) => r.l.year === y))), `${its.length} · ${sgn(median(its.map((r) => r.residual)), 1)} %`, spread];
+          }),
+        );
+        log("");
+        log(
+          "per-year median over all trims: " +
+            years
+              .map((y) => {
+                const its = mine.filter((r) => r.l.year === y);
+                return `${y}: ${its.length} · ${sgn(median(its.map((r) => r.residual)), 1)} %`;
+              })
+              .join("   |   "),
+        );
+        const mNoNew = noNew.filter((p) => p.model_label === modelName).length;
+        const mNoReg = noReg.filter((p) => p.model_label === modelName).length;
+        const mOut = outOfRange.filter((r) => r.l.model_label === modelName).length;
+        log(`excluded for ${modelName}: no new price ${mNoNew}, no first_registration ${mNoReg}, age out of range ${mOut}.`);
+        log("");
+      }
+    }
+  }
+
   // ======================================================================== the comparison
   h2("The comparison — two candidate rules");
   log(
@@ -1460,6 +1582,7 @@ async function main() {
   log("- Rule (a) count: a cell anchors on the curve when its listing count is BELOW the candidate constant — the candidate is the smallest n whose median is already as good as the curve, so a cell that reaches it keeps its own median.");
   log("- The candidate constant is printed twice, once against the max leave-one-out curve error and once against the mean, because the brief asks for both n and names neither as the constant. The count line uses the max-error candidate, the same bar rule (b) switches on, and repeats the count for the mean-error candidate when the two differ.");
   log("- M8b holds out a MODEL-YEAR, not a listing: the fit that predicts a model-year's median ratio contains none of that model-year's listings. 'age' and 'ratio' are M8's, unchanged.");
+  log("- M8c reads the anchor curve off the latest pool_stats row (highest computed_at, ties by id — the row score-listings.ts reads) and measures each listing's residual off it. The listing set is the one the norms script fits the anchor on; compute-market-stats.ts selects it INLINE, so M8c mirrors the selection through M8's own set instead of importing a function, and prints its count next to the row's anchor_listings. A listing whose age falls outside the row's age range is counted and excluded, as it is in the fit. M8c is split per model only, not three ways: a trim belongs to one model, so a 'both' column would mix trims that never compete.");
   log("- Verdicts are computed mechanically on the 'both' split: HOLDS = the value in use lies strictly inside the measured empty gap, or inside the 95 % interval, or (MIN_SAMPLE) is at least the smallest n the measurement needs. SAME BALLPARK = leasing within ±8 points of the coefficient; slope inside the interval widened by 0.1; a threshold within 20 % of the nearer edge of the gap. FLAG = outside. NOT MEASURABLE = below the floor.");
   log("");
   const uniqueNotes = [...new Set(notes)];

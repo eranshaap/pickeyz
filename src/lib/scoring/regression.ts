@@ -24,6 +24,13 @@
 // reproduce it -> UNEXPLAINED, with the attempt printed under the line. The identity is never widened to
 // make a line pass, and it is never an exemption: a label is earned by recomputation or it is not given.
 //
+// Day 17 run 5 §3 narrows the LABEL, not the test (findCar-now.md, "כלל הרגרסיה", as edited that day):
+// the label names the rows that changed AMONG THOSE THE OLD SCORE READ — the cell row always, the slope
+// row only when that score used the model slope rather than the default, the anchor row only when that
+// score's price row came from the anchor (a thin cell). readNormKinds() reads both facts straight out of
+// the stored invoice. The recomputation is unchanged: still ONE run with all three stored rows. A row
+// that moved but was not read is still printed under the line, marked with why it is not named.
+//
 // This module opens no database and reads no argv. `scoreWith(normRows, at)` is the caller's — it is the
 // engine re-run with those rows and that clock over the listing's CURRENT data (DATA is checked first, so
 // by the time the identity runs the inputs are already known to be unchanged).
@@ -101,7 +108,7 @@ const num = (n: number | null | undefined): string => (n === null || n === undef
 
 // ---------- what this module reads out of a stored breakdown ----------
 export type StoredBreakdown = {
-  rows?: { row?: string; status?: string; value?: number; raw?: Record<string, unknown> }[];
+  rows?: { row?: string; status?: string; source?: string; note?: string; value?: number; raw?: Record<string, unknown> }[];
   checks?: { check?: string; status?: string; reason?: string; declared?: number; official?: number; official_date?: string }[];
   facts?: Record<string, unknown>;
   typical_condition?: number | null; // v2's name for the cell's typical
@@ -347,6 +354,35 @@ export type Triple = { score: number | null; condition_score: number | null; con
 const triple = (r: ScoreResult): Triple => ({ score: r.deal_score, condition_score: r.condition_score, confidence: r.confidence.level as string });
 const showTriple = (t: Triple) => `${fmt(t.score)} / ${fmt(t.condition_score)} / ${t.confidence ?? "-"}`;
 
+// Day 17 run 5 §3 — which of the three norm rows the OLD score actually READ.
+// The rule: the cell row always; the slope row only when that score used the model slope (n at or above
+// the floor) rather than the default; the anchor row only when that score's price row came from the
+// anchor (a thin cell). Both facts are recorded in the stored invoice itself, so nothing has to be
+// derived from the pointed rows and the floor constant:
+//   anchor read <=> the price row is marked vs_new_price. price.ts writes note 'vs_new_price' together
+//                   with source 'anchor' on the thin-cell anchor path, and writes neither anywhere else;
+//                   either mark is accepted so an older invoice that carried only one still reads right.
+//   slope read  <=> the km row's raw.slope_source is 'model'. km.ts's slopeFor() writes 'model' exactly
+//                   when km_slope is present and km_slope_n >= KM_SLOPE_MIN_SAMPLE, 'default' otherwise,
+//                   and it writes the mark on an unavailable km row too.
+// A missing invoice can claim only the row every score reads.
+export function readNormKinds(bd: StoredBreakdown | null): NormKind[] {
+  const read = new Set<NormKind>(["median"]);
+  if (bd !== null) {
+    const price = bd.rows?.find((r) => r.row === "price");
+    const km = bd.rows?.find((r) => r.row === "km");
+    if (price?.note === "vs_new_price" || price?.source === "anchor") read.add("anchor");
+    if (km?.raw?.slope_source === "model") read.add("slope");
+  }
+  return NORM_KINDS.filter((k) => read.has(k)); // always in NORM_KINDS order
+}
+/** Why a row that moved is not named — the half of the rule that kept it out. */
+function notReadBecause(kind: NormKind): string {
+  if (kind === "slope") return "the stored score's km row used the default slope, not the model slope";
+  if (kind === "anchor") return "the stored score's price row came from the cell, not the anchor";
+  return "the stored score did not read the cell row";
+}
+
 /** One line describing how one of the three rows moved, stored -> current. */
 function describeMove(kind: NormKind, x: RegressionInput): string {
   const a = normId(x.stored.norms, kind), b = normId(x.norms, kind);
@@ -396,11 +432,29 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
   const differ = NORM_KINDS.filter((k) => normId(x.stored.norms, k) !== normId(x.norms, k));
   if (differ.length === 0) return { hit: null, tried: [] };
 
-  const label = normLabel(differ);
-  const moved = differ.map((k) => describeMove(k, x));
+  // §3: the label names only the rows that BOTH differ and were read by the old score. The test below is
+  // untouched — it still recomputes once with all three stored rows — and a row that moved unread is
+  // still printed, marked with why the rule does not name it.
+  const read = readNormKinds((x.stored.breakdown ?? null) as StoredBreakdown | null);
+  const named = differ.filter((k) => read.includes(k));
+  const label = named.length > 0 ? normLabel(named) : null;
+  const moved = differ.map((k) => describeMove(k, x) + (named.includes(k) ? "" : ` - not named: ${notReadBecause(k)}`));
   const ids = NORM_KINDS.map((k) => `${k} ${num(normId(x.stored.norms, k))}`).join(", ");
   const got = triple(x.scoreWith(x.stored.norms, when));
   if (same(got, sto)) {
+    if (label === null) {
+      // The identity holds, but every row that moved is one the old score never read. The rule names no
+      // row and there is no label for that, so nothing is claimed: the line stays UNEXPLAINED and says
+      // exactly this. Never silently widened back to the rows that moved.
+      return {
+        hit: null,
+        tried: [
+          ...moved,
+          `the identity holds (recomputed with the STORED norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(got)} = the stored values), ` +
+            `but no row that moved was read by the stored score, so the rule names none and no NORM (...) label is given`,
+        ],
+      };
+    }
     return {
       hit: {
         label,
@@ -416,7 +470,7 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
     hit: null,
     tried: [
       ...moved,
-      `${label}: recomputed with the stored norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(got)}, not the stored ${showTriple(sto)} - the identity does not hold`,
+      `${label ?? `NORM (no row read)`}: recomputed with the stored norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(got)}, not the stored ${showTriple(sto)} - the identity does not hold`,
     ],
   };
 }
