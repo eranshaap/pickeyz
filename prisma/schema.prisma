@@ -38,9 +38,11 @@ model models {
   length_mm        Int? // manual; empty in the demo
   width_mm         Int? // manual; empty in the demo
   fuel_consumption Float? // km per liter; manual; empty in the demo
+  family_id        Int? // Day 18: which model-as-a-person-knows-it this catalog row belongs to; null = outside the reviewed scope
   created_at       DateTime @default(now()) @db.Timestamptz(3)
 
-  cars cars[]
+  family model_families? @relation(fields: [family_id], references: [id], onDelete: SetNull)
+  cars   cars[]
 
   @@unique([vehicle_class, degem_code, year])
 }
@@ -70,7 +72,11 @@ model cars {
   // Day 14 run C (§0.10): the registry refresh's two columns.
   registry_checked_at DateTime? @db.Timestamptz(3) // when the Ministry's answer on this car was last ACCEPTED (not when we last asked). Backfilled from created_at.
   cancelled_at        DateTime? @db.Date // bitul_dt, written once when the car resolves to the cancellations registry. Empty today (0 cars).
-  created_at          DateTime  @default(now()) @db.Timestamptz(3)
+  // Day 18: three registry fields read from the active / inactive record and history 1. Written at import and refresh; existing cars backfilled from the raw cache.
+  current_owner_type  String? // the registry's current holder type (baalut), translated in translator.ts to the same codes as ownership_history[].type
+  registry_color      String? // tzeva_rechev, as the source gave it
+  color_changed       Boolean? // history 1: shnui_zeva_ind (cars registered from 2017 only); null = unknown, which is the truth for pre-2017 cars
+  created_at         DateTime  @default(now()) @db.Timestamptz(3)
   updated_at          DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
 
   model         models              @relation(fields: [model_id], references: [id])
@@ -217,6 +223,7 @@ model pool_stats {
   anchor_age_max_years   Float? // oldest
   anchor_n               Int // model-year POINTS the line was fitted through (the fit's own n)
   anchor_listings        Int // listings behind those points — coverage, not the fit's n
+  anchor_points          Json? // Day 18: the fit's model-year points as data, [{ make, model, year, n, ratio, median_age }]. The engine applies the anchor only to a listing whose (make, model, year) is in this list — the gate is the model-year, not an age range. Null on rows written before the column existed
   engine_version         Int
   computed_at            DateTime @db.Timestamptz(3) // no default: the norms run writes one `now` for the whole run
 
@@ -309,6 +316,7 @@ model searches {
   session_id     String? // one visit; resets between visits
   user_id        Int? // empty as long as there is no login
   model_searched String // required: a search without a model is not a search (the model is the only mandatory field of the screen)
+  family_id      Int? // Day 18: the family chosen in the bar; null for searches before the table. model_searched stays
   filters        Json? // the filters exactly as the action received them; null when the search carried none
   priority       String? // code: price | km | condition. Empty when the user skipped it — not recoverable. No screen writes it yet
   engine_version Int // Stage A's version at that moment
@@ -317,6 +325,7 @@ model searches {
   pool_count     Int? // the cut pool — listings after the filters, before selectThree (the number on the "עדכן" button); results_count keeps its meaning: ranked + tail
   created_at     DateTime @default(now()) @db.Timestamptz(3)
 
+  family         model_families?  @relation(fields: [family_id], references: [id], onDelete: SetNull)
   search_results search_results[]
 }
 
@@ -351,4 +360,32 @@ model search_results {
 
   @@index([search_id])
   @@index([listing_id])
+}
+
+// 13. makes — one row per make as the catalog spells it (Day 18). The parent of model_families.
+model makes {
+  id         Int      @id @default(autoincrement())
+  name_en    String   @unique // = models.make
+  name_he    String
+  aliases    String[]
+  created_at DateTime @default(now()) @db.Timestamptz(3)
+
+  families model_families[]
+}
+
+// 14. model_families — the model as a person knows it (Day 18). Catalog rows (models.family_id) and searches
+// (searches.family_id) point here; one family per (make, name_en).
+model model_families {
+  id         Int      @id @default(autoincrement())
+  make_id    Int
+  name_en    String
+  name_he    String
+  aliases    String[]
+  created_at DateTime @default(now()) @db.Timestamptz(3)
+
+  make     makes      @relation(fields: [make_id], references: [id])
+  models   models[]
+  searches searches[]
+
+  @@unique([make_id, name_en])
 }
