@@ -18,6 +18,7 @@ import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { db } from "@/lib/db";
 import { kmFacts } from "@/lib/scoring/checks";
+import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
 import {
   ENGINE_VERSION,
   KM_BELOW_THRESHOLD,
@@ -946,16 +947,24 @@ async function main() {
   const unexpected = [...new Set(pool.map((p) => handKey(checkOf(p.bd, "hand"))))].filter((k) => !(HAND_KEYS as readonly string[]).includes(k));
   if (unexpected.length) throw new Error(`the hand check produced kinds outside the brief's list: ${unexpected.join(", ")}`);
   log("");
-  const expected = { "mismatch:fleet_undercount": 18, "mismatch:zero_km_undercount": 11, "mismatch:other": 8, "mismatch:private_pair": 1 };
+  // Day 17 run 6 §2 — the self-check compares two LIVE readings of the same rows, never a count typed
+  // in on some earlier day (decision, Eran 16/09; plan, Day 17 block). The reference is the same tally
+  // score-listings.ts prints its `by check kind` block from, taken over these very listings; M7's own
+  // counting code above is untouched — it is the independent reading the check exists to test.
+  const reference = new Map(tallyCheckKinds(pool.map((p) => p.bd)));
+  const MISMATCH_KINDS = ["fleet_undercount", "zero_km_undercount", "other", "private_pair"] as const;
+  const expected = Object.fromEntries(
+    MISMATCH_KINDS.map((k) => [`mismatch:${k}`, reference.get(`hand: mismatch:${k}`) ?? 0]),
+  ) as Record<`mismatch:${(typeof MISMATCH_KINDS)[number]}`, number>;
   const expectedKeys = Object.keys(expected) as (keyof typeof expected)[];
   const actual = Object.fromEntries(expectedKeys.map((k) => [k, pool.filter((p) => handKey(checkOf(p.bd, "hand")) === k).length])) as Record<keyof typeof expected, number>;
   const selfCheckOk = expectedKeys.every((k) => actual[k] === expected[k]);
   log(
     `SELF-CHECK (is the breakdown being read correctly?) fleet_undercount / zero_km_undercount / other / private_pair — ` +
-      `dry run ${expectedKeys.map((k) => expected[k]).join(" / ")}, measured here ${expectedKeys.map((k) => actual[k]).join(" / ")} → ${selfCheckOk ? "PASS" : "FAIL"}`,
+      `check-kinds tally ${expectedKeys.map((k) => expected[k]).join(" / ")}, measured here ${expectedKeys.map((k) => actual[k]).join(" / ")} → ${selfCheckOk ? "PASS" : "FAIL"}`,
   );
   if (!selfCheckOk) {
-    throw new Error(`M7 self-check failed: dry run ${JSON.stringify(expected)}, measured ${JSON.stringify(actual)} — the breakdown is not being read the way the dry run read it`);
+    throw new Error(`M7 self-check failed: check-kinds tally ${JSON.stringify(expected)}, measured ${JSON.stringify(actual)} — the breakdown is not being read the way the dry run read it`);
   }
   log("");
   log("Ads that declare hand 1, against the registry (official = non-dealer rows, from the stored hand check):");

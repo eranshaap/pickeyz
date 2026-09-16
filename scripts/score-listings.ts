@@ -78,6 +78,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
 import { scoreListing, type ScoreResult, type ScoringInput } from "@/lib/scoring";
 import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
+import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
 import {
   classify, fmt, storedRowValue, storedSums, versionExpectation,
   DATA_COVERS, DATA_MISSING, LABELS, LABEL_WIDTH, ROUNDING_ALLOWANCE,
@@ -355,8 +356,7 @@ async function main() {
   log("by confidence level");
   for (const [k, n] of count(scored, (s) => s.result.confidence.level)) log(`  ${n.toString().padStart(4)}  ${k}`);
   log("by check kind (check: status[:kind|reason])");
-  const checkLines = scored.flatMap((s) => s.result.checks.map((c) => `${c.check}: ${c.status}${c.kind ? ":" + c.kind : c.reason ? ":" + c.reason : ""}`));
-  for (const [k, n] of count(checkLines, (x) => x)) log(`  ${n.toString().padStart(4)}  ${k}`);
+  for (const [k, n] of tallyCheckKinds(scored.map((s) => s.result))) log(`  ${n.toString().padStart(4)}  ${k}`);
   log("by sold_signal strength");
   for (const [k, n] of count(scored, (s) => s.result.sold_signal.strength ?? "null")) log(`  ${n.toString().padStart(4)}  ${k}`);
   log("by unavailable reason per row");
