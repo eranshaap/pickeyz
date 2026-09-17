@@ -23,6 +23,10 @@ export type StoredCar = {
   first_registration: string | null;
   registry_checked_at: string | null;
   cancelled_at: string | null;
+  // Day 18 (§7): the three registry fields, gated like any other.
+  current_owner_type: OwnershipCode | null; // registry baalut, translated
+  registry_color: string | null; // registry tzeva_rechev, as given
+  color_changed: boolean | null; // history 1 shnui_zeva_ind; null = no history-1 record
   // sug_degem and the degem codes are not columns on `cars`; they live on the models row it points
   // at, and that is what §0.5 compares the fresh answer against.
   model: { vehicle_class: string | null; degem_code: string | null };
@@ -105,6 +109,9 @@ export type CarWrites = {
   km_at_last_test?: number | null;
   first_registration?: string | null;
   cancelled_at?: string;
+  current_owner_type?: OwnershipCode; // Day 18 (§7)
+  registry_color?: string;
+  color_changed?: boolean;
 };
 
 /** §3.1: the exact set of values to persist. The script persists this and decides nothing itself. */

@@ -4,8 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { analyzeHistory, combineDeductions, historyRow } from "./history";
-import { scoreListing } from "./index";
-import { cell, input, NOW, rows } from "./fixtures";
+import { cell, input, NOW, rows, scoreScored as scoreListing } from "./fixtures";
 
 describe("history row — the four known cars (§4.2)", () => {
   it("74294402: leasing 2021-10 → private 2021-10 — zero-km; users 1; [zero_km −10 full]; first hand 0 → −10", () => {
@@ -324,7 +323,7 @@ describe("reality reading (Day 12 §1, §5)", () => {
       }),
       NOW,
     );
-    assert.equal(s.engine_version, 3);
+    assert.equal(s.engine_version, 4); // Day 18: v4 — the rows and sums of this case did not move
     assert.equal(s.condition_score, -4);
     assert.equal(s.condition_by_reality, 6);
     // everything else in the invoice is the paper reading, unchanged

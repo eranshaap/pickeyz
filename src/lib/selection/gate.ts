@@ -1,17 +1,25 @@
 // The gate (BRIEF §4.1) and eligibility (§2; part 3 §2a and §2c; part 4 §1), read straight from the invoice. Nothing is recomputed.
 
-import { CHEAPEST_CONDITION_FLOOR, PEACE_OF_MIND_DEAL_FLOOR, UNVERIFIED_HISTORY_EFFECT } from "./constants";
+import { isCancelled as isCancelledInvoice } from "../scoring/types";
+import { CANCELLED_EFFECT, CHEAPEST_CONDITION_FLOOR, PEACE_OF_MIND_DEAL_FLOOR, UNVERIFIED_HISTORY_EFFECT } from "./constants";
 import type { Work } from "./rules";
 import type { CandidateListing, Category, Eligibility, PeaceOfMindFloorEffect } from "./types";
 import { RULE_TYPE } from "./types";
 import { invoiceRow } from "./util";
 
+// Day 18 rules v6 (§8): the engine's cancelled invoice. Every other reader of the invoice below asks this first —
+// a cancelled invoice has no rows, no sold signal and no sums to read.
+export function isCancelled(l: CandidateListing): boolean {
+  return isCancelledInvoice(l.breakdown);
+}
+
+// A cancelled invoice carries no sold signal: it is neither strong nor medium.
 export function isSoldStrong(l: CandidateListing): boolean {
-  return l.breakdown.sold_signal.strength === "strong";
+  return !isCancelledInvoice(l.breakdown) && l.breakdown.sold_signal.strength === "strong";
 }
 
 export function isSoldMedium(l: CandidateListing): boolean {
-  return l.breakdown.sold_signal.strength === "medium";
+  return !isCancelledInvoice(l.breakdown) && l.breakdown.sold_signal.strength === "medium";
 }
 
 // A thin cell: the price row is unavailable with reason thin_cell. Eligible for no category, and — since the
@@ -35,6 +43,11 @@ export function hasVerifiedHistory(l: CandidateListing): boolean {
 }
 
 export function eligibility(l: CandidateListing, floorEffect: PeaceOfMindFloorEffect): Eligibility {
+  // Day 18 rules v6 (§8): a cancelled car is eligible for nothing — checked before the thin-cell gate, which reads a row.
+  if (isCancelled(l)) {
+    const none: Record<Category, boolean> = { best_value: false, peace_of_mind: false, cheapest: false };
+    return { ...none, reasons: ["cancelled"], without_unverified_history: { ...none } };
+  }
   // The gate (§4.1; Day 14 rules v5 §0.4): a thin cell is eligible for no category — before this rule and after it.
   if (isThinCell(l)) {
     const none: Record<Category, boolean> = { best_value: false, peace_of_mind: false, cheapest: false };
@@ -75,6 +88,20 @@ export function eligibility(l: CandidateListing, floorEffect: PeaceOfMindFloorEf
 // convention every rule here follows): UNVERIFIED_HISTORY_EFFECT when it triggered, 'none' otherwise.
 // §0.2 writes blocked_first into this entry's context afterwards, on at most one listing per category.
 export function unverifiedHistory(w: Work): void {
+  // Day 18 rules v6: a cancelled invoice has no history row to read. The rule is recorded as not evaluated, so the
+  // trace stays complete; the listing is already barred by cancelled.
+  if (isCancelled(w.input)) {
+    w.result.trace.push({
+      rule: "unverified_history",
+      type: RULE_TYPE.unverified_history,
+      value: null,
+      threshold: null,
+      triggered: false,
+      effect: "none",
+      context: { evaluated: false, reason: "cancelled" },
+    });
+    return;
+  }
   const row = invoiceRow(w.input.breakdown, "history", w.input.listing_id);
   const triggered = !hasVerifiedHistory(w.input);
   w.result.trace.push({
@@ -85,6 +112,22 @@ export function unverifiedHistory(w: Work): void {
     triggered,
     effect: triggered ? UNVERIFIED_HISTORY_EFFECT : "none",
     context: { evaluated: true, history_row_status: row.status, ...(row.status === "unavailable" ? { reason: row.reason ?? null } : {}) },
+  });
+}
+
+// Day 18 rules v6 (§8) — the cancelled rule's record, written on everyone that passed the gate, like unverified_history.
+// value = the cancellation date the invoice carries (null when not cancelled); effect = CANCELLED_EFFECT when it triggered.
+export function cancelled(w: Work): void {
+  const b = w.input.breakdown;
+  const triggered = isCancelledInvoice(b);
+  w.result.trace.push({
+    rule: "cancelled",
+    type: RULE_TYPE.cancelled,
+    value: triggered ? b.cancelled_at : null,
+    threshold: null,
+    triggered,
+    effect: triggered ? CANCELLED_EFFECT : "none",
+    context: { evaluated: true },
   });
 }
 

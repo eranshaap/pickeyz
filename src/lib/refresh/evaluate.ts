@@ -16,6 +16,15 @@
 // The order of the checks decides which reason a bad answer is reported under, never whether it is
 // rejected: identity (§0.5) -> the km/date pairing (§0.7) -> the moving fields (§0.6) ->
 // the ownership cross-check (§0.7) -> colour (§0.8) -> the fields outside the database (§0.9).
+//
+// Day 18 (§7): current_owner_type (registry baalut), registry_color (tzeva_rechev) and color_changed (history 1
+// shnui_zeva_ind) go through the gate as ordinary registry fields, after the moving fields of §0.6: a changed
+// value is accepted and written with a change line (and the raw snapshot moves like any other change); a value
+// the ministry no longer gives where we hold one is `null_over_value`, as for test_expiry. An unknown baalut word
+// is already a structural throw inside interpret(). baalut_mismatch (the cross-check) is unchanged.
+//
+// deriveFromCache() is the `--from-cache` reading: the same three values out of a cached snapshot, compared with
+// what `cars` holds — fill / unchanged / change — with no gate, no ministry call and no timestamp.
 
 import { interpret, type VehicleData } from "@/lib/mot/vehicle";
 import { makeDegemCode } from "@/lib/mot/degem-code";
@@ -313,6 +322,17 @@ function livingAnswer(
     }
   }
 
+  // ---- Day 18 (§7): the three registry fields, as ordinary registry fields ----
+  const three = registryValues(v);
+  for (const field of CACHE_COLUMNS) {
+    if (three[field] === stored[field]) continue;
+    if (three[field] === null) return reject("null_over_value", `${field} ${show(stored[field])} -> null`);
+    changes.push(change(field, stored[field], three[field]));
+  }
+  if (three.current_owner_type !== stored.current_owner_type) car.current_owner_type = three.current_owner_type;
+  if (three.registry_color !== null && three.registry_color !== stored.registry_color) car.registry_color = three.registry_color;
+  if (three.color_changed !== null && three.color_changed !== stored.color_changed) car.color_changed = three.color_changed;
+
   // ---- §0.7, first clause, as §11.1 amends it: the cross-check runs only where it is decidable ----
   const cross = ownershipCrossCheck(F, v.ownership_current);
   if (cross.kind === "mismatch") {
@@ -348,6 +368,49 @@ function livingAnswer(
     notes,
   };
   return accept;
+}
+
+/** Day 18 (§7): the three registry values a reading of the ministry's answer gives. */
+export type RegistryValues = { current_owner_type: OwnershipCode; registry_color: string | null; color_changed: boolean | null };
+
+function registryValues(v: VehicleData): RegistryValues {
+  return { current_owner_type: v.ownership_current, registry_color: v.color, color_changed: v.color_changed };
+}
+
+export type CacheColumn = "current_owner_type" | "registry_color" | "color_changed";
+export const CACHE_COLUMNS: CacheColumn[] = ["current_owner_type", "registry_color", "color_changed"];
+export type CacheOutcome = "fill" | "unchanged" | "change";
+export type CacheDerivation = {
+  status: "active" | "inactive";
+  values: RegistryValues;
+  columns: Record<CacheColumn, { outcome: CacheOutcome; from: string | boolean | null; to: string | boolean | null }>;
+};
+
+/**
+ * Day 18 (§7, §3.5) — `--from-cache`: the three columns re-derived from a cached top-level snapshot, read through the
+ * same interpret() the import and the gate use, from whichever record the car resolved to (registry or inactive).
+ * No history-1 record -> color_changed null. Per column: fill (we hold null, the cache gives a value), unchanged, or
+ * change (we hold a value and the cache gives another — null included, which is shown, never hidden).
+ * Throws — a stop — on a snapshot that does not parse, an unknown baalut word, a cancelled or unresolvable answer.
+ */
+export function deriveFromCache(stored: Pick<StoredCar, "license_plate" | CacheColumn>, snap: Snapshot): CacheDerivation {
+  const plate = stored.license_plate;
+  checkStructure(plate, snap);
+  const lookup = interpret(plate, asRawRows(snap));
+  if (lookup.status === "cancelled") throw new Error(`MoT ${plate}: the cached snapshot resolves to a cancellation record — no registry record to derive the three columns from`);
+  if (lookup.status === "not_found") throw new Error(`MoT ${plate}: the cached snapshot resolves to no record at all`);
+  const values = registryValues(lookup.data);
+  const column = (c: CacheColumn) => {
+    const from = stored[c];
+    const to = values[c];
+    const outcome: CacheOutcome = from === to ? "unchanged" : from === null ? "fill" : "change";
+    return { outcome, from, to };
+  };
+  return {
+    status: lookup.status,
+    values,
+    columns: { current_owner_type: column("current_owner_type"), registry_color: column("registry_color"), color_changed: column("color_changed") },
+  };
 }
 
 /** The ownership rows as one short string, for a report line. */

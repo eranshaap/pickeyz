@@ -282,7 +282,7 @@ describe("toSearchResultRows — the snapshot (§4, Run 2c §5)", () => {
       const s = f.snapshot;
       const row = rowOf(rows, s.listing_id);
       assert.equal(row.total_score, s.score);
-      assert.equal(row.confidence, s.breakdown.confidence.level); // read from the invoice, which is no longer copied
+      assert.equal(row.confidence, s.breakdown.confidence?.level ?? null); // read from the invoice, which is no longer copied
       assert.equal(row.market_stats_id, s.market_stats_id);
       assert.equal(row.model_stats_id, s.model_stats_id);
       assert.equal(row.pool_stats_id, s.pool_stats_id);
@@ -316,8 +316,18 @@ describe("toSearchResultRows — the snapshot (§4, Run 2c §5)", () => {
     );
     assert.equal(rows.length, 2);
     assert.equal(rowOf(rows, 2).total_score, null);
-    assert.equal(rowOf(rows, 2).confidence, items[1].snapshot.breakdown.confidence.level); // still read, still stored
+    assert.equal(rowOf(rows, 2).confidence, items[1].snapshot.breakdown.confidence?.level ?? null); // still read, still stored
     assert.notEqual(rowOf(rows, 2).rank, null); // a thin cell is shown; it is simply not ranked by a deal score
+  });
+
+  it("Day 18: a cancelled car's invoice has no confidence — the row stores null and is still written", () => {
+    const items = [fixture(1), fixture(2, { cancelled: "2026-09-10" }, { score: null })];
+    const selection = selectThree({ listings: items.map((f) => f.candidate) });
+    const rows = toSearchResultRows(SEARCH_ID, items.map((f) => f.snapshot), selection);
+    assert.equal(rows.length, 2);
+    assert.equal(rowOf(rows, 2).confidence, null);
+    assert.equal(rowOf(rows, 2).total_score, null);
+    assert.notEqual(rowOf(rows, 2).rank, null); // in the tail, not hidden
   });
 
   it("km_declared null is stored as null, not as a zero", () => {

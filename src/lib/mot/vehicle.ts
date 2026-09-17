@@ -9,7 +9,7 @@ export type RegistryRow = {
   baalut: string; tzeva_rechev: string; mivchan_acharon_dt: string; tokef_dt: string;
   moed_aliya_lakvish: string;
 };
-export type HistoryKmRow = { kilometer_test_aharon: number; rishum_rishon_dt: string; mkoriut_nm: string };
+export type HistoryKmRow = { kilometer_test_aharon: number; rishum_rishon_dt: string; mkoriut_nm: string; shnui_zeva_ind: number };
 export type HistoryHandRow = { _id: number; baalut_dt: number; baalut: string };
 export type CancelledRow = { bitul_dt: string };
 
@@ -32,13 +32,14 @@ export type VehicleData = {
   year: number;                                          // registry shnat_yitzur — the car's own year
   hand: number | null;                                   // null = history incomplete, not zero
   ownership_history: { ym: string; type: OwnershipCode }[] | null; // all rows, dealers included, oldest first; null = unknown, never []
-  ownership_current: OwnershipCode;                      // registry value now; not stored
+  ownership_current: OwnershipCode;                      // registry baalut now -> cars.current_owner_type (Day 18)
   origin: OriginCode | null;                             // history 1; not stored
   test_expiry: string | null;
   mivchan_acharon_dt: string | null;
   km_at_last_test: number | null;
   first_registration: string | null;
-  color: string | null;
+  color: string | null;                                  // registry tzeva_rechev as given -> cars.registry_color (Day 18); also the cars.color fallback
+  color_changed: boolean | null;                         // history 1 shnui_zeva_ind -> cars.color_changed (Day 18); null = no history-1 record
   registry: { make: string; model_name: string; sub_model: string; degem_nm: string; fuel: string };
 };
 
@@ -155,6 +156,7 @@ export function interpret(plate: string, rows: RawRows): VehicleLookup {
     km_at_last_test: k?.kilometer_test_aharon ?? null,
     first_registration,
     color: reg.tzeva_rechev || null,
+    color_changed: k ? colorChangedInd(plate, k.shnui_zeva_ind) : null,
     registry: {
       make: reg.tozeret_nm,
       model_name: reg.kinuy_mishari,
@@ -164,6 +166,14 @@ export function interpret(plate: string, rows: RawRows): VehicleLookup {
     },
   };
   return { status, data };
+}
+
+// Day 18 (§7): history 1's shnui_zeva_ind, 0 / 1. Anything else — absent included — is a value we do not
+// know how to read, and a structural failure, never a null (null means "no history-1 record" and nothing else).
+function colorChangedInd(plate: string, v: unknown): boolean {
+  if (v === 0 || v === "0") return false;
+  if (v === 1 || v === "1") return true;
+  throw new Error(`MoT ${plate} history_km: shnui_zeva_ind is ${JSON.stringify(v)} — expected 0 or 1`);
 }
 
 // 201809 -> "2018-09"

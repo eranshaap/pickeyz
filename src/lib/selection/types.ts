@@ -1,7 +1,7 @@
 // Stage B selection library — the contract (BRIEF Day 12 part 2, §3; part 3, §1–§2).
 // From the engine: the invoice shape only. No engine functions, no engine constants.
 
-import type { ScoreResult } from "../scoring/types";
+import type { Invoice } from "../scoring/types";
 import type { CATEGORY_PRIORITY } from "./constants";
 
 // input — built by the caller; the pool AFTER the search's filters (model, years, budget)
@@ -15,7 +15,7 @@ export type CandidateListing = {
   median_price: number | null; // the cell's median price from the norm row the listing points at; null when the price row is unavailable
   new_price: number | null; // the car's new list price (part 5 §3): the latest published_at row for the car's four-column key, supplied by the caller; null when no row matches
   seller_visible: boolean; // the seller has an open commercial agreement — the caller computes it
-  breakdown: ScoreResult; // the invoice, engine version 2
+  breakdown: Invoice; // the invoice as stored — a scored one, or (Day 18, engine v4 §8) the cancelled one
 };
 
 export type SelectionInput = { listings: CandidateListing[] };
@@ -55,7 +55,8 @@ export type Eligibility = {
   peace_of_mind: boolean;
   cheapest: boolean;
   reasons: string[];
-  // Day 14 rules v5 (§0.2): the same three flags with the unverified_history rule ignored and nothing else changed —
+  // Day 14 rules v5 (§0.2): the same three flags with the unverified_history rule ignored and nothing else changed (a cancelled
+  // car stays barred here too — rules v6) —
   // the counterfactual blocked_first reads, and the only place the pre-rule answer is kept.
   without_unverified_history: Record<Category, boolean>;
 };
@@ -82,7 +83,8 @@ export type RuleName =
   | "double_winner"
   | "dealer_not_visible"
   | "cheapest_runner_up"
-  | "unverified_history"; // Day 14 rules v5 (§0.1)
+  | "unverified_history" // Day 14 rules v5 (§0.1)
+  | "cancelled"; // Day 18 rules v6 (§8)
 export type RuleType = "correctness" | "eligibility" | "portfolio";
 // Day 14 rules v5 (§0.1): 'ineligible' joins the vocabulary — the listing stays listed and ranked, wins no
 // category, and cannot be the runner-up. It is not 'excluded': nothing is hidden and no rank moves.
@@ -111,4 +113,5 @@ export const RULE_TYPE: Readonly<Record<RuleName, RuleType>> = {
   double_winner: "portfolio",
   cheapest_runner_up: "portfolio",
   unverified_history: "eligibility",
+  cancelled: "eligibility",
 };

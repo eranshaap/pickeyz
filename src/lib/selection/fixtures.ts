@@ -2,7 +2,7 @@
 // overridable. The invoice sums follow the engine's formulas (src/lib/scoring/index.ts header) so that a fixture
 // is internally consistent; nothing here is used by the library itself.
 
-import type { ConfidenceItem, ConfidenceLevel, Row, RowSource, ScoreResult } from "../scoring/types";
+import type { CancelledResult, ConfidenceItem, ConfidenceLevel, Row, RowSource, ScoreResult } from "../scoring/types";
 import type { CandidateListing } from "./types";
 
 export type Spec = {
@@ -26,10 +26,28 @@ export type Spec = {
   typical?: number | null; // Day 14: the cell's typical history (median_history); default 0; null → typical_history null
   confidence?: ConfidenceLevel; // the invoice's confidence level; default "high"
   confidence_items?: ConfidenceItem[]; // the items behind the level; default []
+  cancelled?: string; // Day 18: 'YYYY-MM-DD' → the engine's cancelled invoice instead of a scored one (every invoice field above is ignored)
 };
 
 function r1(v: number): number {
   return Math.round(v * 10) / 10;
+}
+
+// Day 18 (engine v4 §8): the cancelled invoice, exactly the engine's shape.
+export function cancelledInvoice(cancelled_at: string): CancelledResult {
+  return {
+    engine_version: 4,
+    reason: "cancelled",
+    cancelled_at,
+    rows: [],
+    condition_score: null,
+    condition_by_reality: null,
+    typical_history: null,
+    condition_vs_typical: null,
+    price_advantage: null,
+    deal_score: null,
+    confidence: null,
+  };
 }
 
 export function invoice(s: Spec): ScoreResult {
@@ -79,7 +97,7 @@ export function invoice(s: Spec): ScoreResult {
   const deal_score = price_advantage !== null && condition_vs_typical !== null ? r1(price_advantage + condition_vs_typical) : null;
 
   const result: ScoreResult = {
-    engine_version: 3,
+    engine_version: 4,
     unit: "pct_of_value",
     rows: [priceRow, historyRow, kmRow],
     condition_score,
@@ -93,7 +111,7 @@ export function invoice(s: Spec): ScoreResult {
       { check: "km", status: "unavailable", reason: "fixture" },
     ],
     sold_signal: { strength: s.sold ?? null, evidence: s.sold ? ["fixture"] : [] },
-    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, months_left: null },
+    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, months_left: null, current_owner_registry: null },
     confidence: { level: s.confidence ?? "high", items: s.confidence_items ?? [] },
   };
   if (km === null && history !== null) result.partial = ["km"];
@@ -110,9 +128,9 @@ export function cand(s: Spec): CandidateListing {
     first_seen_at: s.first_seen ?? "2026-08-01T00:00:00.000Z",
     year: s.year ?? 2021,
     comparison_group: s.cell ?? "G",
-    median_price: s.thin ? null : median,
+    median_price: s.thin || s.cancelled !== undefined ? null : median,
     new_price: s.new_price === undefined ? null : s.new_price,
     seller_visible: s.visible ?? true,
-    breakdown: invoice(s),
+    breakdown: s.cancelled !== undefined ? cancelledInvoice(s.cancelled) : invoice(s),
   };
 }

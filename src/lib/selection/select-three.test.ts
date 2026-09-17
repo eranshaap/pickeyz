@@ -7,6 +7,7 @@
 // Day 14 run B (rules v5): unverified_history — every eligibility answer gains without_unverified_history and the rule's
 // reason; block 16's v4 invariant ("the best_value pick is rank 1") is replaced by §0.5's claim, which the library's
 // finishTest() now decides; new block 19 covers §5.10 (a)–(g).
+// Day 18 (rules v6): the cancelled rule — new block 20; the two version pins move to 6.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -24,6 +25,7 @@ import {
   RUNNER_UP_PRICE_BAND_PCT,
   SIMILARITY_THRESHOLD,
   UNVERIFIED_HISTORY_EFFECT,
+  CANCELLED_EFFECT,
 } from "./constants";
 import { finishTest } from "./finish";
 import { cand } from "./fixtures";
@@ -192,7 +194,7 @@ describe("2c. peace_of_mind deal floor, tracking only (part 3 §2c, part 4 §1)"
     assert.deepEqual(byId(res, 2).trace, []);
     assert.equal(entries(byId(res, 3), "overpriced").length, 1);
     assert.equal(res.rules_version, RULES_VERSION);
-    assert.equal(RULES_VERSION, 5);
+    assert.equal(RULES_VERSION, 6);
   });
 });
 
@@ -767,7 +769,7 @@ describe("18. above_new_price (part 5 §3)", () => {
     assert.equal(b.rank, 1);
     assert.deepEqual(shownRanks(res), [1]);
     assert.deepEqual(res.picks, { best_value: 2, peace_of_mind: 2, cheapest: 2 });
-    assert.equal(res.rules_version, 5);
+    assert.equal(res.rules_version, 6);
   });
 
   it("99.9 -> recorded, not triggered, shown; 120.0 -> triggered", () => {
@@ -1047,5 +1049,71 @@ describe("19g. the finish test's claims (§0.5)", () => {
         "shown ranks contiguous 1..n",
       ],
     );
+  });
+});
+
+describe("20. cancelled (Day 18, rules v6 §8)", () => {
+  const CANCEL = "2026-09-10";
+  const cancelledEntry = (r: ListingResult): RuleTrace => {
+    const e = r.trace.filter((t) => t.rule === "cancelled");
+    assert.equal(e.length, 1); // exactly one entry on every listing that passed the gate
+    return e[0];
+  };
+
+  it("a cancelled invoice -> ineligible for all three, reason cancelled, the record carries the date and the effect", () => {
+    const res = selectThree({ listings: [cand({ id: 1, price: 80000, cancelled: CANCEL }), cand({ id: 2, price: 95000, history: 2 })] });
+    const r = byId(res, 1);
+    assert.deepEqual(r.eligibility, elig(false, false, false, ["cancelled"], [false, false, false]));
+    assert.deepEqual(cancelledEntry(r), {
+      rule: "cancelled",
+      type: "eligibility",
+      value: CANCEL,
+      threshold: null,
+      triggered: true,
+      effect: CANCELLED_EFFECT,
+      context: { evaluated: true },
+    });
+    assert.equal(CANCELLED_EFFECT, "ineligible");
+    // logged like unverified_history: on the other listing the record is there, untriggered, effect none
+    assert.deepEqual(cancelledEntry(byId(res, 2)), { rule: "cancelled", type: "eligibility", value: null, threshold: null, triggered: false, effect: "none", context: { evaluated: true } });
+    // the rules that read an invoice row are recorded as not evaluated, never thrown on
+    assert.deepEqual(unv(r).context, { evaluated: false, reason: "cancelled" });
+    assert.deepEqual(res.picks, { best_value: 2, peace_of_mind: 2, cheapest: 2 });
+    assert.deepEqual(r.categories, []);
+  });
+
+  it("stays in the results, in the no-deal tail: after every ranked listing, by price among the tail", () => {
+    const res = selectThree({
+      listings: [
+        cand({ id: 1, price: 70000, cancelled: CANCEL }), // the cheapest listing of all, and cancelled
+        cand({ id: 2, price: 100000, history: 5 }), // ranked
+        cand({ id: 3, median: null, price: 90000, history: 1 }), // no deal, 90,000
+      ],
+    });
+    const r = byId(res, 1);
+    assert.equal(r.status, "shown");
+    assert.deepEqual(res.results.filter((x) => x.status === "shown").map((x) => x.listing_id), [2, 1, 3]);
+    assert.deepEqual(shownRanks(res), [1, 2, 3]);
+  });
+
+  it("cannot be the cheapest runner-up, even inside the band with the biggest gap", () => {
+    const res = selectThree({
+      listings: [cand({ id: 1, car: 1, price: 90000, price_v: 10, history: 0 }), cand({ id: 2, car: 2, price: 93000, cancelled: CANCEL })],
+    });
+    assert.equal(res.picks.cheapest, 1);
+    assert.equal(res.runner_ups.cheapest, null);
+  });
+
+  it("an all-cancelled pool -> three empty categories with a reason; the finish test passes", () => {
+    const res = selectThree({ listings: [cand({ id: 1, cancelled: CANCEL }), cand({ id: 2, cancelled: CANCEL })] });
+    assert.deepEqual(res.picks, { best_value: null, peace_of_mind: null, cheapest: null });
+    for (const r of res.results) assert.deepEqual(r.eligibility.reasons, ["cancelled"]);
+    const ft = finishTest(res);
+    assert.equal(ft.pass, true, JSON.stringify(ft.checks));
+  });
+
+  it("a cancelled listing in the synthetic finish pool leaves the finish test passing", () => {
+    const ft = finishTest(selectThree({ listings: [...finishPool(), cand({ id: 999, car: 999, price: 50000, cancelled: CANCEL })] }));
+    assert.equal(ft.pass, true, JSON.stringify(ft.checks));
   });
 });

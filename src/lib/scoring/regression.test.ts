@@ -52,7 +52,7 @@ function result(over: Partial<ScoreResult> = {}): ScoreResult {
     deal_score: 6,
     checks: [],
     sold_signal: { strength: null, evidence: [] },
-    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, months_left: null },
+    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, months_left: null, current_owner_registry: null },
     confidence: { level: "high", items: [] },
     ...over,
   };

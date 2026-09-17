@@ -11,6 +11,9 @@
 // - dealers: private = one row per listing; business = normalized name -> same phone -> create.
 //   No registry lookup here: corp_id / in_dealer_registry / registry_checked_at are set at onboarding.
 // - cars: a listing fills an empty color, never overwrites; official snapshot fields are refreshed.
+// - Day 18 (§7, §3.5): a NEW car also gets current_owner_type (registry baalut), registry_color (tzeva_rechev) and
+//   color_changed (history 1 shnui_zeva_ind; null when there is no history-1 record). The existing-car path does not
+//   touch them: filling them is refresh-cars.ts --from-cache, changing them is the refresh gate.
 // - Day 11: a new listing writes its first listing_price_history row (price, first_seen_at); a car's
 //   (mivchan_acharon_dt, km_at_last_test) reading is appended to car_test_readings when that test date is new.
 //
@@ -242,7 +245,9 @@ async function upsertCar(tx: Tx, row: Row, v: VehicleData, model_id: number): Pr
     pendingCars.set(v.license_plate, { id, color });
     return { id, created: true };
   }
-  const c = await tx.cars.create({ data: { license_plate: v.license_plate, model_id, color, ...official } });
+  // Day 18 (§3.5): the three registry fields on the create path only.
+  const registry = { current_owner_type: v.ownership_current, registry_color: v.color, color_changed: v.color_changed };
+  const c = await tx.cars.create({ data: { license_plate: v.license_plate, model_id, color, ...official, ...registry } });
   await recordTestReading(tx, c.id, official.mivchan_acharon_dt, official.km_at_last_test);
   return { id: c.id, created: true };
 }

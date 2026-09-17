@@ -1,9 +1,12 @@
 // Test fixtures for src/lib/scoring/*.test.ts — a ScoringInput with every field set, overridable per test.
 
 import { ENGINE_VERSION } from "./constants";
-import type { CellNorm, ModelNorm, OwnershipRow, PoolNorm, ScoringInput } from "./types";
+import { scoreListing } from "./index";
+import { isCancelled, type AnchorPoint, type CellNorm, type ModelNorm, type OwnershipRow, type PoolNorm, type ScoreResult, type ScoringInput } from "./types";
 
 export const NOW = new Date("2026-09-06T12:00:00.000Z");
+export const FIXTURE_MAKE = "MAKE";
+export const FIXTURE_MODEL = "MODEL";
 
 type Over = {
   listing?: Partial<ScoringInput["listing"]>;
@@ -28,6 +31,8 @@ export function input(over: Over = {}): ScoringInput {
       ...over.listing,
     },
     car: {
+      make: FIXTURE_MAKE,
+      model: FIXTURE_MODEL,
       year: 2021,
       hand: null,
       ownership_history: null,
@@ -35,12 +40,25 @@ export function input(over: Over = {}): ScoringInput {
       mivchan_acharon_dt: null,
       first_registration: null,
       test_expiry: null,
+      cancelled_at: null,
+      color: null,
+      registry_color: null,
+      color_changed: null,
+      current_owner_type: null,
       ...over.car,
     },
     market: over.market ?? null,
     model_stats: over.model_stats ?? null,
     pool_stats: over.pool_stats ?? null,
   };
+}
+
+// Day 18 (§8): scoreListing returns the cancelled invoice too. A test about a scored invoice reads it through
+// this, which fails the test loudly if the input turned out to be a cancelled car.
+export function scoreScored(i: ScoringInput, now: Date): ScoreResult {
+  const r = scoreListing(i, now);
+  if (isCancelled(r)) throw new Error("fixture: expected a scored invoice, got the cancelled one");
+  return r;
 }
 
 // Day 14: the three norm rows, each with its own defaults. A test names only what it is about.
@@ -64,6 +82,8 @@ export function modelNorm(over: Partial<ModelNorm> = {}): ModelNorm {
 
 // A round curve for the tests: ratio = 0.83 − 0.041 × age over ages 3 … 6. The numbers are Day 13's
 // shape, not the norms run's output — the tests are about the arithmetic, not about the pool.
+// Day 18 (§5): the fixture car's own model-year (MAKE MODEL 2021) is a point, so the default input is anchored;
+// a test about the gate names the points it wants.
 export function poolNorm(over: Partial<PoolNorm> = {}): PoolNorm {
   return {
     id: 5,
@@ -72,10 +92,15 @@ export function poolNorm(over: Partial<PoolNorm> = {}): PoolNorm {
     anchor_error_pct: 6.5,
     anchor_age_min_years: 3,
     anchor_age_max_years: 6,
+    anchor_points: [anchorPoint()],
     anchor_n: 6,
     anchor_listings: 254,
     ...over,
   };
+}
+
+export function anchorPoint(over: Partial<AnchorPoint> = {}): AnchorPoint {
+  return { make: FIXTURE_MAKE, model: FIXTURE_MODEL, year: 2021, n: 12, ratio: 0.666, median_age: 4, ...over };
 }
 
 // "leasing 2021-10, private 2021-10" -> rows

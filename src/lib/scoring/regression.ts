@@ -36,7 +36,7 @@
 // by the time the identity runs the inputs are already known to be unchanged).
 
 import { KM_SLOPE_MIN_SAMPLE, MIN_SAMPLE } from "./constants";
-import type { CellNorm, ModelNorm, PoolNorm, ScoreResult, ScoringInput } from "./types";
+import type { CellNorm, Invoice, ModelNorm, PoolNorm, ScoringInput } from "./types";
 import { dateToIso, round } from "./util";
 
 // ---------- labels ----------
@@ -67,7 +67,7 @@ export function normLabel(kinds: readonly NormKind[]): Label {
 // `median` is the cell row (market_stats), `slope` the model row (model_stats), `anchor` the pool row
 // (pool_stats) — the names the labels use, so a label and the row it blames read the same.
 export type NormRows = { median: CellNorm | null; slope: ModelNorm | null; anchor: PoolNorm | null };
-export type ScoreWith = (norms: NormRows, at: Date) => ScoreResult;
+export type ScoreWith = (norms: NormRows, at: Date) => Invoice;
 
 export const normId = (n: NormRows, kind: NormKind): number | null => n[kind]?.id ?? null;
 
@@ -90,7 +90,7 @@ export type StoredSide = {
 export type RegressionInput = {
   make: string;
   model: string;
-  result: ScoreResult; // the current invoice
+  result: Invoice; // the current invoice (Day 18: possibly the cancelled one)
   input: ScoringInput; // the listing's data as it is now
   norms: NormRows; // the norm rows the current invoice used
   stored: StoredSide;
@@ -138,12 +138,20 @@ export function storedRowValue(bd: StoredBreakdown, row: string): number | null 
 
 // The engine's inputs (ScoringInput) as the stored breakdown carries them, and the ones it does not
 // carry at all — the DATA check is partial by exactly this second list.
+// Day 18 (engine v4): the new inputs join the two lists. car.current_owner_type is carried by a v4 invoice as
+// facts.current_owner_registry (a v3 invoice does not carry it, so it is compared only against a v4 one). The colour
+// inputs are carried only as the facts they produce — a mismatch or a reported change, not the words — so they are
+// not comparable; make / model / cancelled_at are not carried at all.
 export const DATA_COVERS = [
   "listing.price", "listing.km_declared", "car.hand", "car.ownership_history", "car.test_expiry",
   "listing.hand_declared (unless the hand check was skipped)",
   "car.km_at_last_test, car.mivchan_acharon_dt (unless the km check was skipped or had no declaration)",
+  "car.current_owner_type (facts.current_owner_registry — v4 invoices only)",
 ];
-export const DATA_MISSING = ["listing.first_seen_at", "listing.seller_type (dealers.dealer_type)", "listing.owners_at_first_seen", "car.year", "car.first_registration"];
+export const DATA_MISSING = [
+  "listing.first_seen_at", "listing.seller_type (dealers.dealer_type)", "listing.owners_at_first_seen", "car.year", "car.first_registration",
+  "car.make", "car.model", "car.cancelled_at", "car.color", "car.registry_color", "car.color_changed",
+];
 
 export const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 function show(v: unknown): string {
@@ -181,6 +189,7 @@ export function storedInputs(bd: StoredBreakdown): Map<string, unknown> {
   if (history && "paper_hand" in history) m.set("car.hand", history.paper_hand);
   if (history && "owners" in history) m.set("car.ownership_history", ownersKey(history.owners));
   if (bd.facts && "test_expiry" in bd.facts) m.set("car.test_expiry", bd.facts.test_expiry);
+  if (bd.facts && "current_owner_registry" in bd.facts) m.set("car.current_owner_type", bd.facts.current_owner_registry);
   // hand_declared: checks.hand carries it unless the check was skipped (§18.8); 'no_declaration' means null.
   const hand = checkOf(bd, "hand");
   if (hand && hand.status !== "skipped") m.set("listing.hand_declared", hand.reason === "no_declaration" ? null : hand.declared ?? null);
@@ -204,6 +213,7 @@ export function currentInputs(input: ScoringInput): Map<string, unknown> {
     ["car.km_at_last_test", car.km_at_last_test],
     ["car.mivchan_acharon_dt", car.mivchan_acharon_dt === null ? null : dateToIso(car.mivchan_acharon_dt)],
     ["car.test_expiry", car.test_expiry === null ? null : dateToIso(car.test_expiry)],
+    ["car.current_owner_type", car.current_owner_type],
   ]);
 }
 
@@ -243,7 +253,7 @@ export function currentNorm(market: ScoringInput["market"]): Map<string, unknown
 export type VersionSub = "anchor" | "typical" | null;
 export type VersionCheck = { ok: boolean; sub: VersionSub; detail: string[]; constant: number | null; km_term: number | null; used_allowance: boolean };
 /** What versionExpectation() needs of a listing: the stored deal, the current invoice, the current data. */
-export type VersionSubject = { stored_score: number | null; result: ScoreResult; input: ScoringInput };
+export type VersionSubject = { stored_score: number | null; result: Invoice; input: ScoringInput };
 const EPS = 1e-9;
 // Q11: v2 computed round(round(history + km) - typical), v3 computes round(history - typical + km) in
 // ONE rounding. On a .05 boundary the two differ by exactly one ROUND_DECIMALS step, so a line whose only
@@ -351,7 +361,7 @@ export const versionLabel = (v: VersionCheck): Label => (v.sub === null ? "VERSI
 
 // ---------- Day 17 run 4 §2: the composed norm identity ----------
 export type Triple = { score: number | null; condition_score: number | null; confidence: string | null };
-const triple = (r: ScoreResult): Triple => ({ score: r.deal_score, condition_score: r.condition_score, confidence: r.confidence.level as string });
+const triple = (r: Invoice): Triple => ({ score: r.deal_score, condition_score: r.condition_score, confidence: r.confidence?.level ?? null });
 const showTriple = (t: Triple) => `${fmt(t.score)} / ${fmt(t.condition_score)} / ${t.confidence ?? "-"}`;
 
 // Day 17 run 5 §3 — which of the three norm rows the OLD score actually READ.
@@ -481,7 +491,7 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
  * First match wins; the order is the one Day 13 §1 fixed and Day 14 / Day 17 extended.
  */
 export function classify(x: RegressionInput): Classified | null {
-  const cur: Triple = { score: x.result.deal_score, condition_score: x.result.condition_score, confidence: x.result.confidence.level as string };
+  const cur: Triple = triple(x.result);
   const sto: Triple = { score: x.stored.score, condition_score: x.stored.condition_score, confidence: x.stored.confidence };
   const head = `score ${fmt(sto.score)} -> ${fmt(cur.score)}; condition_score ${fmt(sto.condition_score)} -> ${fmt(cur.condition_score)}; confidence ${sto.confidence ?? "-"} -> ${cur.confidence}`;
   const detail: string[] = [];

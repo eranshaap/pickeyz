@@ -37,6 +37,16 @@
 // on database failure, drop the staging folder and report the car as write_failed, and continue.
 // A failure BETWEEN the commit and the file moves is the only divergence possible; it is printed
 // loudly with the plate, and the run continues.
+//
+// Day 18 (§7): current_owner_type, registry_color and color_changed go through the gate as ordinary registry
+// fields and are written with the rest of an accepted car.
+//
+// Day 18 (§7) — `--from-cache`: for every car with a live listing (or --plates), the three columns re-derived from
+// the CURRENT top-level cached snapshot (data/raw/mot/<plate>/*.json), read through the same interpret() as the
+// import and the gate (src/lib/refresh/evaluate.ts deriveFromCache). No ministry call, nothing written under
+// data/raw/, registry_checked_at untouched. Dry by default: per column, would fill / unchanged / would change
+// (old → new). `--from-cache --write` writes the three columns and updated_at, one statement per car, nothing else.
+// A snapshot that does not parse, an unknown baalut word or a plate with no cached registry record stops the run.
 
 import "dotenv/config";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -45,13 +55,14 @@ import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { fetchRowsFresh, plateDir, type ApiResource } from "@/lib/mot/fetch";
 import { normalizePlate } from "@/lib/mot/vehicle";
-import { UNDECIDABLE, evaluate } from "@/lib/refresh/evaluate";
+import { CACHE_COLUMNS, UNDECIDABLE, deriveFromCache, evaluate, type CacheColumn } from "@/lib/refresh/evaluate";
 import {
   RESOURCE_KEYS, sameResource, sameSnapshot, type RawRecord, type ResourceKey, type Snapshot,
 } from "@/lib/refresh/raw";
 import {
   FLAG_WORDS, REASON_WORDS, type Accept, type Change, type OwnershipRow, type Reason, type StoredCar,
 } from "@/lib/refresh/types";
+import { parseOwnerType } from "@/lib/scoring-input";
 
 // ---------- the parameters, documented in the plan's Day 14 block (§9) ----------
 const CALL_GAP_MS = 150; // Day 5: the pause between two calls to the Ministry
@@ -61,15 +72,16 @@ const NO_ANSWER_STOP = 5; // §0.12: this many consecutive cars with no answer s
 const REPORT_FILE = "REPORT-refresh-cars.md"; // P5
 
 // ---------- 1. the command line: an unknown flag fails loudly (§4.1) ----------
-const KNOWN_FLAGS = ["--write"] as const;
+const KNOWN_FLAGS = ["--write", "--from-cache"] as const;
 const WRITE = process.argv.includes("--write");
+const FROM_CACHE = process.argv.includes("--from-cache");
 const PLATES = (() => {
   const a = process.argv.find((x) => x.startsWith("--plates="));
   return a ? a.slice("--plates=".length).split(",").map((p) => p.trim()).filter(Boolean) : [];
 })();
 for (const arg of process.argv.slice(2)) {
   if ((KNOWN_FLAGS as readonly string[]).includes(arg) || arg.startsWith("--plates=")) continue;
-  throw new Error(`unknown argument ${JSON.stringify(arg)} — this script takes --write and --plates=<comma list>`);
+  throw new Error(`unknown argument ${JSON.stringify(arg)} — this script takes --write, --from-cache and --plates=<comma list>`);
 }
 
 const out: string[] = [];
@@ -219,6 +231,9 @@ async function persist(stored: StoredCar, a: Accept, rawChanged: boolean, text: 
           "km_at_last_test"     = ${w.car.km_at_last_test !== undefined ? w.car.km_at_last_test : stored.km_at_last_test},
           "first_registration"  = ${dateOrNull(w.car.first_registration !== undefined ? w.car.first_registration : stored.first_registration)},
           "cancelled_at"        = ${dateOrNull(w.car.cancelled_at !== undefined ? w.car.cancelled_at : stored.cancelled_at)},
+          "current_owner_type"  = ${w.car.current_owner_type !== undefined ? w.car.current_owner_type : stored.current_owner_type},
+          "registry_color"      = ${w.car.registry_color !== undefined ? w.car.registry_color : stored.registry_color},
+          "color_changed"       = ${w.car.color_changed !== undefined ? w.car.color_changed : stored.color_changed},
           "registry_checked_at" = ${w.registry_checked_at},
           "updated_at"          = ${w.registry_checked_at}
         WHERE "id" = ${stored.id}`;
@@ -283,6 +298,9 @@ type CarRow = {
   mivchan_acharon_dt: Date | null;
   km_at_last_test: number | null;
   first_registration: Date | null;
+  current_owner_type: string | null;
+  registry_color: string | null;
+  color_changed: boolean | null;
   model: { vehicle_class: string | null; degem_code: string | null };
 };
 
@@ -290,6 +308,7 @@ type Line = { plate: string; text: string };
 type RejectLine = { plate: string; reason: Reason; detail: string };
 
 async function main() {
+  if (FROM_CACHE) return fromCache();
   log(`# refresh-cars ${WRITE ? "--write" : "dry run"}`);
   log();
   log("```");
@@ -401,6 +420,9 @@ async function main() {
       first_registration: isoOrNull(c.first_registration),
       registry_checked_at: extra.get(c.id)?.registry_checked_at ?? null,
       cancelled_at: extra.get(c.id)?.cancelled_at ?? null,
+      current_owner_type: parseOwnerType(c.current_owner_type, plate),
+      registry_color: c.registry_color,
+      color_changed: c.color_changed,
       model: c.model,
     };
 
@@ -500,6 +522,93 @@ async function main() {
   } else {
     console.log(`\nreport written to ${REPORT_FILE}`);
   }
+}
+
+// ---------- Day 18 (§7): --from-cache ----------
+async function fromCache(): Promise<void> {
+  log(`# refresh-cars --from-cache ${WRITE ? "--write" : "dry run"}`);
+  log();
+  log("```");
+  log(`${WRITE ? "" : "[DRY RUN] "}refresh-cars --from-cache — now = ${NOW.toISOString()} · no ministry call · registry_checked_at untouched · reads the top-level cached snapshot`);
+
+  const where: Prisma.carsWhereInput = PLATES.length
+    ? { license_plate: { in: PLATES.map((p) => normalizePlate(p)) } }
+    : { listings: { some: { delisted_at: null } } };
+  const cars = await db.cars.findMany({
+    where,
+    orderBy: { license_plate: "asc" },
+    select: { id: true, license_plate: true, current_owner_type: true, registry_color: true, color_changed: true },
+  });
+  if (PLATES.length) {
+    const missing = PLATES.map((p) => normalizePlate(p)).filter((p) => !cars.some((c) => c.license_plate === p));
+    if (missing.length) throw new Error(`--plates: no cars row for ${missing.join(", ")}`);
+  }
+  if (cars.length === 0) throw new Error(`no cars to derive`);
+  log(`${cars.length} car(s)${PLATES.length ? ` (--plates)` : ` with a live listing`}`);
+
+  const tally: Record<CacheColumn, Record<string, number>> = { current_owner_type: {}, registry_color: {}, color_changed: {} };
+  const lines: Record<CacheColumn, string[]> = { current_owner_type: [], registry_color: [], color_changed: [] };
+  const values: Record<CacheColumn, Map<string, number>> = { current_owner_type: new Map(), registry_color: new Map(), color_changed: new Map() };
+  const statuses = new Map<string, number>();
+  const toWrite: { id: number; plate: string; v: { current_owner_type: string; registry_color: string | null; color_changed: boolean | null } }[] = [];
+
+  for (const c of cars) {
+    const plate = c.license_plate;
+    if (!plate) throw new Error(`cars.id ${c.id} has no license_plate`);
+    if (topFiles(plate).length === 0) throw new Error(`${plate}: no top-level cached snapshot under ${plateDir(plate)}`);
+    const d = deriveFromCache(
+      { license_plate: plate, current_owner_type: parseOwnerType(c.current_owner_type, plate), registry_color: c.registry_color, color_changed: c.color_changed },
+      readTopSnapshot(plate),
+    );
+    statuses.set(d.status, (statuses.get(d.status) ?? 0) + 1);
+    let moves = false;
+    for (const col of CACHE_COLUMNS) {
+      const x = d.columns[col];
+      tally[col][x.outcome] = (tally[col][x.outcome] ?? 0) + 1;
+      const shown = JSON.stringify(x.to);
+      values[col].set(shown, (values[col].get(shown) ?? 0) + 1);
+      if (x.outcome === "change") lines[col].push(`${plate} · ${col}: ${JSON.stringify(x.from)} → ${JSON.stringify(x.to)}`);
+      if (x.outcome !== "unchanged") moves = true;
+    }
+    if (moves) toWrite.push({ id: c.id, plate, v: d.values });
+  }
+
+  const verb = (o: string) => (WRITE ? o : o === "unchanged" ? o : `would ${o}`);
+  log(`resolved to: ${[...statuses.entries()].map(([k, n]) => `${k} ${n}`).join(", ")}`);
+  for (const col of CACHE_COLUMNS) {
+    log();
+    log(`===== ${col} =====`);
+    for (const o of ["fill", "unchanged", "change"]) log(`  ${verb(o).padEnd(14)} ${tally[col][o] ?? 0}`);
+    log(`  derived values:`);
+    for (const [k, n] of [...values[col].entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) log(`    ${String(n).padStart(4)}  ${k}`);
+    if (lines[col].length) {
+      log(`  ${verb("change")} (old → new):`);
+      for (const l of lines[col]) log(`    ${l}`);
+    }
+  }
+  log();
+  log(`cars whose row ${WRITE ? "moves" : "would move"}: ${toWrite.length} of ${cars.length}`);
+
+  if (WRITE && toWrite.length) {
+    let written = 0;
+    await db.$transaction(async (tx) => {
+      for (const t of toWrite) {
+        const n = await tx.$executeRaw`
+          UPDATE "cars" SET
+            "current_owner_type" = ${t.v.current_owner_type},
+            "registry_color"     = ${t.v.registry_color},
+            "color_changed"      = ${t.v.color_changed},
+            "updated_at"         = ${NOW}
+          WHERE "id" = ${t.id}`;
+        if (n !== 1) throw new Error(`${t.plate}: the cars UPDATE touched ${n} rows, not 1 — rolled back`);
+        written++;
+      }
+    });
+    log(`written: ${written} car(s)`);
+  }
+  log("```");
+  writeFileSync(REPORT_FILE, `${out.join("\n")}\n`, "utf8");
+  console.log(WRITE ? `\nreport written to ${REPORT_FILE}` : `\n[DRY RUN] nothing written to the database; report written to ${REPORT_FILE}`);
 }
 
 function line(ch: Change): string {

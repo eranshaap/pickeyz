@@ -31,6 +31,10 @@ export function storedCar(over: Partial<StoredCar> = {}): StoredCar {
     first_registration: "2021-08-29",
     registry_checked_at: "2026-09-09",
     cancelled_at: null,
+    // Day 18 (§7): what the default snapshot gives — so the identical answer still writes nothing
+    current_owner_type: "private",
+    registry_color: "שחור מטלי",
+    color_changed: false,
     model: { vehicle_class: "P", degem_code: "481-247" },
     ...over,
   };

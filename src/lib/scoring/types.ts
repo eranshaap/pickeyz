@@ -35,6 +35,10 @@ export type ModelNorm = {
   km_slope_n: number; // listings in the regression; below KM_SLOPE_MIN_SAMPLE the engine uses the default instead
 };
 
+// Day 18 (§5): one model-year point of the fit, as pool_stats.anchor_points stores it. The engine applies the
+// anchor only to a listing whose (make, model, year) is one of these points — the gate is the model-year.
+export type AnchorPoint = { make: string; model: string; year: number; n: number; ratio: number; median_age: number };
+
 // The pool: one row per norms run — the anchor curve. pool_stats. Absent before the first v3 norms run.
 // All five values are null together (P4) when the curve could not be fitted.
 export type PoolNorm = {
@@ -42,8 +46,9 @@ export type PoolNorm = {
   anchor_ratio_intercept: number | null;
   anchor_ratio_per_year: number | null;
   anchor_error_pct: number | null;
-  anchor_age_min_years: number | null;
+  anchor_age_min_years: number | null; // Day 18 (§5): a description of the fit, no longer a gate
   anchor_age_max_years: number | null;
+  anchor_points: AnchorPoint[] | null; // Day 18 (§5): the fitted points; null on a row written before the column existed
   anchor_n: number; // model-year POINTS the line was fitted through; the engine records it, never reads it
   anchor_listings: number; // listings behind those points — coverage, not the fit's n
 };
@@ -61,6 +66,8 @@ export type ScoringInput = {
     new_car_price_id: number | null; // the new_car_prices row new_price came from
   };
   car: {
+    make: string; // Day 18 (§5): models.make — with model and year, the anchor point the listing belongs to
+    model: string; // models.model
     year: number;
     hand: number | null;
     ownership_history: OwnershipRow[] | null; // oldest first
@@ -68,6 +75,11 @@ export type ScoringInput = {
     mivchan_acharon_dt: Date | null;
     first_registration: Date | null;
     test_expiry: Date | null;
+    cancelled_at: Date | null; // Day 18 (§8): filled -> the cancelled invoice, no rows and no sums
+    color: string | null; // Day 18 (§9): the ad's word (cars.color)
+    registry_color: string | null; // the registry's word (cars.registry_color = tzeva_rechev)
+    color_changed: boolean | null; // history 1 shnui_zeva_ind (cars.color_changed); null = unknown
+    current_owner_type: OwnershipType | null; // Day 18 (§3.3): the registry's current holder, recorded as a fact; no rule reads it in v4
   };
   market: CellNorm | null;
   model_stats: ModelNorm | null;
@@ -114,7 +126,8 @@ export type SoldSignal = { strength: SoldStrength; evidence: string[] };
 export type ConfidenceLevel = "high" | "medium" | "low";
 // 'assumed_typical' — Day 14 (§3.5): the history row was taken from the cell's typical, not from the car's
 // own record. It replaces 'unverified_source' for that car; the two never appear together.
-export type ConfidenceItemKind = "missing_row" | "counted_mismatch" | "unverified_source" | "possibly_sold" | "assumed_typical";
+// 'color_mismatch' — Day 18 (§9): the ad's colour family and the registry's are both known and differ.
+export type ConfidenceItemKind = "missing_row" | "counted_mismatch" | "unverified_source" | "possibly_sold" | "assumed_typical" | "color_mismatch";
 export type ConfidenceItem = { kind: ConfidenceItemKind; ref: string };
 
 export type ScoreResult = {
@@ -136,6 +149,41 @@ export type ScoreResult = {
     km_per_month_since_test: number | null;
     test_expiry: string | null;
     months_left: number | null; // to test_expiry from now, floored at 0
+    current_owner_registry: OwnershipType | null; // Day 18 (§3.3): cars.current_owner_type as the engine received it; null = unknown
+    color_changed_reported?: true; // Day 18 (§9): present only when history 1 says the colour was changed
+    color_mismatch?: ColorMismatch; // Day 18 (§9): present only when both families are known and differ
   };
   confidence: { level: ConfidenceLevel; items: ConfidenceItem[] };
 };
+
+export type ColorMismatch = { ad: string; registry: string; ad_family: string; registry_family: string };
+
+// Day 18 (§8, §3.5): a car finally cancelled at the registry. A recorded outcome, not a skipped listing: no
+// comparison rows, no sums, no confidence. The sums are carried as null (not left out) so every reader of
+// deal_score / condition_* sees "no score" exactly as it does for a thin cell; checks, the sold signal and the
+// facts are not carried at all, and are declared absent so a reader must narrow before it reads them.
+export type CancelledResult = {
+  engine_version: typeof ENGINE_VERSION;
+  reason: "cancelled";
+  cancelled_at: string; // 'YYYY-MM-DD', cars.cancelled_at
+  rows: Row[]; // always empty
+  condition_score: null;
+  condition_by_reality: null;
+  typical_history: null;
+  condition_vs_typical: null;
+  price_advantage: null;
+  deal_score: null;
+  confidence: null;
+  unit?: undefined;
+  partial?: undefined;
+  checks?: undefined;
+  sold_signal?: undefined;
+  facts?: undefined;
+};
+
+// What the engine returns and what listings.score_breakdown stores: a scored invoice, or the cancelled one.
+export type Invoice = ScoreResult | CancelledResult;
+
+export function isCancelled(invoice: Invoice): invoice is CancelledResult {
+  return (invoice as { reason?: unknown }).reason === "cancelled";
+}

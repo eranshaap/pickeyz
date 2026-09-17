@@ -6,8 +6,7 @@ import assert from "node:assert/strict";
 import { KM_SLOPE_MIN_SAMPLE, KM_SLOPE_PCT_PER_1000_PER_YEAR } from "./constants";
 import { kmRow } from "./km";
 import { priceRow } from "./price";
-import { scoreListing } from "./index";
-import { cell, input, modelNorm, NOW, poolNorm, rows } from "./fixtures";
+import { anchorPoint, cell, input, modelNorm, NOW, poolNorm, rows, scoreScored as scoreListing } from "./fixtures";
 
 const market = cell({ median_history: null });
 const twoYearsAgo = new Date("2024-09-06T12:00:00.000Z");
@@ -169,16 +168,39 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
     assert.equal(old.value, 0);
   });
 
-  // §9.7: every unavailable anchor keeps the reason 'thin_cell' — one root cause, one confidence item —
-  // and names the missing piece in raw.anchor_unavailable.
-  it("outside the range on either side → thin_cell / age_outside_anchor_range", () => {
-    for (const age of [2.9, 6.1]) {
-      const r = priceRow(input({ listing, car: { first_registration: regAt(age) }, market: thin, pool_stats: poolNorm() }), NOW);
+  // Day 18 (§5): the gate is the model-year. §9.7 still holds: every unavailable anchor keeps the reason
+  // 'thin_cell' — one root cause, one confidence item — and names the missing piece in raw.anchor_unavailable.
+  it("a model-year that is not a point → thin_cell / not_an_anchor_point", () => {
+    const otherYear = poolNorm({ anchor_points: [anchorPoint({ year: 2020 })] });
+    const otherModel = poolNorm({ anchor_points: [anchorPoint({ model: "OTHER" })] });
+    const otherMake = poolNorm({ anchor_points: [anchorPoint({ make: "OTHER" })] });
+    for (const pool of [otherYear, otherModel, otherMake, poolNorm({ anchor_points: [] })]) {
+      const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: pool }), NOW);
       assert.equal(r.status, "unavailable");
       assert.equal(r.reason, "thin_cell");
-      assert.equal(r.raw.anchor_unavailable, "age_outside_anchor_range");
-      assert.equal(r.raw.age, age);
+      assert.equal(r.raw.anchor_unavailable, "not_an_anchor_point");
       assert.equal(r.raw.ratio, null);
+    }
+  });
+
+  it("the listing's model-year IS a point → the curve applies, and the point is recorded in raw", () => {
+    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm() }), NOW);
+    assert.equal(r.status, "scored");
+    assert.deepEqual(r.raw.anchor_point, { n: 12, ratio: 0.666, median_age: 4 });
+  });
+
+  it("a pool row written before anchor_points existed (null) anchors nothing", () => {
+    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm({ anchor_points: null }) }), NOW);
+    assert.equal(r.raw.anchor_unavailable, "not_an_anchor_point");
+  });
+
+  it("a car of a fitted year OUTSIDE the old age range now gets the anchor, at its current age", () => {
+    for (const age of [2.9, 6.1, 9]) {
+      const r = priceRow(input({ listing, car: { first_registration: regAt(age) }, market: thin, pool_stats: poolNorm() }), NOW);
+      assert.equal(r.status, "scored", `age ${age}`);
+      assert.equal(r.source, "anchor");
+      assert.equal(r.raw.age, age);
+      assert.equal(r.raw.ratio, 0.83 - 0.041 * age);
     }
   });
 

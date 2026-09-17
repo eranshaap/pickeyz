@@ -11,12 +11,14 @@
 //         history row's source is 'ad'. One item either way, never both.
 //       + one possibly_sold when the sold signal is medium (§18.8; a strong signal adds nothing — the
 //         listing is out of the results and its confidence is irrelevant)
+//       + one color_mismatch when the ad's colour family and the registry's are both known and differ
+//         (Day 18, §9; counted like the items above). An unknown side is no comparison and no item.
 // Skipped checks are neither items nor mismatches.
 // level: 0 items -> high; 1 -> medium; 2 or more -> low.
 
 import type { Check, ConfidenceItem, ConfidenceLevel, Row, SoldSignal } from "./types";
 
-export function confidenceItems(rows: Row[], checks: Check[], sold: SoldSignal): ConfidenceItem[] {
+export function confidenceItems(rows: Row[], checks: Check[], sold: SoldSignal, colorMismatch = false): ConfidenceItem[] {
   const items: ConfidenceItem[] = [];
   const reasons = new Set<string>();
   for (const r of rows) {
@@ -35,6 +37,7 @@ export function confidenceItems(rows: Row[], checks: Check[], sold: SoldSignal):
     else if (history.source === "ad") items.push({ kind: "unverified_source", ref: "history:ad" });
   }
   if (sold.strength === "medium") items.push({ kind: "possibly_sold", ref: "sold_signal:medium" });
+  if (colorMismatch) items.push({ kind: "color_mismatch", ref: "color:mismatch" });
   return items;
 }
 
@@ -44,7 +47,7 @@ export function confidenceLevel(itemCount: number): ConfidenceLevel {
   return "low";
 }
 
-export function confidence(rows: Row[], checks: Check[], sold: SoldSignal): { level: ConfidenceLevel; items: ConfidenceItem[] } {
-  const items = confidenceItems(rows, checks, sold);
+export function confidence(rows: Row[], checks: Check[], sold: SoldSignal, colorMismatch = false): { level: ConfidenceLevel; items: ConfidenceItem[] } {
+  const items = confidenceItems(rows, checks, sold, colorMismatch);
   return { level: confidenceLevel(items.length), items };
 }

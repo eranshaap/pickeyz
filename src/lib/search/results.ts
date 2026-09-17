@@ -22,7 +22,7 @@
 // `was_recommended` column as redundant with it.
 
 import type { Category, ListingResult, RuleTrace, SelectionResult } from "@/lib/selection";
-import type { ScoreResult } from "@/lib/scoring/types";
+import type { Invoice } from "@/lib/scoring/types";
 
 // ledger: Stage B rules block, TRACE_FULL_RANK — a guess
 //
@@ -40,7 +40,7 @@ export type ResultSnapshot = {
   price: number;
   km_declared: number | null;
   score: number | null;
-  breakdown: ScoreResult; // NOT copied into the row (§5) — `confidence` is read from it, nothing else
+  breakdown: Invoice; // NOT copied into the row (§5) — `confidence` is read from it, nothing else
   market_stats_id: number | null;
   model_stats_id: number | null;
   pool_stats_id: number | null;
@@ -130,7 +130,7 @@ export function toSearchResultRows(searchId: number, poolListings: ResultSnapsho
       listing_id: p.listing_id,
       rank: r.rank,
       total_score: p.score,
-      confidence: p.breakdown.confidence.level,
+      confidence: p.breakdown.confidence?.level ?? null, // Day 18: a cancelled invoice has no confidence
       market_stats_id: p.market_stats_id,
       model_stats_id: p.model_stats_id,
       pool_stats_id: p.pool_stats_id,

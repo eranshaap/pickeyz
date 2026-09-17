@@ -16,8 +16,17 @@
 // deviation from the cell's median_km, so it is not centred a second time — it enters condition_vs_typical
 // as it is, and only the history row is measured against the typical.
 //
+// Day 18 (§8): a car with cancelled_at is not scored — the invoice is the cancelled one (types.ts,
+// CancelledResult): the date, no rows, no sums, no confidence. It is a recorded outcome, not a skip.
+//
+// Day 18 (§3.3, §9) facts: current_owner_registry = car.current_owner_type as received (no rule reads it);
+// color_changed_reported when history 1 says the colour changed; color_mismatch when the ad's colour family
+// and the registry's are both known and differ — also one confidence item. An unknown side (null, or a word
+// not in src/lib/mot/colors.ts) is no comparison.
+//
 // Pure: no Prisma, no database, no I/O. The result object is what listings.score_breakdown stores.
 
+import { colorFamily } from "../mot/colors";
 import { handCheck, kmCheck, kmFacts } from "./checks";
 import { confidence } from "./confidence";
 import { ENGINE_VERSION } from "./constants";
@@ -25,10 +34,11 @@ import { historyRow } from "./history";
 import { kmRow } from "./km";
 import { priceRow } from "./price";
 import { soldSignal } from "./sold";
-import type { Row, ScoreResult, ScoringInput } from "./types";
+import type { CancelledResult, ColorMismatch, Invoice, Row, ScoreResult, ScoringInput } from "./types";
 import { dateToIso, monthsBetween, round } from "./util";
 
-export type { Check, ConfidenceItem, ConfidenceLevel, Deduction, OwnershipRow, OwnershipType, Row, ScoreResult, ScoringInput, SellerType, SoldSignal } from "./types";
+export type { AnchorPoint, CancelledResult, Check, ConfidenceItem, ConfidenceLevel, Deduction, Invoice, OwnershipRow, OwnershipType, Row, ScoreResult, ScoringInput, SellerType, SoldSignal } from "./types";
+export { isCancelled } from "./types";
 export { historyRow } from "./history";
 export { kmRow } from "./km";
 export { priceRow } from "./price";
@@ -37,7 +47,36 @@ function valueOf(row: Row): number | null {
   return row.status === "scored" && typeof row.value === "number" ? row.value : null;
 }
 
-export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
+// Day 18 (§9): the colour comparison — null when either side's family is unknown.
+export function colorMismatch(car: ScoringInput["car"]): ColorMismatch | null {
+  const adFamily = colorFamily(car.color);
+  const registryFamily = colorFamily(car.registry_color);
+  if (adFamily === null || registryFamily === null || adFamily === registryFamily) return null;
+  return { ad: car.color as string, registry: car.registry_color as string, ad_family: adFamily, registry_family: registryFamily };
+}
+
+export function scoreListing(input: ScoringInput, now: Date): Invoice {
+  // §8: a cancelled car — no rows, no sums, no confidence.
+  if (input.car.cancelled_at !== null) {
+    const cancelled: CancelledResult = {
+      engine_version: ENGINE_VERSION,
+      reason: "cancelled",
+      cancelled_at: dateToIso(input.car.cancelled_at),
+      rows: [],
+      condition_score: null,
+      condition_by_reality: null,
+      typical_history: null,
+      condition_vs_typical: null,
+      price_advantage: null,
+      deal_score: null,
+      confidence: null,
+    };
+    return cancelled;
+  }
+  return scoreRows(input, now);
+}
+
+function scoreRows(input: ScoringInput, now: Date): ScoreResult {
   const price = priceRow(input, now);
   const history = historyRow(input);
   const km = kmRow(input, now);
@@ -86,7 +125,11 @@ export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
     km_per_month_since_test: kf.km_per_month_since_test === null ? null : round(kf.km_per_month_since_test),
     test_expiry: input.car.test_expiry === null ? null : dateToIso(input.car.test_expiry),
     months_left: input.car.test_expiry === null ? null : Math.max(monthsBetween(now, input.car.test_expiry), 0),
+    current_owner_registry: input.car.current_owner_type,
   };
+  if (input.car.color_changed === true) facts.color_changed_reported = true;
+  const mismatch = colorMismatch(input.car);
+  if (mismatch !== null) facts.color_mismatch = mismatch;
 
   const result: ScoreResult = {
     engine_version: ENGINE_VERSION,
@@ -101,7 +144,7 @@ export function scoreListing(input: ScoringInput, now: Date): ScoreResult {
     checks,
     sold_signal: sold,
     facts,
-    confidence: confidence(rows, checks, sold),
+    confidence: confidence(rows, checks, sold, mismatch !== null),
   };
   if (partial.length) result.partial = partial;
   return result;

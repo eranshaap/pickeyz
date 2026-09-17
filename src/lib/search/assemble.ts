@@ -27,7 +27,7 @@
 
 import { db } from "@/lib/db";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
-import type { ScoreResult, Row } from "@/lib/scoring/types";
+import { isCancelled, type Invoice, type Row } from "@/lib/scoring/types";
 import type { CandidateListing } from "@/lib/selection";
 
 // Day 15 Run 2b (§4): the snapshot fields a `search_results` row needs and the two display facts the raw pick
@@ -168,11 +168,14 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
     if (l.score_breakdown === null) throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
     if (l.car.model.model === null) throw new Error(`listing ${l.id} (${plate}): models.model is null`);
     if (modelKey(l.car.model.model) !== resolved.key) continue;
-    const breakdown = l.score_breakdown as unknown as ScoreResult;
-    const priceRow = breakdown.rows.find((r: Row) => r.row === "price");
-    if (!priceRow) throw new Error(`listing ${l.id} (${plate}): invoice has no price row`);
-    if (priceRow.status === "scored" && l.market_stats === null) throw new Error(`listing ${l.id} (${plate}): price row scored but market_stats_id is null`);
-    const median_price = priceRow.status === "scored" ? (l.market_stats?.median_price ?? null) : null;
+    const breakdown = l.score_breakdown as unknown as Invoice;
+    // Day 18 (engine v4 §8): a cancelled car's invoice has no rows by definition — the candidate is built as always,
+    // with no median price, and the "no price row" stop is skipped for that case only.
+    const cancelled = isCancelled(breakdown);
+    const priceRow = cancelled ? null : breakdown.rows.find((r: Row) => r.row === "price");
+    if (!cancelled && !priceRow) throw new Error(`listing ${l.id} (${plate}): invoice has no price row`);
+    if (priceRow?.status === "scored" && l.market_stats === null) throw new Error(`listing ${l.id} (${plate}): price row scored but market_stats_id is null`);
+    const median_price = priceRow?.status === "scored" ? (l.market_stats?.median_price ?? null) : null;
     const seller_visible = l.dealer.commercial.some((c) => isOpen(c.agreement_end));
     items.push({
       candidate: {

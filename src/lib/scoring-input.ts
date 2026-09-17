@@ -4,7 +4,8 @@
 // Fails loudly: a car without a year, or an ownership_history that is not an array of { ym, type },
 // stops the caller with the plate in the message. It never fills a value in.
 
-import type { OwnershipRow, ScoringInput, SellerType } from "@/lib/scoring";
+import type { OwnershipRow, OwnershipType, ScoringInput, SellerType } from "@/lib/scoring";
+import { OWNERSHIP_CODES } from "@/lib/mot/translator";
 
 export type ListingRowLike = {
   id: number;
@@ -24,6 +25,14 @@ export type CarRowLike = {
   mivchan_acharon_dt: Date | null;
   first_registration: Date | null;
   test_expiry: Date | null;
+  // Day 18 (§3.4): the engine's new inputs. make / model come from the models row the car points at, exactly as
+  // the loaders already include it (car: { include: { model: true } }).
+  model: { make: string | null; model: string | null };
+  cancelled_at: Date | null;
+  color: string | null;
+  registry_color: string | null;
+  color_changed: boolean | null;
+  current_owner_type: string | null;
 };
 
 // Day 14 (§3.2, §6.1, ALLOWED by §9.2): the new-car price row the anchor is built on — the latest
@@ -35,6 +44,14 @@ export type NewCarPriceLike = { id: number; mehir: number };
 // §18.3: dealer_type 'private' → 'private', anything else → 'dealer'. 'fleet_company' arrives with Day 28.
 export function sellerTypeOf(dealer_type: string): SellerType {
   return dealer_type === "private" ? "private" : "dealer";
+}
+
+// Day 18 (§3.3): cars.current_owner_type holds a code of translator.ts or null. Anything else is not a value we
+// wrote, and stops the caller — it is never read as "unknown".
+export function parseOwnerType(value: string | null, plate: string): OwnershipType | null {
+  if (value === null) return null;
+  if (!(OWNERSHIP_CODES as readonly string[]).includes(value)) throw new Error(`car ${plate}: current_owner_type = ${JSON.stringify(value)} is not an ownership code`);
+  return value as OwnershipType;
 }
 
 export function parseOwnershipHistory(json: unknown, plate: string): OwnershipRow[] | null {
@@ -63,6 +80,8 @@ export function scoringSubject(
 ): Omit<ScoringInput, "market"> {
   const plate = car.license_plate ?? "?";
   if (car.year === null) throw new Error(`listing ${listing.id} (car ${plate}): cars.year is null`);
+  if (car.model.make === null) throw new Error(`listing ${listing.id} (car ${plate}): models.make is null`);
+  if (car.model.model === null) throw new Error(`listing ${listing.id} (car ${plate}): models.model is null`);
   if (new_car_price !== null && new_car_price.mehir <= 0) {
     throw new Error(`listing ${listing.id} (car ${plate}): new_car_prices ${new_car_price.id} has mehir ${new_car_price.mehir}`);
   }
@@ -79,6 +98,8 @@ export function scoringSubject(
       new_car_price_id: new_car_price === null ? null : new_car_price.id,
     },
     car: {
+      make: car.model.make,
+      model: car.model.model,
       year: car.year,
       hand: car.hand,
       ownership_history: parseOwnershipHistory(car.ownership_history, plate),
@@ -86,6 +107,11 @@ export function scoringSubject(
       mivchan_acharon_dt: car.mivchan_acharon_dt,
       first_registration: car.first_registration,
       test_expiry: car.test_expiry,
+      cancelled_at: car.cancelled_at,
+      color: car.color,
+      registry_color: car.registry_color,
+      color_changed: car.color_changed,
+      current_owner_type: parseOwnerType(car.current_owner_type, plate),
     },
     // The caller replaces these with the rows of the current norms run (§6.1). Left null here so a caller
     // that scores nothing against a model or a pool — the norms run's own history/km rows — needs no rows.

@@ -70,13 +70,23 @@
 // untouched, ENGINE_VERSION stays 3, and the invoice keeps carrying the condition sum and the confidence
 // level exactly as before. The classifier's STORED side now reads those two out of listings.score_breakdown
 // instead of out of the columns; its printed lines are unchanged.
+//
+// Day 18 (engine v4): the loader passes the new car fields through scoringSubject() (make / model for the anchor's
+// model-year gate, cancelled_at, the two colour words, color_changed, current_owner_type) and pool_stats.anchor_points
+// into the pool norm. A car with cancelled_at gets the engine's cancelled invoice: it is WRITTEN like any other — a
+// listing_scores row with deal_score null and that breakdown, listings.score null, engine_version 4 — with no norm
+// pointers, because a cancelled invoice read no norm row. The report adds the colour counts (facts
+// color_changed_reported / color_mismatch, and color_unknown_side with every word the dictionary does not know) and
+// the registry's current-owner distribution over the cars with a live listing.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
 import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
-import { scoreListing, type ScoreResult, type ScoringInput } from "@/lib/scoring";
+import { isCancelled, scoreListing, type Invoice, type ScoreResult, type ScoringInput } from "@/lib/scoring";
+import { colorFamily } from "@/lib/mot/colors";
+import { parseAnchorPoints } from "@/lib/norms/anchor-points";
 import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
 import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
 import {
@@ -121,7 +131,7 @@ type Scored = {
   model_stats_id: number | null; // Day 14 §6.2: the score points at the row it used from each level
   pool_stats_id: number | null;
   input: ScoringInput; // kept for the §1 CLOCK check: the same inputs, a different `now`
-  result: ScoreResult;
+  result: Invoice; // Day 18: possibly the cancelled invoice
   // Day 13 §1: what listings holds now — the classifier compares against all of it. Day 14 run B: score comes
   // from the column (it stays); condition_score and the confidence level come out of the stored invoice, which is
   // where they have always also been — §3 proved the two agreed on all 918 rows before the columns were dropped.
@@ -193,6 +203,13 @@ async function main() {
   }
   // P3: pool_stats carries no group_version — the curve is measured per model-year, not per cell.
   const poolNormRow = await db.pool_stats.findFirst({ orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
+  // Day 18 (§5): the pool row as the engine reads it, anchor_points included (null on a row from before the column).
+  type PoolDbRow = NonNullable<typeof poolNormRow>;
+  const asPoolNorm = (r: PoolDbRow): NonNullable<ScoringInput["pool_stats"]> => ({
+    id: r.id, anchor_ratio_intercept: r.anchor_ratio_intercept, anchor_ratio_per_year: r.anchor_ratio_per_year,
+    anchor_error_pct: r.anchor_error_pct, anchor_age_min_years: r.anchor_age_min_years, anchor_age_max_years: r.anchor_age_max_years,
+    anchor_points: parseAnchorPoints(r.anchor_points, `pool_stats ${r.id}`), anchor_n: r.anchor_n, anchor_listings: r.anchor_listings,
+  });
 
   // ---------- Day 17 §2: the stored side the classifier compares against ----------
   // Without --against it is the listings row itself — the latest score, as it has always been. With
@@ -305,25 +322,20 @@ async function main() {
       let pool_stats: ScoringInput["pool_stats"] = null;
       if (poolNormRow !== null) {
         if (poolNormRow.engine_version !== ENGINE_VERSION) staleNorm++;
-        pool_stats = {
-          id: poolNormRow.id,
-          anchor_ratio_intercept: poolNormRow.anchor_ratio_intercept,
-          anchor_ratio_per_year: poolNormRow.anchor_ratio_per_year,
-          anchor_error_pct: poolNormRow.anchor_error_pct,
-          anchor_age_min_years: poolNormRow.anchor_age_min_years,
-          anchor_age_max_years: poolNormRow.anchor_age_max_years,
-          anchor_n: poolNormRow.anchor_n,
-          anchor_listings: poolNormRow.anchor_listings,
-        };
+        pool_stats = asPoolNorm(poolNormRow);
       }
 
       const input: ScoringInput = { ...subject, market, model_stats, pool_stats };
       const result = scoreListing(input, now);
+      // Day 18 (§8): a cancelled invoice read no norm row, so it points at none.
+      const pointers = isCancelled(result)
+        ? { market_stats_id: null, model_stats_id: null, pool_stats_id: null }
+        : { market_stats_id: market?.id ?? null, model_stats_id: model_stats?.id ?? null, pool_stats_id: pool_stats?.id ?? null };
       scored.push({
         listing_id: l.id, plate, year: subject.car.year, price: l.price,
         cell_key: `${m.comparison_group ?? "(no group)"} ${subject.car.year}`,
         group: m.comparison_group, make: m.make, model: m.model,
-        market_stats_id: market?.id ?? null, model_stats_id: model_stats?.id ?? null, pool_stats_id: pool_stats?.id ?? null,
+        ...pointers,
         input, result,
         stored: storedFor(l),
       });
@@ -337,9 +349,14 @@ async function main() {
   log(`no cell row: ${noNorm}; no model row: ${noModelNorm}; pool row: ${poolNormRow === null ? "none" : `id ${poolNormRow.id}`}; model without comparison_group: ${noGroup}; comparison_group != groupKey(fields): ${keyMismatch}`);
   log(`norm row from an older engine (all three tables): ${staleNorm} (must be 0); listings with no new-car price: ${noNewPrice}`);
 
+  // Day 18 (§8): the scored invoices, for the sections below that read rows, checks or the sold signal.
+  const scoredOnly = scored.filter((s): s is Scored & { result: ScoreResult } => !isCancelled(s.result));
+  const cancelledOnes = scored.filter((s) => isCancelled(s.result));
+  log(`cancelled cars (the cancelled invoice, no rows, no sums): ${cancelledOnes.length}${cancelledOnes.length ? ` — ${cancelledOnes.map((s) => `listing ${s.listing_id} (${s.plate})`).join(", ")}` : ""}`);
+
   log(`\n===== TOP 10 BY deal_score (nulls last) =====`);
   log("plate | year | price | price_adv | history | km | condition | typical | deal | confidence | sold");
-  const ranked = [...scored].sort((a, b) => {
+  const ranked = [...scoredOnly].sort((a, b) => {
     const x = a.result.deal_score, y = b.result.deal_score;
     if (x === null && y === null) return a.listing_id - b.listing_id;
     if (x === null) return 1;
@@ -354,22 +371,41 @@ async function main() {
 
   log(`\n===== COUNTS =====`);
   log("by confidence level");
-  for (const [k, n] of count(scored, (s) => s.result.confidence.level)) log(`  ${n.toString().padStart(4)}  ${k}`);
+  for (const [k, n] of count(scored, (s) => s.result.confidence?.level ?? "none (cancelled)")) log(`  ${n.toString().padStart(4)}  ${k}`);
   log("by check kind (check: status[:kind|reason])");
   for (const [k, n] of tallyCheckKinds(scored.map((s) => s.result))) log(`  ${n.toString().padStart(4)}  ${k}`);
   log("by sold_signal strength");
-  for (const [k, n] of count(scored, (s) => s.result.sold_signal.strength ?? "null")) log(`  ${n.toString().padStart(4)}  ${k}`);
+  for (const [k, n] of count(scoredOnly, (s) => s.result.sold_signal.strength ?? "null")) log(`  ${n.toString().padStart(4)}  ${k}`);
   log("by unavailable reason per row");
   const unavailable = scored.flatMap((s) => s.result.rows.filter((r) => r.status === "unavailable").map((r) => `${r.row}: ${r.reason}`));
   for (const [k, n] of count(unavailable, (x) => x)) log(`  ${n.toString().padStart(4)}  ${k}`);
+  // Day 18 (§9): the colour — the facts the engine recorded, and the listings where one side is unknown.
+  log("colour (§9)");
+  log(`  ${scoredOnly.filter((s) => s.result.facts.color_changed_reported === true).length.toString().padStart(4)}  color_changed_reported (history 1 says the colour was changed)`);
+  log(`  ${scoredOnly.filter((s) => s.result.facts.color_mismatch !== undefined).length.toString().padStart(4)}  color_mismatch (both families known and different; one confidence item each)`);
+  const unknownSide = scoredOnly.filter((s) => colorFamily(s.input.car.color) === null || colorFamily(s.input.car.registry_color) === null);
+  log(`  ${unknownSide.length.toString().padStart(4)}  color_unknown_side (the ad's or the registry's word is null or not in the dictionary — no comparison)`);
+  const unknownWords = new Map<string, number>();
+  for (const s of unknownSide) {
+    for (const [side, word] of [["ad", s.input.car.color], ["registry", s.input.car.registry_color]] as const) {
+      if (colorFamily(word) === null) unknownWords.set(`${side}: ${JSON.stringify(word)}`, (unknownWords.get(`${side}: ${JSON.stringify(word)}`) ?? 0) + 1);
+    }
+  }
+  for (const [k, n] of [...unknownWords.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) log(`        ${n.toString().padStart(4)}  unknown ${k}`);
+  for (const [k, n] of count(scoredOnly.filter((s) => s.result.facts.color_mismatch !== undefined), (s) => `${s.result.facts.color_mismatch?.ad_family} (ad) vs ${s.result.facts.color_mismatch?.registry_family} (registry)`)) log(`        ${n.toString().padStart(4)}  mismatch ${k}`);
+  // Day 18 (§3.3): the registry's current holder over the cars with a live listing (one car once).
+  log("current owner (cars.current_owner_type) over the cars with a live listing");
+  const carsOnce = new Map<string, ScoringInput["car"]>();
+  for (const s of scored) carsOnce.set(s.plate, s.input.car);
+  for (const [k, n] of count([...carsOnce.values()], (c) => c.current_owner_type ?? "null")) log(`  ${n.toString().padStart(4)}  ${k}`);
   log("deal_score present");
   log(`  ${scored.filter((s) => s.result.deal_score !== null).length.toString().padStart(4)}  scored`);
   log(`  ${scored.filter((s) => s.result.deal_score === null).length.toString().padStart(4)}  null`);
 
   // The two §6.4 populations, defined once: the classifier's sub-rule counts are checked against them
   // below and the §6.4 sections print them, so the two can never drift apart.
-  const noHistory = scored.filter((s) => s.input.car.ownership_history === null);
-  const thin = scored.filter((s) => s.input.market !== null && s.input.market.sample_size < MIN_SAMPLE);
+  const noHistory = scoredOnly.filter((s) => s.input.car.ownership_history === null);
+  const thin = scoredOnly.filter((s) => s.input.market !== null && s.input.market.sample_size < MIN_SAMPLE);
 
   // ---------- Day 17 run 4 §2: the norm rows the stored scores used ----------
   // The script's whole part in the composed identity is this: load the rows. Per listing and per level,
@@ -390,11 +426,7 @@ async function main() {
     sample_size: r.sample_size, window_days: r.window_days, group_version: r.group_version, engine_version: r.engine_version,
   });
   const asModelStats = (r: ModelRow): NonNullable<ScoringInput["model_stats"]> => ({ id: r.id, km_slope: r.km_slope, km_slope_n: r.km_slope_n });
-  const asPool = (r: PoolRow): NonNullable<ScoringInput["pool_stats"]> => ({
-    id: r.id, anchor_ratio_intercept: r.anchor_ratio_intercept, anchor_ratio_per_year: r.anchor_ratio_per_year,
-    anchor_error_pct: r.anchor_error_pct, anchor_age_min_years: r.anchor_age_min_years,
-    anchor_age_max_years: r.anchor_age_max_years, anchor_n: r.anchor_n, anchor_listings: r.anchor_listings,
-  });
+  const asPool = (r: PoolRow): NonNullable<ScoringInput["pool_stats"]> => asPoolNorm(r);
 
   // "the row current at the stored scored_at" — one query per (key, moment), cached.
   const cellAt = new Map<string, CellRow | null>();
@@ -561,7 +593,7 @@ async function main() {
   }
 
   log(`\n===== §6.4 SLOPE SOURCE AND THE POOL ROW =====`);
-  const slopeSource = scored.map((s) => {
+  const slopeSource = scoredOnly.map((s) => {
     const km = s.result.rows.find((r) => r.row === "km");
     return `${String(km?.raw?.slope_source ?? "-")} (slope ${String(km?.raw?.slope_used ?? "-")}, n ${String(km?.raw?.km_slope_n ?? "-")})`;
   });
@@ -571,11 +603,15 @@ async function main() {
       ? "pool row used: none — no pool_stats row exists, so every thin-cell price row reports no_anchor_curve"
       : `pool row used: id ${poolNormRow.id}, intercept ${poolNormRow.anchor_ratio_intercept}, per_year ${poolNormRow.anchor_ratio_per_year}, error_pct ${poolNormRow.anchor_error_pct}, age ${poolNormRow.anchor_age_min_years} … ${poolNormRow.anchor_age_max_years}, n ${poolNormRow.anchor_n} model-year points over ${poolNormRow.anchor_listings} listings, engine_version ${poolNormRow.engine_version}`,
   );
+  if (poolNormRow !== null) {
+    const pts = parseAnchorPoints(poolNormRow.anchor_points, `pool_stats ${poolNormRow.id}`);
+    log(`anchor_points (Day 18 §5, the model-year gate): ${pts === null ? "null — a row written before the column existed, so no listing is anchored" : pts.length === 0 ? "[] — no point" : pts.map((p) => `${p.make} ${p.model} ${p.year} (n ${p.n})`).join("; ")}`);
+  }
 
   log(`\n===== REALITY DELTA (condition_by_reality !== condition_score) =====`);
-  const historyOf = (s: Scored) => s.result.rows.find((r) => r.row === "history")!;
-  const zeroKm = scored.filter((s) => historyOf(s).raw.zero_km_deal === true);
-  const delta = scored.filter((s) => s.result.condition_by_reality !== s.result.condition_score);
+  const historyOf = (s: Scored & { result: ScoreResult }) => s.result.rows.find((r) => r.row === "history")!;
+  const zeroKm = scoredOnly.filter((s) => historyOf(s).raw.zero_km_deal === true);
+  const delta = scoredOnly.filter((s) => s.result.condition_by_reality !== s.result.condition_score);
   log(`zero-km cars in the pool: ${zeroKm.length}; listings with a reality delta: ${delta.length}`);
   log("listing | plate | history paper | history reality | delta (reality - paper)");
   for (const s of delta) {

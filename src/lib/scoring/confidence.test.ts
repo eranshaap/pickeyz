@@ -5,9 +5,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { confidence, confidenceLevel } from "./confidence";
 import { ENGINE_VERSION } from "./constants";
-import { scoreListing } from "./index";
 import type { Check, Row, SoldSignal } from "./types";
-import { cell, input, modelNorm, NOW, poolNorm, rows } from "./fixtures";
+import { cell, input, modelNorm, NOW, poolNorm, rows, scoreScored as scoreListing } from "./fixtures";
 
 const scored = (row: Row["row"]): Row => ({ row, status: "scored", source: row === "price" ? "market" : "mot", value: 0, raw: {} });
 const unavailable = (row: Row["row"], reason: string): Row => ({ row, status: "unavailable", reason, raw: {} });
@@ -117,7 +116,7 @@ describe("scoreListing (§5, §9)", () => {
     assert.equal(r.partial, undefined);
     assert.deepEqual(r.checks.map((c) => [c.check, c.status, c.kind]), [["hand", "mismatch", "zero_km_undercount"], ["km", "match", undefined]]);
     assert.deepEqual(r.sold_signal, { strength: null, evidence: [] });
-    assert.deepEqual(r.facts, { dealer_transfers: 0, months_since_test: 8, km_per_month_since_test: 125, test_expiry: "2027-01-27", months_left: 4 });
+    assert.deepEqual(r.facts, { dealer_transfers: 0, months_since_test: 8, km_per_month_since_test: 125, test_expiry: "2027-01-27", months_left: 4, current_owner_registry: null });
     assert.deepEqual(r.confidence, { level: "medium", items: [{ kind: "counted_mismatch", ref: "hand:zero_km_undercount" }] });
   });
 

@@ -1,13 +1,19 @@
 // Stage A scoring engine — every table and threshold (BRIEF Day 11, §3).
 // Every constant carries its source in a comment and must not be changed in code without changing the comment.
 
-export const ENGINE_VERSION = 3;
+export const ENGINE_VERSION = 4;
 // 1 — Day 11 — first engine
 // 2 — Day 12 — no number changed; the invoice gained value_by_reality (history row) and condition_by_reality (sum)
 // 3 — Day 14 — three norm levels, each keyed at its own level (cell / model / pool): the typical is the cell's median
 //              history row (median_condition is gone), the km slope is the model's own and signed, and a thin cell's
 //              price row is anchored on the listing's new-car price through the pool's depreciation curve.
+// 4 — Day 18 — one market for the three norms (a car once, delisted-in-window included, cancelled cars out); the
+//              anchor applies by model-year point, not by age range; a cancelled car's invoice has no rows and no
+//              sums; the registry's current holder is recorded as a fact; the colour facts (changed / mismatch)
+//              and color_mismatch as a confidence item.
 export const MIN_SAMPLE = 5;              // source: Day 9 decision, guess; revisit with volume
+export const ANCHOR_POINT_MIN_SAMPLE = 10; // source: measurement — Day 18, M10: p90 line shift with a point of 5 → 3.6 pp, 10 → 2.4, 15 → 2.2; curve error 3.95
+export const ANCHOR_MIN_POINTS = 3;        // source: mechanism — a fitted line with a leave-one-out error needs at least 3 points
 export const ROUND_DECIMALS = 1;
 
 // --- history --------------------------------------------------------------
@@ -60,5 +66,5 @@ export const KM_CHECK_KINDS = {                      // source: Day 11 data pass
 export const SOLD_SIGNAL_RECENT_MONTHS = 3;          // source: guess; measure later
 
 // --- confidence ----------------------------------------------------------------
-// items = missing-row reasons (each reason once, §18.17) + counted mismatches + unverified-source rows + possibly_sold (§18.8)
+// items = missing-row reasons (each reason once, §18.17) + counted mismatches + unverified-source rows + possibly_sold (§18.8) + color_mismatch (Day 18 §9)
 // 0 → high, 1 → medium, 2+ → low

@@ -4,7 +4,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { evaluate, ownershipCrossCheck } from "./evaluate";
+import { deriveFromCache, evaluate, ownershipCrossCheck } from "./evaluate";
 import {
   EMPTY_HISTORY, NOW, PLATE, cancelledRecord, history1, history2, history2Row,
   registryRecord, snapshot, storedCar,
@@ -41,7 +41,8 @@ describe("evaluate — the identical answer (§3.3 a)", () => {
   });
 
   it("an inactive answer with both history files empty is evaluated as usual, and says which registry answered", () => {
-    const stored = { hand: null, ownership_history: null, km_at_last_test: null, first_registration: "2021-08-01" };
+    // Day 18: no history-1 record -> color_changed is null on both sides
+    const stored = { hand: null, ownership_history: null, km_at_last_test: null, first_registration: "2021-08-01", color_changed: null };
     const inactive: Snapshot = {
       registry: [],
       cancelled: [],
@@ -254,6 +255,7 @@ describe("evaluate — the ownership history, re-ordered inside one month (§10.
       ownership_history: stored(storedRows),
       hand: storedHand,
       first_registration: `${firstYm}-15`,
+      current_owner_type: freshRows[freshRows.length - 1][1], // Day 18: the registry value we already hold — nothing else moves
     });
     return evaluate(car, previous, fresh, NOW);
   }
@@ -516,7 +518,8 @@ describe("evaluate — the cross-checks (§3.3 m, n)", () => {
     const fresh = snapshot({ registry: [registryRecord({ baalut: "סוחר" })] });
     const a = accepted(run(fresh));
     assert.deepEqual(a.flags, ["baalut_mismatch"]);
-    assert.deepEqual(a.writes.car, {});
+    // Day 18 (§7): the registry's holder is a database field now, so the new value is written; the flag is unchanged
+    assert.deepEqual(a.writes.car, { current_owner_type: "dealer" });
     assert.ok(a.notes.some((n) => /the two files lag each other/.test(n)));
   });
 
@@ -652,14 +655,15 @@ describe("evaluate — fields outside the database (§3.3 p)", () => {
     );
   });
 
-  it("baalut is information only: a change to it is listed, never written and never a reject", () => {
+  it("Day 18 (§7): baalut reaches the database — a change to it is written as current_owner_type, not listed outside", () => {
     const fresh = snapshot({
       registry: [registryRecord({ baalut: "חברה" })],
       history_hand: [history2Row(202108, "פרטי", 1), history2Row(202305, "חברה", 2)],
     });
     const a = accepted(run(fresh, { stored: { ownership_history: [{ ym: "2021-08", type: "private" }, { ym: "2023-05", type: "company" }] } }));
-    assert.deepEqual(a.writes.car, {});
-    assert.deepEqual(a.outside.map((c) => c.field), ["registry.baalut"]);
+    assert.deepEqual(a.writes.car, { current_owner_type: "company" });
+    assert.deepEqual(a.changes.map((c) => `${c.field}: ${c.from} → ${c.to}`), ["current_owner_type: private → company"]);
+    assert.deepEqual(a.outside, []);
   });
 
   it("_id is an API artifact: a change to it is invisible", () => {
@@ -671,11 +675,13 @@ describe("evaluate — fields outside the database (§3.3 p)", () => {
     assert.deepEqual(a.outside, []);
   });
 
-  it("the four change indicators are information only", () => {
-    const fresh = snapshot({ history_km: [history1({ shnui_zeva_ind: 1 })] });
-    const a = accepted(run(fresh));
-    assert.deepEqual(a.writes.car, {});
-    assert.deepEqual(a.outside.map((c) => c.field), ["history_km.shnui_zeva_ind"]);
+  it("three of the four change indicators are information only; shnui_zeva_ind reaches the database (Day 18)", () => {
+    const other = accepted(run(snapshot({ history_km: [history1({ shinui_mivne_ind: 1, gapam_ind: 1, shinui_zmig_ind: 1 })] })));
+    assert.deepEqual(other.writes.car, {});
+    assert.deepEqual(other.outside.map((c) => c.field), ["history_km.gapam_ind", "history_km.shinui_mivne_ind", "history_km.shinui_zmig_ind"]);
+    const colour = accepted(run(snapshot({ history_km: [history1({ shnui_zeva_ind: 1 })] })));
+    assert.deepEqual(colour.writes.car, { color_changed: true });
+    assert.deepEqual(colour.outside, []);
   });
 });
 
@@ -732,6 +738,93 @@ describe("evaluate — structural failures stop the run (§3.3 r, §0.3)", () =>
       () => run({ registry: [registryRecord()], history_km: [history1()] }),
       /a history file was not asked for/,
     );
+  });
+});
+
+describe("evaluate — the three registry fields (Day 18, §7)", () => {
+  it("the identical answer with the three stored → nothing written", () => {
+    assert.deepEqual(accepted(run(snapshot())).writes.car, {});
+  });
+
+  it("nothing stored yet → all three filled, one change line each", () => {
+    const a = accepted(run(snapshot(), { stored: { current_owner_type: null, registry_color: null, color_changed: null } }));
+    assert.deepEqual(a.writes.car, { current_owner_type: "private", registry_color: "שחור מטלי", color_changed: false });
+    assert.deepEqual(
+      a.changes.map((c) => `${c.field}: ${c.from} → ${c.to}`),
+      ["current_owner_type: null → private", "registry_color: null → שחור מטלי", "color_changed: null → false"],
+    );
+    assert.deepEqual(a.flags, []);
+  });
+
+  it("a changed registry colour is written to registry_color — and cars.color (the ad's word) is still never overwritten", () => {
+    const a = accepted(run(snapshot({ registry: [registryRecord({ tzeva_rechev: "כסף" })] })));
+    assert.deepEqual(a.writes.car, { registry_color: "כסף" });
+    assert.deepEqual(a.colour, { stored: "שחור", ministry: "כסף", written: false });
+  });
+
+  it("the ministry gives nothing where we hold a value → reject null_over_value, nothing written", () => {
+    const noColour = rejected(run(snapshot({ registry: [registryRecord({ tzeva_rechev: "" })] })));
+    assert.equal(noColour.reason, "null_over_value");
+    assert.match(noColour.detail, /registry_color שחור מטלי -> null/);
+    const noHistory1 = rejected(run(snapshot({ history_km: [] }), { stored: { first_registration: "2021-08-01", km_at_last_test: null } }));
+    assert.equal(noHistory1.reason, "null_over_value");
+    assert.match(noHistory1.detail, /color_changed false -> null/);
+  });
+
+  it("a shnui_zeva_ind that is not 0 or 1 → throws", () => {
+    assert.throws(() => run(snapshot({ history_km: [history1({ shnui_zeva_ind: 2 })] })), /shnui_zeva_ind is 2/);
+  });
+
+  it("a history-1 record without shnui_zeva_ind → throws, with the field named", () => {
+    const h1 = history1();
+    delete h1.shnui_zeva_ind;
+    assert.throws(() => run(snapshot({ history_km: [h1] })), /missing: \[shnui_zeva_ind\]/);
+  });
+
+  it("an unknown baalut word on the registry is still a structural failure", () => {
+    assert.throws(() => run(snapshot({ registry: [registryRecord({ baalut: "שותפות" })] })), /ownership: unknown ministry value/);
+  });
+});
+
+describe("deriveFromCache — the --from-cache reading (Day 18, §7)", () => {
+  const car = (over: Partial<StoredCar> = {}) => storedCar(over);
+
+  it("everything already stored → unchanged on all three", () => {
+    const d = deriveFromCache(car(), snapshot());
+    assert.equal(d.status, "active");
+    assert.deepEqual(Object.values(d.columns).map((c) => c.outcome), ["unchanged", "unchanged", "unchanged"]);
+  });
+
+  it("nothing stored → fill on all three, with the values", () => {
+    const d = deriveFromCache(car({ current_owner_type: null, registry_color: null, color_changed: null }), snapshot());
+    assert.deepEqual(d.columns, {
+      current_owner_type: { outcome: "fill", from: null, to: "private" },
+      registry_color: { outcome: "fill", from: null, to: "שחור מטלי" },
+      color_changed: { outcome: "fill", from: null, to: false },
+    });
+  });
+
+  it("a stored value the cache contradicts → change, old → new", () => {
+    const d = deriveFromCache(car({ current_owner_type: "dealer", registry_color: "כסף" }), snapshot({ history_km: [history1({ shnui_zeva_ind: 1 })] }));
+    assert.deepEqual(d.columns.current_owner_type, { outcome: "change", from: "dealer", to: "private" });
+    assert.deepEqual(d.columns.registry_color, { outcome: "change", from: "כסף", to: "שחור מטלי" });
+    assert.deepEqual(d.columns.color_changed, { outcome: "change", from: false, to: true });
+  });
+
+  it("an inactive car reads from the inactive record; no history-1 record → color_changed null", () => {
+    const inactive: Snapshot = { registry: [], cancelled: [], inactive: [registryRecord({ baalut: "חברה", tzeva_rechev: "כחול" })], ...EMPTY_HISTORY };
+    const d = deriveFromCache(car({ current_owner_type: null, registry_color: null, color_changed: null }), inactive);
+    assert.equal(d.status, "inactive");
+    assert.deepEqual(d.values, { current_owner_type: "company", registry_color: "כחול", color_changed: null });
+    assert.equal(d.columns.color_changed.outcome, "unchanged");
+  });
+
+  it("a cancellation-only snapshot, an unknown word, or a missing field → throws", () => {
+    assert.throws(() => deriveFromCache(car(), { registry: [], cancelled: [cancelledRecord()] }), /cancellation record/);
+    assert.throws(() => deriveFromCache(car(), snapshot({ registry: [registryRecord({ baalut: "קיבוץ" })] })), /ownership: unknown ministry value/);
+    const rec = registryRecord();
+    delete rec.baalut;
+    assert.throws(() => deriveFromCache(car(), snapshot({ registry: [rec] })), /missing: \[baalut\]/);
   });
 });
 

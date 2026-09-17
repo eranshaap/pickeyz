@@ -7,7 +7,8 @@
 // Pipeline (§4, order fixed):
 //   4.1 gate      sold_strong -> excluded, no rules run; sold medium -> verify_availability; eligibility per §2
 //                 (part 4 §1: peace_of_mind is condition alone; the deal floor is recorded by the overpriced rule, it does not bar;
-//                 Day 14 rules v5 §0.1: unverified_history bars all three categories — the listing stays listed and keeps its rank)
+//                 Day 14 rules v5 §0.1: unverified_history bars all three categories — the listing stays listed and keeps its rank;
+//                 Day 18 rules v6 §8: cancelled bars all three and the runner-up — checked before any invoice row is read)
 //   4.2 stage A   order everyone that passed the gate -> stage_a_place
 //   4.3 rule      below_threshold (price / median_price); above_new_price (price / new_price, part 5 §3) in the same pass;
 //                 overpriced recorded on every peace_of_mind-eligible listing (part 4 §1); unverified_history recorded
@@ -24,7 +25,7 @@
 // constants.ts (§5) · types.ts (§3) · util.ts (helpers).
 
 import { ABOVE_NEW_PRICE_EFFECT, CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
-import { eligibility, isSoldMedium, isSoldStrong, overpriced, unverifiedHistory } from "./gate";
+import { cancelled, eligibility, isSoldMedium, isSoldStrong, overpriced, unverifiedHistory } from "./gate";
 import { stageAOrder } from "./order";
 import { pick } from "./picks";
 import { aboveNewPrice, belowThreshold, dealerNotVisible, mergeByCar, type Work } from "./rules";
@@ -33,7 +34,7 @@ import { cmpNullsLast } from "./util";
 
 export { distance } from "./similarity";
 export { finishTest, type FinishCheck, type FinishTest } from "./finish";
-export { hasVerifiedHistory, historySource, isThinCell } from "./gate";
+export { hasVerifiedHistory, historySource, isCancelled, isThinCell } from "./gate";
 export { categoryOrder } from "./order"; // the three category comparators (§2), for callers that list a category by its own order
 export * from "./constants";
 export type {
@@ -109,6 +110,7 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
     aboveNewPrice(w, aboveNewPriceEffect);
   }
   for (const w of passed) overpriced(w, floorEffect);
+  for (const w of passed) cancelled(w); // Day 18 rules v6 (§8): recorded on everyone, acting through eligibility
   for (const w of passed) unverifiedHistory(w); // Day 14 rules v5 (§0.1): recorded on everyone, acting through eligibility
   for (const w of passed) dealerNotVisible(w);
 

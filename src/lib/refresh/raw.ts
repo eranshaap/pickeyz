@@ -25,20 +25,23 @@ export const REQUIRED: Record<ResourceKey, readonly string[]> = {
   registry: ["mispar_rechev", "tozeret_cd", "degem_cd", "sug_degem", "shnat_yitzur", "moed_aliya_lakvish", "misgeret", "tokef_dt", "mivchan_acharon_dt", "baalut", "tzeva_rechev"],
   inactive: ["mispar_rechev", "tozeret_cd", "degem_cd", "sug_degem", "shnat_yitzur", "moed_aliya_lakvish", "misgeret", "tokef_dt", "mivchan_acharon_dt", "baalut", "tzeva_rechev"],
   cancelled: ["mispar_rechev", "tozeret_cd", "degem_cd", "shnat_yitzur", "misgeret", "bitul_dt"],
-  history_km: ["mispar_rechev", "kilometer_test_aharon", "rishum_rishon_dt", "mkoriut_nm"],
+  history_km: ["mispar_rechev", "kilometer_test_aharon", "rishum_rishon_dt", "mkoriut_nm", "shnui_zeva_ind"],
   history_hand: ["_id", "mispar_rechev", "baalut_dt", "baalut"],
 };
 
+// Day 18 (§7): baalut (registry / inactive -> cars.current_owner_type) and shnui_zeva_ind (history 1 ->
+// cars.color_changed) reach the database now, and tzeva_rechev reaches cars.registry_color as well as the colour
+// fill. A change to any of them is a `cars` change line, so none of them is listed "outside the database" any more.
 // The fields that reach the database, or that the identity check compares. Their movement is already
 // a report line of its own — a changed `cars` field, or a reject — so they are NOT listed again under
 // "fields outside the database" (§0.9). Everything else in the record is.
 // On a cancellation record `tzeva_rechev` is not in this list: §0.4 writes cancelled_at and the
 // timestamp and nothing else, so a cancellation record never fills cars.color.
 const IN_DATABASE: Record<ResourceKey, readonly string[]> = {
-  registry: ["tozeret_cd", "degem_cd", "sug_degem", "shnat_yitzur", "moed_aliya_lakvish", "misgeret", "tokef_dt", "mivchan_acharon_dt", "tzeva_rechev"],
-  inactive: ["tozeret_cd", "degem_cd", "sug_degem", "shnat_yitzur", "moed_aliya_lakvish", "misgeret", "tokef_dt", "mivchan_acharon_dt", "tzeva_rechev"],
+  registry: ["tozeret_cd", "degem_cd", "sug_degem", "shnat_yitzur", "moed_aliya_lakvish", "misgeret", "tokef_dt", "mivchan_acharon_dt", "tzeva_rechev", "baalut"],
+  inactive: ["tozeret_cd", "degem_cd", "sug_degem", "shnat_yitzur", "moed_aliya_lakvish", "misgeret", "tokef_dt", "mivchan_acharon_dt", "tzeva_rechev", "baalut"],
   cancelled: ["tozeret_cd", "degem_cd", "shnat_yitzur", "misgeret", "bitul_dt"],
-  history_km: ["kilometer_test_aharon", "rishum_rishon_dt"],
+  history_km: ["kilometer_test_aharon", "rishum_rishon_dt", "shnui_zeva_ind"],
   history_hand: ["baalut_dt", "baalut"],
 };
 

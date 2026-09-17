@@ -45,6 +45,7 @@ import { searchIdentity, type SearchIdentity } from "./visitor";
 // The display labels of the gate (§3.3). Hebrew lives only in display strings — never in a comparison.
 const LABEL_VERIFY_AVAILABILITY = "לוודא זמינות"; // sold_signal medium (findCar-now.md, "הציון — שלב א'")
 const LABEL_UNVERIFIED_CANDIDATE = "מועמד לא מאומת"; // stood first and only the rule stopped it (findCar-now.md, "המוצר")
+const LABEL_CANCELLED = "ביטול סופי"; // Day 18: the car is finally cancelled at the registry — the cancelled rule (rules v6)
 
 export type ListingView = {
   listing_id: number;
@@ -64,7 +65,7 @@ export type ListingView = {
   condition_by_reality: number | null;
   condition_vs_typical: number | null;
   typical_history: number | null;
-  confidence: ConfidenceLevel;
+  confidence: ConfidenceLevel | null; // Day 18: null for a cancelled car — its invoice has no confidence, nothing is shown
   history_source: string | null; // 'mot' | 'typical' | null — what the history row rests on
   categories: Category[]; // what this listing won; empty when nothing
   verify_availability: boolean;
@@ -143,6 +144,7 @@ export async function runSearch(input: {
     const labels: string[] = [];
     if (r.verify_availability) labels.push(LABEL_VERIFY_AVAILABILITY);
     if (blockedOf(r).length > 0) labels.push(LABEL_UNVERIFIED_CANDIDATE);
+    if (r.trace.some((t) => t.rule === "cancelled" && t.triggered)) labels.push(LABEL_CANCELLED);
     return {
       listing_id: r.listing_id,
       car_id: r.car_id,
@@ -159,7 +161,7 @@ export async function runSearch(input: {
       condition_by_reality: b.condition_by_reality,
       condition_vs_typical: b.condition_vs_typical,
       typical_history: b.typical_history,
-      confidence: b.confidence.level,
+      confidence: b.confidence?.level ?? null,
       history_source: sourceOf(r),
       categories: r.categories,
       verify_availability: r.verify_availability,

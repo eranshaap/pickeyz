@@ -13,7 +13,13 @@
 //
 // §9.7: the thin cell is one root cause, so when the anchor cannot be built the row's reason stays
 // 'thin_cell' (the km row's reason too) and raw.anchor_unavailable names which piece was missing —
-// no_new_price | no_anchor_curve | age_outside_anchor_range. Confidence therefore counts it once.
+// no_new_price | no_anchor_curve | not_an_anchor_point. Confidence therefore counts it once.
+//
+// Day 18 (§5): the gate is the MODEL-YEAR, not an age range. The anchor applies to a listing if and only if its
+// (make, model, year) is one of pool_stats.anchor_points — a point the line was fitted through. Then the curve is
+// read at the listing's current age, whatever that age is; otherwise the row is unavailable with
+// anchor_unavailable 'not_an_anchor_point'. anchor_age_min_years / anchor_age_max_years describe the fit and are
+// no longer read. A pool row written before anchor_points existed (null) has no points, so nothing is anchored.
 //
 // Age (P2): years with decimals from cars.first_registration to the run's `now`; when first_registration
 // is null, from 1 January of cars.year, and raw.age_source says which was used. Nothing reads a clock.
@@ -81,22 +87,22 @@ export function priceRow(input: ScoringInput, now: Date): Row {
     const intercept = pool_stats?.anchor_ratio_intercept ?? null;
     const perYear = pool_stats?.anchor_ratio_per_year ?? null;
     const errorPct = pool_stats?.anchor_error_pct ?? null;
-    const ageMin = pool_stats?.anchor_age_min_years ?? null;
-    const ageMax = pool_stats?.anchor_age_max_years ?? null;
-    // P4: the five values are null together — one row, no curve anywhere.
-    if (intercept === null || perYear === null || errorPct === null || ageMin === null || ageMax === null) {
+    // P4: the values are null together — one row, no curve anywhere.
+    if (intercept === null || perYear === null || errorPct === null) {
       raw.anchor_unavailable = "no_anchor_curve";
       return { row: "price", status: "unavailable", reason: "thin_cell", raw };
     }
-    if (age < ageMin || age > ageMax) {
-      Object.assign(raw, { age_min: ageMin, age_max: ageMax, anchor_unavailable: "age_outside_anchor_range" });
+    // Day 18 (§5): the model-year gate.
+    const point = (pool_stats?.anchor_points ?? []).find((p) => p.make === car.make && p.model === car.model && p.year === car.year);
+    if (point === undefined) {
+      raw.anchor_unavailable = "not_an_anchor_point";
       return { row: "price", status: "unavailable", reason: "thin_cell", raw };
     }
 
     const ratio = intercept + perYear * age;
     const anchor = listing.new_price * ratio;
     if (anchor <= 0) throw new Error(`price row: listing ${listing.id} — the anchor curve gives ratio ${ratio} at age ${age}, anchor ${anchor}`);
-    Object.assign(raw, { ratio, anchor, age_min: ageMin, age_max: ageMax });
+    Object.assign(raw, { ratio, anchor, anchor_point: { n: point.n, ratio: point.ratio, median_age: point.median_age } });
     const value = (-100 * (listing.price - anchor)) / anchor;
     // §9.9: note is a CODE, not prose — the display layer maps it to text (Hebrew labels, Day 18).
     // The error percentage the label needs is raw.error_pct.
