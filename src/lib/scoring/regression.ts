@@ -34,25 +34,60 @@
 // This module opens no database and reads no argv. `scoreWith(normRows, at)` is the caller's — it is the
 // engine re-run with those rows and that clock over the listing's CURRENT data (DATA is checked first, so
 // by the time the identity runs the inputs are already known to be unchanged).
+//
+// Day 18 run 3c §13 — the auditor at a version write: ONE rule for every version write, no identity per version.
+// Order: NEW; DATA (a listing whose inputs changed is DATA, version change or not); then, when the stored
+// engine_version differs from ENGINE_VERSION, the version rule; then CLOCK / NORM / UNEXPLAINED as before.
+//   The version rule is the NORM identity's recomputation: the current engine, the norm rows the stored score read,
+//   at the stored score's date. Reproduced (within ROUNDING_ALLOWANCE) -> VERSION, naming the rows whose VALUES
+//   changed among those the stored score read — (median), (slope), (anchor) — plus (anchor gate) when a vs_new_price
+//   price row is in exactly one of the stored and the current invoice, plus (confidence: color) when the only
+//   confidence move is the v4-only item color_mismatch. No name -> plain VERSION. Not reproduced -> only a declared
+//   identity for the pair (from, to) may explain it: (2, 3) is versionExpectation() below; any other pair is
+//   UNEXPLAINED ("engine moved a listing; no declared identity for v<from> → v<to>").
+//   A stored pool row from before anchor_points (null): the recomputation gets a synthetic points list — the
+//   listing's own (make, model, year) when the stored invoice's price row is the anchor's, [] otherwise — so the
+//   yes / no of the anchor comes from the record while the number is still recomputed. The engine is untouched.
+//
+// Day 18 run 3c §13.2 (b): "a row changed" is decided by VALUES — the fields the norms run's skip-identical rule
+// compares (anchor_points through sameAnchorPoints) — for the version rule and for the NORM (…) naming alike. The
+// NORM identity is still attempted only when a pointer differs; a pointer that moved onto identical values names
+// nothing.
 
+import { sameAnchorPoints } from "@/lib/norms/anchor-points";
+import { confidenceLevel } from "./confidence";
 import { KM_SLOPE_MIN_SAMPLE, MIN_SAMPLE } from "./constants";
-import type { CellNorm, Invoice, ModelNorm, PoolNorm, ScoringInput } from "./types";
+import type { AnchorPoint, CellNorm, Invoice, ModelNorm, PoolNorm, ScoringInput } from "./types";
 import { dateToIso, round } from "./util";
 
 // ---------- labels ----------
 export const NORM_KINDS = ["median", "slope", "anchor"] as const;
 export type NormKind = (typeof NORM_KINDS)[number];
 
+// Day 18 run 3c: the names a VERSION line may carry, in this order.
+export const VERSION_NAMES = ["median", "slope", "anchor", "anchor gate", "confidence: color"] as const;
+export type VersionName = (typeof VERSION_NAMES)[number];
+
 export type Label =
-  | "VERSION" | "VERSION (anchor)" | "VERSION (typical)"
+  | "VERSION" | `VERSION (${string})` | "VERSION (typical)"
   | "NEW" | "CLOCK" | "DATA"
   | "NORM"
   | "NORM (median)" | "NORM (slope)" | "NORM (anchor)"
   | "NORM (median, slope)" | "NORM (median, anchor)" | "NORM (slope, anchor)"
   | "NORM (median, slope, anchor)"
   | "UNEXPLAINED";
+/** The VERSION label for a set of names, in VERSION_NAMES order; no names -> plain VERSION. */
+export function versionNamedLabel(names: readonly VersionName[]): Label {
+  const ordered = VERSION_NAMES.filter((n) => names.includes(n));
+  return ordered.length === 0 ? "VERSION" : (`VERSION (${ordered.join(", ")})` as Label);
+}
+// Every VERSION combination, so a count line can list each one. "VERSION (anchor)" is also the name the (2, 3)
+// identity's thin-cell sub-rule gives — one string, counted once.
+const VERSION_LABELS: Label[] = Array.from({ length: 2 ** VERSION_NAMES.length }, (_, mask) =>
+  versionNamedLabel(VERSION_NAMES.filter((_, i) => (mask >> i) & 1)),
+);
 export const LABELS: Label[] = [
-  "VERSION", "VERSION (anchor)", "VERSION (typical)", "NEW", "CLOCK", "DATA",
+  ...VERSION_LABELS, "VERSION (typical)", "NEW", "CLOCK", "DATA",
   "NORM", "NORM (median)", "NORM (slope)", "NORM (anchor)",
   "NORM (median, slope)", "NORM (median, anchor)", "NORM (slope, anchor)", "NORM (median, slope, anchor)",
   "UNEXPLAINED",
@@ -386,6 +421,33 @@ export function readNormKinds(bd: StoredBreakdown | null): NormKind[] {
   }
   return NORM_KINDS.filter((k) => read.has(k)); // always in NORM_KINDS order
 }
+// Day 18 run 3c §13.2 (b): does a norm row's VALUE differ between two rows — the fields the norms run's skip-identical
+// rule compares (compute-market-stats.ts §8): the cell's medians and set, the model's slope and its n, the pool's
+// five curve values, its two counts and anchor_points (sameAnchorPoints, 6 dp). Two pool rows that both predate
+// anchor_points (null) carry the same — no — points. A row on one side only differs.
+const bothNullPoints = (a: AnchorPoint[] | null, b: AnchorPoint[] | null) => a === null && b === null;
+export function normValuesDiffer(kind: NormKind, a: NormRows, b: NormRows): boolean {
+  if (kind === "median") {
+    const s = a.median, c = b.median;
+    if (s === null || c === null) return s !== c;
+    return s.median_price !== c.median_price || s.median_km !== c.median_km || s.median_history !== c.median_history ||
+      s.sample_size !== c.sample_size || s.window_days !== c.window_days;
+  }
+  if (kind === "slope") {
+    const s = a.slope, c = b.slope;
+    if (s === null || c === null) return s !== c;
+    return s.km_slope !== c.km_slope || s.km_slope_n !== c.km_slope_n;
+  }
+  const s = a.anchor, c = b.anchor;
+  if (s === null || c === null) return s !== c;
+  const points = bothNullPoints(s.anchor_points, c.anchor_points) ||
+    (c.anchor_points !== null && sameAnchorPoints(s.anchor_points, c.anchor_points));
+  return s.anchor_ratio_intercept !== c.anchor_ratio_intercept || s.anchor_ratio_per_year !== c.anchor_ratio_per_year ||
+    s.anchor_error_pct !== c.anchor_error_pct || s.anchor_age_min_years !== c.anchor_age_min_years ||
+    s.anchor_age_max_years !== c.anchor_age_max_years || s.anchor_n !== c.anchor_n || s.anchor_listings !== c.anchor_listings ||
+    !points;
+}
+
 /** Why a row that moved is not named — the half of the rule that kept it out. */
 function notReadBecause(kind: NormKind): string {
   if (kind === "slope") return "the stored score's km row used the default slope, not the model slope";
@@ -445,10 +507,15 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
   // §3: the label names only the rows that BOTH differ and were read by the old score. The test below is
   // untouched — it still recomputes once with all three stored rows — and a row that moved unread is
   // still printed, marked with why the rule does not name it.
+  // Run 3c §13.2 (b): a row is named by its VALUES; a pointer that moved onto identical values names nothing.
   const read = readNormKinds((x.stored.breakdown ?? null) as StoredBreakdown | null);
-  const named = differ.filter((k) => read.includes(k));
+  const valued = differ.filter((k) => normValuesDiffer(k, x.stored.norms, x.norms));
+  const named = valued.filter((k) => read.includes(k));
   const label = named.length > 0 ? normLabel(named) : null;
-  const moved = differ.map((k) => describeMove(k, x) + (named.includes(k) ? "" : ` - not named: ${notReadBecause(k)}`));
+  const moved = differ.map((k) =>
+    describeMove(k, x) +
+      (named.includes(k) ? "" : !valued.includes(k) ? " - not named: a new row with the same values" : ` - not named: ${notReadBecause(k)}`),
+  );
   const ids = NORM_KINDS.map((k) => `${k} ${num(normId(x.stored.norms, k))}`).join(", ");
   const got = triple(x.scoreWith(x.stored.norms, when));
   if (same(got, sto)) {
@@ -485,10 +552,121 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
   };
 }
 
+// ---------- Day 18 run 3c §13: the version rule ----------
+// The declared identities for an engine move that is not reproduced by recomputation, keyed by the pair.
+// (2, 3) is Day 14 §6.3's; no other pair has one — v4 changed no formula.
+export const DECLARED_VERSION_PAIRS: readonly (readonly [number, number])[] = [[2, 3]];
+const hasDeclaredIdentity = (from: number, to: number) => DECLARED_VERSION_PAIRS.some(([f, t]) => f === from && t === to);
+// The first engine whose invoices can carry the confidence item color_mismatch (Day 18 §9).
+export const COLOR_MISMATCH_FROM_ENGINE = 4;
+
+/** A price row that is the anchor's — the mark readNormKinds() reads, on either invoice. */
+function anchorPriceRow(rows: { row?: string; note?: string; source?: string }[] | undefined): boolean {
+  const p = rows?.find((r) => r.row === "price");
+  return p?.note === "vs_new_price" || p?.source === "anchor";
+}
+
+/** §13.2 (d): the stored rows as the recomputation reads them — a pre-v4 pool row gets its points from the record. */
+export function recomputationNorms(x: RegressionInput, bd: StoredBreakdown | null): { norms: NormRows; note: string | null } {
+  const pool = x.stored.norms.anchor;
+  if (pool === null || pool.anchor_points !== null) return { norms: x.stored.norms, note: null };
+  const { make, model, year } = x.input.car;
+  if (bd !== null && anchorPriceRow(bd.rows)) {
+    const raw = bd.rows?.find((r) => r.row === "price")?.raw ?? {};
+    // n / ratio / median_age are recorded by the engine into raw.anchor_point and read by nothing that is scored.
+    const point: AnchorPoint = {
+      make, model, year, n: 0,
+      ratio: typeof raw.ratio === "number" ? raw.ratio : 0,
+      median_age: typeof raw.age === "number" ? raw.age : 0,
+    };
+    return {
+      norms: { ...x.stored.norms, anchor: { ...pool, anchor_points: [point] } },
+      note: `pre-v4 pool row pool_stats ${pool.id} (anchor_points null): the stored invoice's price row is the anchor's, so the recomputation reads a synthetic point ${make} ${model} ${year} (the curve is that row's own)`,
+    };
+  }
+  return {
+    norms: { ...x.stored.norms, anchor: { ...pool, anchor_points: [] } },
+    note: `pre-v4 pool row pool_stats ${pool.id} (anchor_points null): the stored invoice has no anchor price row, so the recomputation reads no point`,
+  };
+}
+
+type Reproduction = { ok: boolean; allowance: boolean; colorOnly: boolean };
+function reproduction(got: Invoice, sto: Triple, storedEngine: number): Reproduction {
+  const t = triple(got);
+  const near = (a: number | null, b: number | null) => (a === null || b === null ? a === b : Math.abs(a - b) <= ROUNDING_ALLOWANCE + EPS);
+  const exact = (a: number | null, b: number | null) => (a === null || b === null ? a === b : Math.abs(a - b) < EPS);
+  const numbers = near(t.score, sto.score) && near(t.condition_score, sto.condition_score);
+  const allowance = numbers && !(exact(t.score, sto.score) && exact(t.condition_score, sto.condition_score));
+  if (!numbers) return { ok: false, allowance: false, colorOnly: false };
+  if (t.confidence === sto.confidence) return { ok: true, allowance, colorOnly: false };
+  // §13.2 (f): a stored score from before COLOR_MISMATCH_FROM_ENGINE could not carry that item. If removing it gives
+  // the stored level, the confidence move is the version's.
+  if (storedEngine < COLOR_MISMATCH_FROM_ENGINE && got.confidence !== null) {
+    const items = got.confidence.items;
+    const withoutColor = items.filter((i) => i.kind !== "color_mismatch").length;
+    if (withoutColor < items.length && confidenceLevel(withoutColor) === sto.confidence) return { ok: true, allowance, colorOnly: true };
+  }
+  return { ok: false, allowance: false, colorOnly: false };
+}
+
+function versionRule(x: RegressionInput, sto: Triple, bd: StoredBreakdown | null, head: string): Classified {
+  const from = x.stored.engine_version as number;
+  const to = x.engine_version;
+  const when = x.stored.scored_at as Date;
+  const detail: string[] = [`stored engine_version ${from} -> ${to}`];
+  const declared = () => {
+    // (c): the declared identity for the pair, unchanged.
+    const v = versionExpectation({ stored_score: x.stored.score, result: x.result, input: x.input }, bd);
+    for (const d of v.detail) detail.push(d);
+    return { label: v.ok ? versionLabel(v) : ("UNEXPLAINED" as Label), head, detail };
+  };
+  const undeclared = () => {
+    detail.push(`engine moved a listing; no declared identity for v${from} → v${to}`);
+    return { label: "UNEXPLAINED" as Label, head, detail };
+  };
+
+  if (x.stored.missing.length > 0) {
+    detail.push(`the ${x.stored.missing.join(", ")} row(s) the stored score points at are no longer in their table — the recomputation cannot be run`);
+    return hasDeclaredIdentity(from, to) ? declared() : undeclared();
+  }
+  const { norms, note } = recomputationNorms(x, bd);
+  if (note !== null) detail.push(note);
+  const ids = NORM_KINDS.map((k) => `${k} ${num(normId(x.stored.norms, k))}`).join(", ");
+  const got = x.scoreWith(norms, when);
+  const rep = reproduction(got, sto, from);
+  if (!rep.ok) {
+    detail.push(`recomputed with the current engine and the STORED norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(triple(got))}, not the stored ${showTriple(sto)}`);
+    return hasDeclaredIdentity(from, to) ? declared() : undeclared();
+  }
+
+  // (b): the names. Rows read by the stored score whose values differ from the rows the current score used.
+  const read = readNormKinds(bd);
+  const names: VersionName[] = [];
+  for (const k of NORM_KINDS) {
+    if (!normValuesDiffer(k, x.stored.norms, x.norms)) continue;
+    if (read.includes(k)) names.push(k);
+    detail.push(describeMove(k, x) + (read.includes(k) ? "" : ` - not named: ${notReadBecause(k)}`));
+  }
+  const oldAnchor = bd !== null && anchorPriceRow(bd.rows);
+  const newAnchor = anchorPriceRow(x.result.rows);
+  if (oldAnchor !== newAnchor) {
+    names.push("anchor gate");
+    detail.push(`anchor gate: a vs_new_price price row in the ${oldAnchor ? "stored" : "current"} invoice only`);
+  }
+  if (rep.colorOnly) {
+    names.push("confidence: color");
+    detail.push(`confidence ${sto.confidence ?? "-"} -> ${triple(got).confidence ?? "-"}: the only move is the item color_mismatch, which engine ${from} could not record`);
+  }
+  detail.push(`identity: recomputed with the current engine and the STORED norm rows (${ids}) at the stored scored_at ${when.toISOString()} -> ${showTriple(triple(got))} = the stored values`);
+  if (rep.allowance) detail.push(`reproduced within the ±${ROUNDING_ALLOWANCE} rounding allowance, not exactly`);
+  return { label: versionNamedLabel(names), head, detail };
+}
+
 // ---------- the classifier ----------
 /**
  * One listing -> one labelled line, or null when the stored and the recomputed score agree (no line).
- * First match wins; the order is the one Day 13 §1 fixed and Day 14 / Day 17 extended.
+ * First match wins; the order is the one Day 13 §1 fixed, Day 14 / Day 17 extended and Day 18 run 3c §13.2 (e)
+ * set for a version write: NEW, DATA, the version rule, then CLOCK / DATA / NORM / UNEXPLAINED as before.
  */
 export function classify(x: RegressionInput): Classified | null {
   const cur: Triple = triple(x.result);
@@ -497,24 +675,24 @@ export function classify(x: RegressionInput): Classified | null {
   const detail: string[] = [];
   const bd = (x.stored.breakdown ?? null) as StoredBreakdown | null;
 
-  if (x.stored.engine_version !== null && x.stored.engine_version !== x.engine_version) {
-    // Day 14 §6.3: v2 -> v3 is not "listed, not compared" any more — the move is known exactly.
-    //   deal_v3 - deal_v2 = (old typical_condition - new median_history) + (new km row - old km row)
-    // with the price row and the history row identical. Anything else is UNEXPLAINED.
-    const v = versionExpectation({ stored_score: x.stored.score, result: x.result, input: x.input }, bd);
-    detail.push(`stored engine_version ${x.stored.engine_version} -> ${x.engine_version}`);
-    for (const d of v.detail) detail.push(d);
-    return { label: v.ok ? versionLabel(v) : "UNEXPLAINED", head, detail };
-  }
   if (x.stored.scored_at === null) {
     detail.push(`no stored score at all (scored_at null, engine_version ${x.stored.engine_version ?? "null"}): first scoring`);
     return { label: "NEW", head, detail };
+  }
+  const dataDiffs = bd === null ? [] : diffMaps(storedInputs(bd), currentInputs(x.input));
+  if (x.stored.engine_version !== null && x.stored.engine_version !== x.engine_version) {
+    // §13.2 (e): a listing whose inputs changed is DATA, version change or not — not put through the version rule.
+    if (dataDiffs.length) {
+      detail.push(`stored engine_version ${x.stored.engine_version} -> ${x.engine_version}`);
+      for (const d of dataDiffs) detail.push(`input ${d}`);
+      return { label: "DATA", head, detail };
+    }
+    return versionRule(x, sto, bd, head);
   }
   if (same(sto, cur)) return null; // stored and recomputed agree — no line
 
   // CLOCK: the same inputs and the same norm rows, only `now` moved back to scored_at.
   const then = triple(x.scoreWith(x.norms, x.stored.scored_at));
-  const dataDiffs = bd === null ? [] : diffMaps(storedInputs(bd), currentInputs(x.input));
   const normDiffs = bd === null ? [] : diffMaps(storedNorm(bd), currentNorm(x.input.market));
   const cellMoved = normDiffs.some((d) => d.startsWith("sample_size") || d.startsWith("window_days") || d.startsWith("market_row"));
   if (same(then, sto)) {

@@ -318,3 +318,176 @@ describe("the labels that were already there (§2.1)", () => {
     assert.equal(c, null);
   });
 });
+
+// Day 18 run 3c §13.3: a row with the current cell row's values under another id — what a version write's norms run
+// appends for a cell whose market did not move.
+const SAME_VALUES_CELL: CellNorm = cell({ id: 88, median_price: 92_500, median_km: 50_000, median_history: -6, sample_size: 20, window_days: 90 });
+
+describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
+  // A stored v3 score against the current engine. The stub stands for the recomputation: the current engine, the norm
+  // rows it is handed, the stored clock. The names come from comparing the stored rows' VALUES with the current ones.
+  const V3 = { engine_version: 3 };
+  const STORED_RESULT = () => result({ deal_score: STORED_TRIPLE.score, price_advantage: 5.5 });
+  const ALWAYS: ScoreWith = () => STORED_RESULT();
+
+  /** The invoice with its price row taken from the anchor, as price.ts writes it on the thin-cell path. */
+  function anchored(r: ScoreResult): ScoreResult {
+    r.rows[0] = { ...r.rows[0], source: "anchor", note: "vs_new_price", raw: { ...r.rows[0].raw, ratio: 0.7, age: 4.2 } };
+    return r;
+  }
+  function runV(over: Partial<StoredSide>, scoreWith: ScoreWith, opts: { norms?: NormRows; current?: ScoreResult } = {}) {
+    return classify({
+      make: "יונדאי", model: "IONIQ HYBRID",
+      result: opts.current ?? CURRENT, input: INPUT, norms: opts.norms ?? CURRENT_NORMS,
+      stored: stored({ ...V3, ...over }),
+      engine_version: ENGINE_VERSION,
+      scoreWith,
+    });
+  }
+
+  it("reproduced, rows value-identical -> VERSION", () => {
+    const c = runV({}, ALWAYS);
+    assert.equal(c?.label, "VERSION");
+    assert.ok(c?.detail.includes(`stored engine_version 3 -> ${ENGINE_VERSION}`));
+    assert.ok(c?.detail.some((d) => d.includes("= the stored values")));
+  });
+
+  it("cell values differ -> VERSION (median)", () => {
+    const c = runV({ norms: { ...CURRENT_NORMS, median: STORED_CELL } }, ALWAYS);
+    assert.equal(c?.label, "VERSION (median)");
+    assert.ok(c?.detail.some((d) => d.includes("cell row market_stats 88 -> 104")));
+  });
+
+  it("slope in use and its values differ -> VERSION (slope)", () => {
+    const c = runV({ norms: { ...CURRENT_NORMS, slope: STORED_SLOPE }, breakdown: storedBreakdown({ slope_source: "model" }) }, ALWAYS);
+    assert.equal(c?.label, "VERSION (slope)");
+  });
+
+  it("slope values differ but the stored score used the default slope -> not named", () => {
+    const c = runV({ norms: { ...CURRENT_NORMS, slope: STORED_SLOPE }, breakdown: storedBreakdown({ slope_source: "default" }) }, ALWAYS);
+    assert.equal(c?.label, "VERSION");
+    assert.ok(c?.detail.some((d) => d.includes("not named: the stored score's km row used the default slope")));
+  });
+
+  it("both differ -> VERSION (median, slope)", () => {
+    const c = runV({ norms: { median: STORED_CELL, slope: STORED_SLOPE, anchor: INPUT.pool_stats } }, ALWAYS);
+    assert.equal(c?.label, "VERSION (median, slope)");
+  });
+
+  it("thin cell, the curve differs, both invoices anchored -> VERSION (anchor)", () => {
+    const c = runV(
+      { norms: { ...CURRENT_NORMS, anchor: poolNorm({ id: 2, anchor_ratio_intercept: 0.8 }) }, breakdown: anchored(storedBreakdown()) },
+      ALWAYS,
+      { current: anchored(result()) },
+    );
+    assert.equal(c?.label, "VERSION (anchor)");
+    assert.ok(c?.detail.some((d) => d.includes("pool row pool_stats 2 -> 3")));
+  });
+
+  it("a new pointer with identical values -> plain VERSION", () => {
+    const sameSlope = modelNorm({ id: 1, km_slope: -1.181408, km_slope_n: 134 });
+    const c = runV({ norms: { ...CURRENT_NORMS, median: SAME_VALUES_CELL, slope: sameSlope } }, ALWAYS);
+    assert.equal(c?.label, "VERSION");
+    assert.ok(!c?.detail.some((d) => d.includes("cell row") || d.includes("model row")));
+  });
+
+  it("pre-v4 pool row + a stored vs_new_price row: anchored with the old curve, reproduces; new invoice without it -> VERSION (anchor gate)", () => {
+    const pre = poolNorm({ id: 3, anchor_ratio_intercept: 0.804155, anchor_ratio_per_year: -0.036953, anchor_points: null });
+    const seen: NormRows[] = [];
+    const c = runV(
+      { norms: { ...CURRENT_NORMS, anchor: pre }, breakdown: anchored(storedBreakdown()) },
+      (n) => {
+        seen.push(n);
+        const pts = n.anchor?.anchor_points ?? null;
+        const own = pts !== null && pts.length === 1 && pts[0].make === INPUT.car.make && pts[0].model === INPUT.car.model && pts[0].year === INPUT.car.year;
+        return own ? STORED_RESULT() : CURRENT;
+      },
+      { norms: { ...CURRENT_NORMS, anchor: pre } }, // as in Run 3c: the current score reads the same pre-v4 row
+    );
+    assert.equal(c?.label, "VERSION (anchor gate)");
+    // the curve is the stored row's own; only the yes / no came from the record
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].anchor?.anchor_ratio_intercept, 0.804155);
+    assert.equal(seen[0].anchor?.anchor_ratio_per_year, -0.036953);
+    assert.ok(c?.detail.some((d) => d.includes("synthetic point MAKE MODEL 2021")));
+    assert.ok(c?.detail.some((d) => d.includes("vs_new_price price row in the stored invoice only")));
+  });
+
+  it("pre-v4 pool row + no stored anchor row: the recomputation anchors nothing and reproduces", () => {
+    const pre = poolNorm({ id: 3, anchor_points: null });
+    const c = runV(
+      { norms: { ...CURRENT_NORMS, anchor: pre } },
+      (n) => (JSON.stringify(n.anchor?.anchor_points) === "[]" ? STORED_RESULT() : CURRENT),
+      { norms: { ...CURRENT_NORMS, anchor: pre } },
+    );
+    assert.equal(c?.label, "VERSION");
+    assert.ok(c?.detail.some((d) => d.includes("the recomputation reads no point")));
+  });
+
+  it("not reproduced, pair (3, 4) -> UNEXPLAINED with the line", () => {
+    const c = runV({}, NEVER);
+    assert.equal(c?.label, "UNEXPLAINED");
+    assert.ok(c?.detail.includes(`engine moved a listing; no declared identity for v3 → v${ENGINE_VERSION}`));
+    assert.ok(c?.detail.some((d) => d.includes("not the stored +6.5 / -5 / high")));
+  });
+
+  it("not reproduced, pair (2, 3) -> versionExpectation() as before", () => {
+    // The stored deal equals the current one and every row holds: the v2 -> v3 identity passes with constant 0.
+    const c = classify({
+      make: "יונדאי", model: "IONIQ HYBRID",
+      result: CURRENT, input: INPUT, norms: CURRENT_NORMS,
+      stored: stored({ engine_version: 2, score: 6 }),
+      engine_version: 3,
+      scoreWith: () => result({ deal_score: 99 }),
+    });
+    assert.equal(c?.label, "VERSION");
+    assert.ok(c?.detail.some((d) => d.includes("typical -6 -> -6 (cell constant")));
+    assert.ok(!c?.detail.some((d) => d.includes("no declared identity")));
+  });
+
+  it("not reproduced, pair (2, 3), and that identity fails -> UNEXPLAINED without the undeclared line", () => {
+    const c = classify({
+      make: "יונדאי", model: "IONIQ HYBRID",
+      result: CURRENT, input: INPUT, norms: CURRENT_NORMS,
+      stored: stored({ engine_version: 2 }), // stored deal 6.5, current 6: -0.5 against an expected 0
+      engine_version: 3,
+      scoreWith: NEVER,
+    });
+    assert.equal(c?.label, "UNEXPLAINED");
+    assert.ok(c?.detail.some((d) => d.includes("beyond the ±0.1 rounding allowance")));
+    assert.ok(!c?.detail.some((d) => d.includes("no declared identity")));
+  });
+
+  it("an input changed -> DATA, ahead of the version rule", () => {
+    const c = runV({ breakdown: storedBreakdown({ price: 99_000 }) }, ALWAYS);
+    assert.equal(c?.label, "DATA");
+    assert.ok(c?.detail.includes("input listing.price: 99000 -> 100000"));
+  });
+
+  it("reproduced within the rounding allowance -> VERSION, and the allowance is printed", () => {
+    const c = runV({}, () => result({ deal_score: 6.6 }));
+    assert.equal(c?.label, "VERSION");
+    assert.ok(c?.detail.some((d) => d.includes("within the ±0.1 rounding allowance")));
+  });
+
+  it("(f) the only confidence move is color_mismatch -> VERSION (confidence: color)", () => {
+    const c = runV({}, () => result({ deal_score: 6.5, confidence: { level: "medium", items: [{ kind: "color_mismatch", ref: "color:mismatch" }] } }));
+    assert.equal(c?.label, "VERSION (confidence: color)");
+  });
+
+  it("(f) a confidence move by another item is not the version's -> UNEXPLAINED", () => {
+    const c = runV({}, () => result({ deal_score: 6.5, confidence: { level: "medium", items: [{ kind: "possibly_sold", ref: "sold_signal:medium" }] } }));
+    assert.equal(c?.label, "UNEXPLAINED");
+  });
+});
+
+describe("the NORM (…) naming compares values (Day 18 run 3c §13.2 b)", () => {
+  it("a pointer that moved onto identical values names nothing", () => {
+    const c = run(
+      { norms: { ...CURRENT_NORMS, median: SAME_VALUES_CELL } },
+      (norms) => (norms.median?.id === 88 ? result({ deal_score: STORED_TRIPLE.score, price_advantage: 5.5 }) : CURRENT),
+    );
+    assert.equal(c?.label, "UNEXPLAINED");
+    assert.ok(c?.detail.some((d) => d.includes("not named: a new row with the same values")));
+  });
+});
