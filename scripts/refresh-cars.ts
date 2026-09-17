@@ -51,7 +51,7 @@
 import "dotenv/config";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { db } from "@/lib/db";
+import { WRITE_TRANSACTION_OPTIONS, db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { fetchRowsFresh, plateDir, type ApiResource } from "@/lib/mot/fetch";
 import { normalizePlate } from "@/lib/mot/vehicle";
@@ -248,7 +248,7 @@ async function persist(stored: StoredCar, a: Accept, rawChanged: boolean, text: 
           },
         });
       }
-    });
+    }, WRITE_TRANSACTION_OPTIONS);
   } catch (e) {
     if (rawChanged) rmSync(stagingDir(plate), { recursive: true, force: true });
     return { outcome: "write_failed", error: (e as Error).message };
@@ -603,7 +603,7 @@ async function fromCache(): Promise<void> {
         if (n !== 1) throw new Error(`${t.plate}: the cars UPDATE touched ${n} rows, not 1 — rolled back`);
         written++;
       }
-    });
+    }, WRITE_TRANSACTION_OPTIONS);
     log(`written: ${written} car(s)`);
   }
   log("```");

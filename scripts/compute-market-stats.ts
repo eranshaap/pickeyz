@@ -72,7 +72,7 @@
 //   old -> new, and the comparison_group of the COMFORT / SPIRIT 2022 model codes.
 
 import "dotenv/config";
-import { db } from "@/lib/db";
+import { WRITE_TRANSACTION_OPTIONS, db } from "@/lib/db";
 import type { Prisma } from "@/generated/prisma/client";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
 import { buildAnchorPoints, parseAnchorPoints, pointKey, sameAnchorPoints, type AnchorObservation } from "@/lib/norms/anchor-points";
@@ -790,7 +790,7 @@ async function main() {
         })).count
       : 0;
     return { pool: poolWritten === null ? 0 : 1, model: modelWritten, cell: cellWritten };
-  });
+  }, WRITE_TRANSACTION_OPTIONS);
   console.log(`\npool_stats:   ${written.pool} written, ${1 - written.pool} skipped (unchanged)`);
   console.log(`model_stats:  ${written.model} written, ${modelRows.length - written.model} skipped (unchanged)`);
   console.log(`market_stats: ${written.cell} written, ${cellRows.length - written.cell} skipped (unchanged)`);

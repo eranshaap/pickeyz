@@ -81,7 +81,7 @@
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
-import { db } from "@/lib/db";
+import { WRITE_TRANSACTION_OPTIONS, db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-group";
 import { isCancelled, scoreListing, type Invoice, type ScoreResult, type ScoringInput } from "@/lib/scoring";
@@ -678,7 +678,7 @@ async function main() {
       throw new Error(`write: expected ${scored.length} rows, inserted ${ins.count} listing_scores and updated ${upd} listings — rolled back`);
     }
     return upd;
-  });
+  }, WRITE_TRANSACTION_OPTIONS);
   console.log(`\nwrote ${n} listings and ${n} listing_scores rows; report written to ${REPORT_FILE}`);
 }
 
