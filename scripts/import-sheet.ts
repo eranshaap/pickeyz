@@ -433,6 +433,7 @@ async function main() {
           data: {
             car_id: car.id, dealer_id: dealer.id, source: row.source, external_id: row.external_id,
             price: row.price!, region: row.region, image_urls: [], km_declared: row.km, hand_declared: row.hand,
+            km_observed_at: first_seen_at,
             first_seen_at,
             // Day 17 (R1): a --seen run walked this ad and found it up with its price — the insert is
             // itself an observation of seen, the same one R4 records for a listing that already existed.

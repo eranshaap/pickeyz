@@ -97,6 +97,7 @@ model listings {
   image_urls           String[] // addresses of images, not images. Empty in the manual phase.
   km_declared          Int? // what THIS ad says. Another ad for the same car may say otherwise.
   hand_declared        Int? // hand per the ad. Empty if the ad does not state it.
+  km_observed_at       DateTime  @db.Timestamptz(3) // Day 19 (engine v5): the day km_declared was observed — the first sighting, then the day of each km change. Written only by the import's insert and by observe.ts.
   disclosure_provided  Boolean   @default(false) // data came from a disclosure form
   first_seen_at        DateTime  @db.Timestamptz(3) // required: the one value that cannot be recovered later
   last_verified_at     DateTime? @db.Timestamptz(3)
