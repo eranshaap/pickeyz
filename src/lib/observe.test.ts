@@ -188,7 +188,8 @@ describe("R4 — existing, live, לא", () => {
   it("km present and different: written", () => {
     const d = ok(listing(), obs({ km: 84_500 }));
     assert.deepEqual(fields(d.writes), ["km_declared", "last_verified_at"]);
-    assert.deepEqual(d.writes[0], { field: "km_declared", from: 80_000, to: 84_500 });
+    // Day 19 (8.1): a km change carries the day it was observed - `seen`, the run's verification date.
+    assert.deepEqual(d.writes[0], { field: "km_declared", from: 80_000, to: 84_500, observed_at: SEEN });
   });
 
   it("km blank: nothing — a missing cell is not an observation", () => {
@@ -198,7 +199,7 @@ describe("R4 — existing, live, לא", () => {
 
   it("km null in the DB and a value in the sheet: filled", () => {
     const d = ok(listing({ km_declared: null }), obs({ km: 80_000 }));
-    assert.deepEqual(d.writes[0], { field: "km_declared", from: null, to: 80_000 });
+    assert.deepEqual(d.writes[0], { field: "km_declared", from: null, to: 80_000, observed_at: SEEN });
   });
 
   it("hand present and different: written", () => {
@@ -271,28 +272,29 @@ describe("R6 — idempotent", () => {
   });
 });
 
-describe("apply() — one decision, one transaction", () => {
-  function fake() {
-    const order: string[] = [];
-    const priceCalls: { listingId: number; price: number; observedAt: Date; client: unknown }[] = [];
-    const updates: { where: { id: number }; data: Record<string, unknown> }[] = [];
-    const client = {
-      listings: {
-        update: async (arg: { where: { id: number }; data: Record<string, unknown> }) => {
-          order.push("listings.update");
-          updates.push(arg);
-        },
+// Day 19: lifted out of the describe below so the §12.8 block can drive the same fake client.
+function fake() {
+  const order: string[] = [];
+  const priceCalls: { listingId: number; price: number; observedAt: Date; client: unknown }[] = [];
+  const updates: { where: { id: number }; data: Record<string, unknown> }[] = [];
+  const client = {
+    listings: {
+      update: async (arg: { where: { id: number }; data: Record<string, unknown> }) => {
+        order.push("listings.update");
+        updates.push(arg);
       },
-    } as unknown as Client;
-    const deps = {
-      recordPrice: async (listingId: number, price: number, observedAt: Date, c: Client) => {
-        order.push("recordPrice");
-        priceCalls.push({ listingId, price, observedAt, client: c });
-      },
-    };
-    return { client, deps, order, priceCalls, updates };
-  }
+    },
+  } as unknown as Client;
+  const deps = {
+    recordPrice: async (listingId: number, price: number, observedAt: Date, c: Client) => {
+      order.push("recordPrice");
+      priceCalls.push({ listingId, price, observedAt, client: c });
+    },
+  };
+  return { client, deps, order, priceCalls, updates };
+}
 
+describe("apply() — one decision, one transaction", () => {
   it("recordPrice gets seen as the observed date and the transaction's own client, before the rest", async () => {
     const f = fake();
     const decision = ok(listing({ km_declared: null }), obs({ price: 92_000, km: 84_500 }));
@@ -301,7 +303,8 @@ describe("apply() — one decision, one transaction", () => {
     assert.deepEqual(f.priceCalls, [{ listingId: 1, price: 92_000, observedAt: SEEN, client: f.client }]);
     assert.equal(f.priceCalls[0].client, f.client, "recordPrice must run on the transaction client");
     assert.deepEqual(f.order, ["recordPrice", "listings.update"]);
-    assert.deepEqual(f.updates, [{ where: { id: 1 }, data: { km_declared: 84_500, last_verified_at: SEEN } }]);
+    // Day 19 (8.2): km_declared and km_observed_at land in the SAME listings.update.
+    assert.deepEqual(f.updates, [{ where: { id: 1 }, data: { km_declared: 84_500, km_observed_at: SEEN, last_verified_at: SEEN } }]);
   });
 
   it("a decision with no writes touches nothing", async () => {
@@ -309,5 +312,46 @@ describe("apply() — one decision, one transaction", () => {
     await apply(f.client, { outcome: "already_delisted", listing_id: 1, writes: [], finding: null }, f.deps);
     await apply(f.client, ok(null, obs({ cell: "" })), f.deps);
     assert.deepEqual(f.order, []);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Day 19 (§12.8) — the observation door carries the km's observation date.
+describe("Day 19 §8 — km_observed_at", () => {
+  it("a km change under --seen: the write carries observed_at = seen", () => {
+    const d = ok(listing({ km_declared: 80_000 }), obs({ km: 84_500 }));
+    const km = d.writes.find((w) => w.field === "km_declared") as Extract<Write, { field: "km_declared" }>;
+    assert.equal(km.observed_at.getTime(), SEEN.getTime());
+  });
+
+  it("apply() writes km_declared and km_observed_at in one listings.update", () => {
+    const f = fake();
+    const decision: Decision = {
+      outcome: "verified",
+      listing_id: 1,
+      writes: [{ field: "km_declared", from: 80_000, to: 84_500, observed_at: SEEN }],
+      finding: null,
+    };
+    return apply(f.client, decision, f.deps).then(() => {
+      assert.equal(f.updates.length, 1, "one update, not two");
+      assert.deepEqual(f.updates[0], { where: { id: 1 }, data: { km_declared: 84_500, km_observed_at: SEEN } });
+    });
+  });
+
+  it("a HAND change writes no date (§8.3)", () => {
+    const d = ok(listing({ hand_declared: 2 }), obs({ hand: 3 }));
+    const hand = d.writes.find((w) => w.field === "hand_declared");
+    assert.deepEqual(hand, { field: "hand_declared", from: 2, to: 3 });
+    assert.ok(!("observed_at" in (hand as object)), "a hand change carries no observation date");
+  });
+
+  it("verification with no km change never touches km_observed_at (§8.4)", () => {
+    // R4 with the same km: the only write is last_verified_at, so no patch key mentions km at all.
+    const d = ok(listing({ km_declared: 80_000, last_verified_at: null }), obs({ km: 80_000 }));
+    assert.deepEqual(fields(d.writes), ["last_verified_at"]);
+    const f = fake();
+    return apply(f.client, d, f.deps).then(() => {
+      assert.deepEqual(f.updates, [{ where: { id: 1 }, data: { last_verified_at: SEEN } }]);
+    });
   });
 });

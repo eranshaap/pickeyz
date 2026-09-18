@@ -55,12 +55,16 @@ export function selectMarketListings<T extends MarketCandidate>(rows: T[], w: Ma
   return [...byCar.values()].sort((a, b) => a.id - b.id);
 }
 
-// What the three computations need: the listing (price, km_declared, first_seen_at, the scoring subject's
-// fields), the car (year, first_registration, the ownership record), its models row (make, model, sub_model,
-// the comparison-group fields, degem_code + vehicle_class for the new-price join) and the seller's dealer_type.
+// What the three computations need: the listing (price, km_declared, first_seen_at, km_observed_at, the
+// scoring subject's fields), the car (year, first_registration, the ownership record), its models row (make,
+// model, sub_model, the comparison-group fields, degem_code + vehicle_class for the new-price join), the
+// seller's dealer_type — and, Day 19 (§1.3, §6.1), the listing's latest price-history row, which is where the
+// day its CURRENT price was observed comes from. scoringSubject() requires the relation, so a market listing
+// loaded without it fails to compile rather than being scored at a date that is silently wrong.
 const INCLUDE = {
   car: { include: { model: true } },
   dealer: { select: { dealer_type: true } },
+  price_history: { orderBy: [{ observed_at: "desc" }, { id: "desc" }], take: 1, select: { observed_at: true, price: true } },
 } as const satisfies Prisma.listingsInclude;
 
 export type MarketListing = Prisma.listingsGetPayload<{ include: typeof INCLUDE }>;

@@ -20,10 +20,14 @@
 // `--plates=1234567,...`; everything that threw.
 //
 // Day 13 §1 — the regression block classifies. Every difference between a stored score and the
-// recomputed one carries exactly one label, the first that applies: VERSION, NEW, CLOCK, DATA, NORM,
-// else UNEXPLAINED; only UNEXPLAINED counts as a regression (decision, Eran 09/09: a difference
-// explained by the clock is not one). The engine is not touched — CLOCK re-runs it read-only with the
-// stored scored_at as `now`, DATA and NORM read the inputs and norm values the stored breakdown carries.
+// recomputed one carries exactly one label, the first that applies: VERSION, NEW, DATA, NORM, else
+// UNEXPLAINED; only UNEXPLAINED counts as a regression. The engine is not touched — DATA and NORM read
+// the inputs and norm values the stored breakdown carries.
+//
+// Day 19 (§5.1) — the run-clock label is retired: the engine reads no run clock, so a difference it could
+// have explained does not exist. A recomputation "at the old date" now REPLACES the listing's three
+// observation dates with the stored run clock, and only for a stored score of an engine that read one
+// (regression.ts, atRunClock / FIRST_CLOCK_FREE_ENGINE).
 //
 // Day 14 §6.3 — the classifier's VERSION label is no longer "listed, not compared". v2 -> v3 moves a
 // listing's deal by a KNOWN amount: (old typical_condition - new median_history) + (new km row - old km
@@ -47,7 +51,8 @@
 // (§19.1) and one UPDATE listings … FROM unnest(...) setting score = deal_score, score_breakdown = the
 // result, scored_at = now, market_stats_id / model_stats_id / pool_stats_id = the ids of the three rows
 // the score used (or null), engine_version = ENGINE_VERSION (and updated_at, which Prisma's update would
-// have touched). Prisma's default transaction timeout. The report is printed in both modes.
+// have touched). The transaction runs under WRITE_TRANSACTION_OPTIONS (Run 4a: 120 s, not Prisma's 5 s
+// default — the from-cache backfill hit it). The report is printed in both modes.
 //
 // Day 17 run 4 §2 — the classifier itself is no longer here: it lives in src/lib/scoring/regression.ts
 // as a pure module that opens no database. This script keeps the three things the module cannot do — it
@@ -90,7 +95,7 @@ import { parseAnchorPoints } from "@/lib/norms/anchor-points";
 import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
 import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
 import {
-  classify, fmt, storedRowValue, storedSums, versionExpectation,
+  atRunClock, classify, fmt, storedRowValue, storedSums, versionExpectation,
   DATA_COVERS, DATA_MISSING, LABELS, LABEL_WIDTH, ROUNDING_ALLOWANCE,
   type Label, type NormKind, type NormRows, type StoredBreakdown, type VersionCheck,
 } from "@/lib/scoring/regression";
@@ -130,7 +135,7 @@ type Scored = {
   market_stats_id: number | null;
   model_stats_id: number | null; // Day 14 §6.2: the score points at the row it used from each level
   pool_stats_id: number | null;
-  input: ScoringInput; // kept for the §1 CLOCK check: the same inputs, a different `now`
+  input: ScoringInput; // kept for the auditor's recomputations: the same inputs, other observation dates
   result: Invoice; // Day 18: possibly the cancelled invoice
   // Day 13 §1: what listings holds now — the classifier compares against all of it. Day 14 run B: score comes
   // from the column (it stays); condition_score and the confidence level come out of the stored invoice, which is
@@ -174,7 +179,13 @@ async function main() {
 
   const listings = await db.listings.findMany({
     where: { delisted_at: null },
-    include: { car: { include: { model: true } }, dealer: { select: { dealer_type: true } } },
+    include: {
+      car: { include: { model: true } },
+      dealer: { select: { dealer_type: true } },
+      // Day 19 (§1.3): the latest price-history row — the day the listing's CURRENT price was observed.
+      // scoringSubject() requires the relation, so a loader that forgets it fails to compile.
+      price_history: { orderBy: [{ observed_at: "desc" }, { id: "desc" }], take: 1, select: { observed_at: true, price: true } },
+    },
     orderBy: { id: "asc" },
   });
 
@@ -326,7 +337,7 @@ async function main() {
       }
 
       const input: ScoringInput = { ...subject, market, model_stats, pool_stats };
-      const result = scoreListing(input, now);
+      const result = scoreListing(input);
       // Day 18 (§8): a cancelled invoice read no norm row, so it points at none.
       const pointers = isCancelled(result)
         ? { market_stats_id: null, model_stats_id: null, pool_stats_id: null }
@@ -348,6 +359,16 @@ async function main() {
   log(`listings (delisted_at is null): ${listings.length}; scored: ${scored.length}; threw: ${failed.length}`);
   log(`no cell row: ${noNorm}; no model row: ${noModelNorm}; pool row: ${poolNormRow === null ? "none" : `id ${poolNormRow.id}`}; model without comparison_group: ${noGroup}; comparison_group != groupKey(fields): ${keyMismatch}`);
   log(`norm row from an older engine (all three tables): ${staleNorm} (must be 0); listings with no new-car price: ${noNewPrice}`);
+
+  // Day 19 (§1.4, §7.5 a): the loader self-check. listing_price_history was read by nothing but its writers
+  // until this run, so this is the first check that the relation says what listings.price says. Expected 0 / 0;
+  // a non-zero is printed and reported, never a stop.
+  {
+    const noHistory = listings.filter((l) => l.price_history.length === 0);
+    const priceDiffers = listings.filter((l) => l.price_history.length > 0 && l.price_history[0].price !== l.price);
+    log(`listings without a price-history row: ${noHistory.length}${noHistory.length ? ` (${noHistory.map((l) => l.id).join(", ")})` : ""}`);
+    log(`latest history price != listings.price: ${priceDiffers.length}${priceDiffers.length ? ` (${priceDiffers.map((l) => l.id).join(", ")})` : ""}`);
+  }
 
   // Day 18 (§8): the scored invoices, for the sections below that read rows, checks or the sold signal.
   const scoredOnly = scored.filter((s): s is Scored & { result: ScoreResult } => !isCancelled(s.result));
@@ -508,13 +529,25 @@ async function main() {
       norms: { median: s.input.market, slope: s.input.model_stats, anchor: s.input.pool_stats },
       stored: { ...s.stored, norms: sn.norms, missing: sn.missing },
       engine_version: ENGINE_VERSION,
-      // The callback: the engine, this listing's current data, the norm rows and the clock it is asked for.
-      scoreWith: (norms, at) => scoreListing({ ...s.input, market: norms.median, model_stats: norms.slope, pool_stats: norms.anchor }, at),
+      // The callback: the engine, this listing's current data and the norm rows it is asked for. Day 19
+      // (§5.2): with a clock it scores the input whose three observation dates are that clock, without one
+      // the input exactly as loaded. The way the three norm rows are placed is unchanged.
+      scoreWith: (norms, clock) => {
+        const base = clock === null ? s.input : atRunClock(s.input, clock);
+        return scoreListing({ ...base, market: norms.median, model_stats: norms.slope, pool_stats: norms.anchor });
+      },
     });
     if (c !== null) labelled.push({ s, label: c.label, head: c.head, detail: c.detail });
   }
   const labelCount = (l: Label) => labelled.filter((x) => x.label === l).length;
-  log(`regression count: ${labelCount("UNEXPLAINED")} (must be 0) = UNEXPLAINED only; ${LABELS.map((l) => `${l} ${labelCount(l)}`).join(", ")}; unchanged ${scored.length - labelled.length} of ${scored.length}`);
+  // Day 19 (7.4 b): only the labels that actually carried a line, plus UNEXPLAINED and THREW whatever their
+  // count — their zero IS the result. A list of forty labels at zero said nothing.
+  const nonZero = LABELS.filter((l) => l !== "UNEXPLAINED" && labelCount(l) > 0).map((l) => `${l} ${labelCount(l)}`);
+  log(
+    `regression count: UNEXPLAINED ${labelCount("UNEXPLAINED")} (must be 0), THREW ${failed.length} (must be 0)` +
+    `${nonZero.length ? `; ${nonZero.join(", ")}` : "; no other label carried a line"}` +
+    `; unchanged ${scored.length - labelled.length} of ${scored.length}`,
+  );
   log(`DATA compares the inputs the stored breakdown carries: ${DATA_COVERS.join("; ")}`);
   log(`DATA cannot see (not carried in the breakdown): ${DATA_MISSING.join("; ")}`);
   // Q13: each sub-rule must carry exactly the §6.4 population it was written for — no more, no fewer.
@@ -523,18 +556,23 @@ async function main() {
   // carry — and comparing 0 against the two populations reads as a MISMATCH that is not one. Say so
   // instead. The check itself is unchanged on any run that does have a version move to describe.
   const anchorCount = labelCount("VERSION (anchor)"), typicalCount = labelCount("VERSION (typical)");
-  const versionMoved = scored.some((s) => s.stored.engine_version !== null && s.stored.engine_version !== ENGINE_VERSION);
+  // Day 19 (7.4 a): the two sub-rules, the per-cell constant and the Mazda check all describe ONE move -
+  // v2 -> v3. Outside that pair their MISMATCH / "must be 0" lines mean nothing, so the run prints them only
+  // when it actually compared a stored engine 2 against the current engine 3.
+  const v2v3 = (ENGINE_VERSION as number) === 3 && scored.some((s) => s.stored.engine_version === 2);
+  if (v2v3) {
   log(
-    !versionMoved
-      ? `Q13 sub-rules: n/a — same engine version (every stored score is already engine_version ${ENGINE_VERSION}, so no listing takes the VERSION label; the populations they describe are ${thin.length} thin-cell listings and ${noHistory.length} cars with no ownership record)`
-      : `Q13 sub-rules: VERSION (anchor) ${anchorCount} vs ${thin.length} thin-cell listings — ${anchorCount === thin.length ? "match" : "MISMATCH"}; ` +
+      `Q13 sub-rules: VERSION (anchor) ${anchorCount} vs ${thin.length} thin-cell listings — ${anchorCount === thin.length ? "match" : "MISMATCH"}; ` +
           `VERSION (typical) ${typicalCount} vs ${noHistory.length} cars with no ownership record — ${typicalCount === noHistory.length ? "match" : "MISMATCH"}`,
   );
+  }
   for (const x of labelled) {
     log(`${x.label.padEnd(LABEL_WIDTH)} | listing ${x.s.listing_id} (${x.s.plate}) | ${x.head}`);
     for (const d of x.detail) log(`              ${d}`);
   }
 
+  // Day 19 (7.4 a): v2 -> v3 diagnostics - printed only when such a pair was actually compared.
+  if (v2v3) {
   // §6.3: the per-cell constant, and the check that it is one number for the whole cell.
   log(`\n===== §6.3 PER-CELL CONSTANT (old typical_condition - new median_history) =====`);
   const byCell = new Map<string, { s: Scored; v: VersionCheck }[]>();
@@ -571,6 +609,7 @@ async function main() {
   });
   log(`§0.7 Mazda check: ${mazda.length} listing(s) compared; km row or history + km moved on ${mazdaMoved.length} (must be 0)`);
   for (const s of mazdaMoved) log(`  listing ${s.listing_id} (${s.plate}): condition_score ${fmt(s.stored.condition_score)} -> ${fmt(s.result.condition_score)}`);
+  }
 
   // ---------- §6.4 ----------
   log(`\n===== §6.4 CARS WITH NO REGISTRY HISTORY =====`);
@@ -607,6 +646,145 @@ async function main() {
     const pts = parseAnchorPoints(poolNormRow.anchor_points, `pool_stats ${poolNormRow.id}`);
     log(`anchor_points (Day 18 §5, the model-year gate): ${pts === null ? "null — a row written before the column existed, so no listing is anchored" : pts.length === 0 ? "[] — no point" : pts.map((p) => `${p.make} ${p.model} ${p.year} (n ${p.n})`).join("; ")}`);
   }
+
+  // ---------- Day 19 (§7.5): the read-back blocks ----------
+  // Dry-run reporting only. NONE of these feeds a score: they exist so the clock freeze can be seen moving
+  // the numbers it was meant to move, and nothing else.
+  log(`\n===== DAY 19 §7.5 READ-BACK (report only; no rule reads any of it) =====`);
+
+  const q = (xs: number[], p: number): number | null => {
+    if (xs.length === 0) return null;
+    const s = [...xs].sort((a, b) => a - b);
+    const i = Math.min(s.length - 1, Math.max(0, Math.round(p * (s.length - 1))));
+    return s[i];
+  };
+  const r1 = (v: number) => Math.round(v * 10) / 10;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const storedBd = (s: Scored) => (s.stored.breakdown ?? null) as StoredBreakdown | null;
+  const freshRow = (s: Scored, row: string) => s.result.rows.find((r) => r.row === row);
+  const freshValue = (s: Scored, row: string) => {
+    const r = freshRow(s, row);
+    return r && r.status === "scored" && typeof r.value === "number" ? r.value : null;
+  };
+
+  // (b) km row move — per model, over listings whose km row is available on BOTH sides.
+  log(`\n-- (b) km row move (fresh - stored), listings whose km row is scored in both invoices`);
+  log("model | n | min | p10 | median | p90 | max");
+  const kmMoves: { s: Scored; move: number; stored: number; fresh: number }[] = [];
+  for (const s of scored) {
+    const bd = storedBd(s);
+    if (bd === null) continue;
+    const st = storedRowValue(bd, "km");
+    const fr = freshValue(s, "km");
+    if (st === null || fr === null) continue;
+    kmMoves.push({ s, move: r2(fr - st), stored: st, fresh: fr });
+  }
+  for (const model of [...new Set(kmMoves.map((x) => x.s.model ?? "?"))].sort()) {
+    const ms = kmMoves.filter((x) => (x.s.model ?? "?") === model).map((x) => x.move);
+    log(`${model} | ${ms.length} | ${fmt(q(ms, 0))} | ${fmt(q(ms, 0.1))} | ${fmt(q(ms, 0.5))} | ${fmt(q(ms, 0.9))} | ${fmt(q(ms, 1))}`);
+  }
+  const bigKm = kmMoves.filter((x) => Math.abs(x.move) >= 0.2).sort((a, b) => Math.abs(b.move) - Math.abs(a.move));
+  log(`listings with |move| >= 0.2: ${bigKm.length}`);
+  for (const x of bigKm) log(`  listing ${x.s.listing_id} (${x.s.plate}): ${fmt(x.stored)} -> ${fmt(x.fresh)} (${fmt(x.move)})`);
+
+  // (c) anchor price row move — every listing whose STORED or FRESH price row is an anchor row.
+  log(`\n-- (c) anchor price row move`);
+  log("listing | plate | price_observed_at | age stored -> fresh | value stored -> fresh");
+  const isAnchor = (r: { source?: string; note?: string } | undefined) => r?.source === "anchor" || r?.note === "vs_new_price";
+  let anchorRows = 0;
+  for (const s of scored) {
+    const bd = storedBd(s);
+    const sp = bd?.rows?.find((r) => r.row === "price");
+    const fp = freshRow(s, "price");
+    if (!isAnchor(sp) && !isAnchor(fp)) continue;
+    anchorRows++;
+    const sAge = typeof sp?.raw?.age === "number" ? r2(sp.raw.age as number) : null;
+    const fAge = typeof fp?.raw?.age === "number" ? r2(fp.raw.age as number) : null;
+    log(
+      `${s.listing_id} | ${s.plate} | ${s.input.listing.price_observed_at.toISOString().slice(0, 10)} | ` +
+      `${fmt(sAge)} -> ${fmt(fAge)} | ${fmt(bd === null ? null : storedRowValue(bd, "price"))} -> ${fmt(freshValue(s, "price"))}`,
+    );
+  }
+  if (anchorRows === 0) log("  none — no stored or fresh price row is an anchor row");
+
+  // (d) triple move — per model, and every listing whose confidence LEVEL differs.
+  log(`\n-- (d) triple move`);
+  log("model | |deal| >= 0.1 | largest deal move | |condition| >= 0.1 | largest condition move");
+  const moveOf = (a: number | null, b: number | null) => (a === null || b === null ? null : r2(b - a));
+  for (const model of [...new Set(scored.map((s) => s.model ?? "?"))].sort()) {
+    const ms = scored.filter((s) => (s.model ?? "?") === model);
+    const deals = ms.map((s) => moveOf(s.stored.score, s.result.deal_score)).filter((v): v is number => v !== null);
+    const conds = ms.map((s) => moveOf(s.stored.condition_score, s.result.condition_score)).filter((v): v is number => v !== null);
+    const big = (xs: number[]) => xs.filter((v) => Math.abs(v) >= 0.1).length;
+    const largest = (xs: number[]) => (xs.length === 0 ? null : xs.reduce((m, v) => (Math.abs(v) > Math.abs(m) ? v : m), 0));
+    log(`${model} | ${big(deals)} | ${fmt(largest(deals))} | ${big(conds)} | ${fmt(largest(conds))}`);
+  }
+  const confMoved = scored.filter((s) => {
+    const level = s.result.confidence?.level ?? null;
+    return s.stored.confidence !== null && level !== null && s.stored.confidence !== level;
+  });
+  log(`listings whose confidence LEVEL differs stored -> fresh: ${confMoved.length}`);
+  for (const s of confMoved) {
+    const bd = storedBd(s);
+    const oldItems = (((bd as unknown as { confidence?: { items?: { kind?: string; ref?: string }[] } } | null)?.confidence?.items) ?? []).map((i) => `${i.kind}:${i.ref}`);
+    const newItems = (s.result.confidence?.items ?? []).map((i) => `${i.kind}:${i.ref}`);
+    const appeared = newItems.filter((i) => !oldItems.includes(i));
+    const gone = oldItems.filter((i) => !newItems.includes(i));
+    log(
+      `  listing ${s.listing_id} (${s.plate}): ${s.stored.confidence} -> ${s.result.confidence?.level ?? "-"}` +
+      ` | appeared: ${appeared.join(", ") || "none"} | disappeared: ${gone.join(", ") || "none"}`,
+    );
+  }
+
+  // (e) km date in use — the three listings 5b gave a km_observed_at of their own.
+  log(`\n-- (e) km date in use (listings 61, 107, 152)`);
+  log("listing | plate | first_seen_at | km_observed_at | fresh raw.age_years");
+  for (const id of [61, 107, 152]) {
+    const s = scored.find((x) => x.listing_id === id);
+    if (s === undefined) { log(`${id} | not among the live listings of this run`); continue; }
+    const age = freshRow(s, "km")?.raw?.age_years;
+    log(
+      `${id} | ${s.plate} | ${s.input.listing.first_seen_at.toISOString()} | ${s.input.listing.km_observed_at.toISOString()} | ` +
+      `${typeof age === "number" ? r2(age) : "-"}`,
+    );
+  }
+
+  // (f) a test newer than the km observation. Information for the chat; no rule reads it.
+  log(`\n-- (f) test newer than the km observation`);
+  const testAfterKm = scored.filter((s) => {
+    const t = s.input.car.mivchan_acharon_dt;
+    return t !== null && t.getTime() > s.input.listing.km_observed_at.getTime();
+  });
+  log(`test newer than the km observation: ${testAfterKm.length}`);
+  if (testAfterKm.length) log("plate | km_observed_at | mivchan_acharon_dt | km_declared | km_at_last_test | km check kind");
+  for (const s of testAfterKm) {
+    const kc = s.result.checks?.find((c) => c.check === "km");
+    log(
+      `${s.plate} | ${s.input.listing.km_observed_at.toISOString().slice(0, 10)} | ${(s.input.car.mivchan_acharon_dt as Date).toISOString().slice(0, 10)} | ` +
+      `${s.input.listing.km_declared ?? "-"} | ${s.input.car.km_at_last_test ?? "-"} | ${kc?.kind ?? kc?.status ?? "-"}`,
+    );
+  }
+
+  // (g) days on air. A report line on the run clock — legitimate: it feeds nothing.
+  log(`\n-- (g) days on air (live listings, now - first_seen_at in whole days; on the run clock, feeds nothing)`);
+  log("model | n | min | median | p90 | max");
+  for (const model of [...new Set(scored.map((s) => s.model ?? "?"))].sort()) {
+    const ds = scored
+      .filter((s) => (s.model ?? "?") === model)
+      .map((s) => Math.floor((now.getTime() - s.input.listing.first_seen_at.getTime()) / 86_400_000));
+    log(`${model} | ${ds.length} | ${fmt(q(ds, 0))} | ${fmt(q(ds, 0.5))} | ${fmt(q(ds, 0.9))} | ${fmt(q(ds, 1))}`);
+  }
+
+  // (h) the colour read-back.
+  log(`\n-- (h) colour read-back (every color_mismatch)`);
+  log("plate | ad's word | registry's word");
+  const mismatches = scoredOnly.filter((s) => s.result.facts.color_mismatch !== undefined);
+  for (const s of mismatches) {
+    const cm = s.result.facts.color_mismatch as { ad: string; registry: string };
+    log(`${s.plate} | ${cm.ad} | ${cm.registry}`);
+  }
+  if (mismatches.length === 0) log("  none");
+  void r1;
 
   log(`\n===== REALITY DELTA (condition_by_reality !== condition_score) =====`);
   const historyOf = (s: Scored & { result: ScoreResult }) => s.result.rows.find((r) => r.row === "history")!;
@@ -645,7 +823,7 @@ async function main() {
     console.log(`\n[DRY RUN] nothing written to the database; report written to ${REPORT_FILE}`);
     return;
   }
-  // §22.2: one statement per table, inside one transaction, default timeout.
+  // §22.2: one statement per table, inside one transaction, under WRITE_TRANSACTION_OPTIONS (Run 4a: 120 s).
   const ids = scored.map((s) => s.listing_id);
   const deal = scored.map((s) => s.result.deal_score);
   const breakdown = scored.map((s) => JSON.stringify(s.result));

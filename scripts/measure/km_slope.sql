@@ -8,7 +8,7 @@ x as (
   select c.year,
          100.0 * (l.price - n.median_price) / n.median_price as price_dev_pct,
          (l.km_declared - n.median_km)
-           / greatest(extract(epoch from (now() - c.first_registration)) / 31557600.0, 0.5) / 1000.0 as km_dev_k_per_year
+           / greatest(extract(epoch from (l.km_observed_at - c.first_registration)) / 31557600.0, 0.5) / 1000.0 as km_dev_k_per_year
   from listings l
   join cars c on c.id = l.car_id
   join models mo on mo.id = c.model_id

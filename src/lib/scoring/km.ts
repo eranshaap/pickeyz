@@ -7,17 +7,19 @@
 //
 //   value = clamp(slope × km_dev_per_year / 1000, ±KM_CAP_PCT)
 //
+// Day 19 (§4): the unit of km_dev_per_year is the deviation divided by the car's age ON THE DAY THE KM WAS
+// OBSERVED (listings.km_observed_at) — not its age today. No constant's value changed.
+//
 // Floor: the model's slope counts only from KM_SLOPE_MIN_SAMPLE listings in its regression; below that
 // (and when the model has no row at all, or its slope could not be measured) the row uses the default
 // KM_SLOPE_PCT_PER_1000_PER_YEAR, which is now signed the same way. raw records which was used and why:
 // slope_source names the choice, km_slope_n is the number it was made on. §9.3: the row also carries
 // based_on_n — it compares against the cell's median_km, so the same "based on N listings" fact applies.
 
+import { ageYears } from "./age";
 import { AGE_FLOOR_YEARS, KM_CAP_PCT, KM_SLOPE_MIN_SAMPLE, KM_SLOPE_PCT_PER_1000_PER_YEAR, MIN_SAMPLE } from "./constants";
 import type { ModelNorm, Row, ScoringInput } from "./types";
 import { clamp, round } from "./util";
-
-const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
 
 export type SlopeChoice = { slope_used: number; slope_source: "model" | "default"; km_slope_n: number | null; model_stats_id: number | null };
 
@@ -36,10 +38,13 @@ export function slopeFor(model: ModelNorm | null): SlopeChoice {
   };
 }
 
-export function kmRow(input: ScoringInput, now: Date): Row {
+export function kmRow(input: ScoringInput): Row {
   const { listing, car, market } = input;
   const slope = slopeFor(input.model_stats);
-  const raw: Record<string, unknown> = { km_declared: listing.km_declared, ...slope };
+  // Day 19 (§3.2): the row records the date its age was read at, always — like km_declared, on the
+  // unavailable row too.
+  const km_observed_at = listing.km_observed_at.toISOString();
+  const raw: Record<string, unknown> = { km_declared: listing.km_declared, km_observed_at, ...slope };
   if (listing.km_declared === null) return { row: "km", status: "unavailable", reason: "no_km", raw };
   if (market === null) return { row: "km", status: "unavailable", reason: "no_market_row", raw };
   raw.median_km = market.median_km;
@@ -49,7 +54,9 @@ export function kmRow(input: ScoringInput, now: Date): Row {
   if (market.median_km === null) return { row: "km", status: "unavailable", reason: "no_median_km", raw };
   if (car.first_registration === null) return { row: "km", status: "unavailable", reason: "no_registration_date", raw };
 
-  const age_years = Math.max((now.getTime() - car.first_registration.getTime()) / YEAR_MS, AGE_FLOOR_YEARS);
+  // Day 19 (§3.1): the age the ad's km is paired with is the car's age on the day that km was OBSERVED,
+  // not on the day of the run. The floor is unchanged and this is still the only site that applies it.
+  const age_years = Math.max(ageYears(car.first_registration, listing.km_observed_at), AGE_FLOOR_YEARS);
   const km_dev_per_year = (listing.km_declared - market.median_km) / age_years;
   const value = clamp((slope.slope_used * km_dev_per_year) / 1000, -KM_CAP_PCT, KM_CAP_PCT);
   return {
@@ -57,6 +64,6 @@ export function kmRow(input: ScoringInput, now: Date): Row {
     status: "scored",
     source: "ad",
     value: round(value),
-    raw: { km_declared: listing.km_declared, median_km: market.median_km, based_on_n: market.sample_size, age_years, km_dev_per_year, ...slope },
+    raw: { km_declared: listing.km_declared, km_observed_at, median_km: market.median_km, based_on_n: market.sample_size, age_years, km_dev_per_year, ...slope },
   };
 }

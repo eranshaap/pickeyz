@@ -5,7 +5,7 @@ with norm as (
   order by comparison_group, year, computed_at desc
 ),
 base as (
-  select c.license_plate, l.hand_declared, c.hand, l.km_declared, c.km_at_last_test, c.ownership_history,
+  select c.license_plate, l.hand_declared, c.hand, l.km_declared, c.km_at_last_test, c.ownership_history, l.first_seen_at,
          (d.dealer_type <> 'private') as is_dealer, n.sample_size,
          c.ownership_history -> -1 ->> 'type' as last_type,
          c.ownership_history -> -1 ->> 'ym'   as last_ym,
@@ -27,7 +27,7 @@ flags as (
     (sample_size is null or sample_size < 5) as thin,
     (ownership_history is null) as no_history,
     (is_dealer and last_type = 'private' and has_dealer_row
-       and last_ym >= to_char(now() - interval '3 months', 'YYYY-MM')) as possibly_sold,
+       and last_ym >= to_char(first_seen_at - interval '3 months', 'YYYY-MM')) as possibly_sold,
     (hand_declared is not null and hand is not null and hand_declared <> hand
        and not (hand_declared = hand - 1 and private_pair)) as hand_gap,
     (km_declared is not null and km_at_last_test > 0 and km_declared - km_at_last_test < -5000) as km_gap

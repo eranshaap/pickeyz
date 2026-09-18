@@ -354,7 +354,13 @@ async function main() {
         priceLines.push(`  ${row.external_id} (${row.plate}): ${w.from} -> ${w.to}`);
       } else if (w.field === "km_declared" || w.field === "hand_declared") {
         wrote.kmhand++;
-        kmHand.push(`${w.field === "km_declared" ? "km" : "hand"} ${w.from ?? "—"} -> ${w.to}`);
+        // Day 19 (§8.5): a km change now carries the day it was observed, so the line shows it. A hand change
+        // writes no date (§8.3) and its line is unchanged. The counters are untouched.
+        kmHand.push(
+          w.field === "km_declared"
+            ? `km ${w.from ?? "—"} -> ${w.to} · observed ${w.observed_at.toISOString().slice(0, 10)}`
+            : `hand ${w.from ?? "—"} -> ${w.to}`,
+        );
       } else if (w.field === "last_verified_at") wrote.lastVerified++;
       else wrote.delisted++;
     }

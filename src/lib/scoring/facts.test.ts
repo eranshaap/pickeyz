@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { ENGINE_VERSION } from "./constants";
 import { confidence } from "./confidence";
 import { isCancelled, scoreListing } from "./index";
-import { cell, input, NOW, rows, scoreScored } from "./fixtures";
+import { cell, input, rows, scoreScored } from "./fixtures";
 import type { Check, Row, SoldSignal } from "./types";
 
 const market = cell({ median_history: -12 });
@@ -14,7 +14,7 @@ const recorded = { hand: 1, ownership_history: rows("private 2022-01"), first_re
 
 describe("a cancelled car (§8)", () => {
   it("the invoice is the cancelled one: the date, no rows, no sums, no confidence", () => {
-    const r = scoreListing(input({ listing: { price: 90000, km_declared: 20000 }, car: { ...recorded, cancelled_at: new Date("2026-09-10T00:00:00.000Z") }, market }), NOW);
+    const r = scoreListing(input({ listing: { price: 90000, km_declared: 20000 }, car: { ...recorded, cancelled_at: new Date("2026-09-10T00:00:00.000Z") }, market }));
     assert.equal(isCancelled(r), true);
     assert.deepEqual(r, {
       engine_version: ENGINE_VERSION,
@@ -32,7 +32,7 @@ describe("a cancelled car (§8)", () => {
   });
 
   it("the same car without cancelled_at is scored as always", () => {
-    const r = scoreListing(input({ listing: { price: 90000, km_declared: 20000 }, car: recorded, market }), NOW);
+    const r = scoreListing(input({ listing: { price: 90000, km_declared: 20000 }, car: recorded, market }));
     assert.equal(isCancelled(r), false);
     assert.equal(r.rows.length, 3);
     assert.notEqual(r.deal_score, null);
@@ -42,8 +42,8 @@ describe("a cancelled car (§8)", () => {
 describe("the registry's current holder (§3.3)", () => {
   it("is recorded as a fact, as received — and changes nothing else", () => {
     const base = input({ listing: { price: 90000, km_declared: 20000 }, car: recorded, market });
-    const none = scoreScored(base, NOW);
-    const dealer = scoreScored({ ...base, car: { ...base.car, current_owner_type: "dealer" } }, NOW);
+    const none = scoreScored(base);
+    const dealer = scoreScored({ ...base, car: { ...base.car, current_owner_type: "dealer" } });
     assert.equal(none.facts.current_owner_registry, null);
     assert.equal(dealer.facts.current_owner_registry, "dealer");
     const { facts: fa, ...restNone } = none;
@@ -55,7 +55,7 @@ describe("the registry's current holder (§3.3)", () => {
 
 describe("colour (§9)", () => {
   const score = (car: Partial<ReturnType<typeof input>["car"]>) =>
-    scoreScored(input({ listing: { price: 90000, km_declared: 20000 }, car: { ...recorded, ...car }, market }), NOW);
+    scoreScored(input({ listing: { price: 90000, km_declared: 20000 }, car: { ...recorded, ...car }, market }));
 
   it("history 1 says the colour changed → color_changed_reported; false or null → no such fact", () => {
     assert.equal(score({ color_changed: true }).facts.color_changed_reported, true);

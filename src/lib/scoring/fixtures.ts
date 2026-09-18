@@ -4,6 +4,9 @@ import { ENGINE_VERSION } from "./constants";
 import { scoreListing } from "./index";
 import { isCancelled, type AnchorPoint, type CellNorm, type ModelNorm, type OwnershipRow, type PoolNorm, type ScoreResult, type ScoringInput } from "./types";
 
+// Day 19: the engine reads no run clock any more, so this date is no longer a `now` passed in — it is the
+// fixture listing's OBSERVATION date, the default for km_observed_at and price_observed_at. Every expected
+// number in the existing tests therefore stands unchanged: the same date reaches the same three sites.
 export const NOW = new Date("2026-09-06T12:00:00.000Z");
 export const FIXTURE_MAKE = "MAKE";
 export const FIXTURE_MODEL = "MODEL";
@@ -24,6 +27,8 @@ export function input(over: Over = {}): ScoringInput {
       km_declared: null,
       hand_declared: null,
       first_seen_at: new Date("2026-08-01T00:00:00.000Z"),
+      km_observed_at: NOW,
+      price_observed_at: NOW,
       seller_type: "private",
       owners_at_first_seen: null,
       new_price: null,
@@ -55,8 +60,8 @@ export function input(over: Over = {}): ScoringInput {
 
 // Day 18 (§8): scoreListing returns the cancelled invoice too. A test about a scored invoice reads it through
 // this, which fails the test loudly if the input turned out to be a cancelled car.
-export function scoreScored(i: ScoringInput, now: Date): ScoreResult {
-  const r = scoreListing(i, now);
+export function scoreScored(i: ScoringInput): ScoreResult {
+  const r = scoreListing(i);
   if (isCancelled(r)) throw new Error("fixture: expected a scored invoice, got the cancelled one");
   return r;
 }

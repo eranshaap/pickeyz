@@ -13,6 +13,11 @@
 //             dealer row with ym within the last SOLD_SIGNAL_RECENT_MONTHS.
 //   4 medium  seller is private and any row follows the last private row with ym within the last
 //             SOLD_SIGNAL_RECENT_MONTHS.
+//
+// Day 19 (§3.4) — the clock freeze: "the last SOLD_SIGNAL_RECENT_MONTHS" are measured back from the
+// listing's own first_seen_at, not from the run clock. The question the signal asks is whether the record
+// moved around the time the ad went up, and that is a fact about the ad, not about the day it is read.
+// The rules themselves are untouched; only the month index they count back from is another date.
 
 import { SOLD_SIGNAL_RECENT_MONTHS } from "./constants";
 import type { OwnershipRow, ScoringInput, SoldSignal } from "./types";
@@ -20,14 +25,16 @@ import { dateToYm, ymIndex } from "./util";
 
 const FLEET_TYPES: readonly string[] = ["leasing", "rental", "company"];
 
-export function soldSignal(input: ScoringInput, now: Date): SoldSignal {
+export function soldSignal(input: ScoringInput): SoldSignal {
   const rows = input.car.ownership_history ?? [];
   const none: SoldSignal = { strength: null, evidence: [] };
   if (rows.length === 0) return none;
 
   const seller = input.listing.seller_type;
-  const nowIdx = ymIndex(dateToYm(now));
-  const recent = (r: OwnershipRow) => nowIdx - ymIndex(r.ym) <= SOLD_SIGNAL_RECENT_MONTHS;
+  // Day 19 (§3.4): the window is measured back from the listing's first sighting.
+  const from = input.listing.first_seen_at;
+  const fromIdx = ymIndex(dateToYm(from));
+  const recent = (r: OwnershipRow) => fromIdx - ymIndex(r.ym) <= SOLD_SIGNAL_RECENT_MONTHS;
   const newest = rows[rows.length - 1];
 
   // 1
@@ -60,7 +67,7 @@ export function soldSignal(input: ScoringInput, now: Date): SoldSignal {
       if (hit) {
         return {
           strength: "medium",
-          evidence: [`rule 3: private row ${hit.ym} follows the last dealer row ${rows[lastDealer].ym}, within ${SOLD_SIGNAL_RECENT_MONTHS} months of ${dateToYm(now)}`],
+          evidence: [`rule 3: private row ${hit.ym} follows the last dealer row ${rows[lastDealer].ym}, within ${SOLD_SIGNAL_RECENT_MONTHS} months of ${dateToYm(from)}`],
         };
       }
     }
@@ -75,7 +82,7 @@ export function soldSignal(input: ScoringInput, now: Date): SoldSignal {
       if (hit) {
         return {
           strength: "medium",
-          evidence: [`rule 4: ${hit.type} row ${hit.ym} follows the seller's private row ${rows[lastPrivate].ym}, within ${SOLD_SIGNAL_RECENT_MONTHS} months of ${dateToYm(now)}`],
+          evidence: [`rule 4: ${hit.type} row ${hit.ym} follows the seller's private row ${rows[lastPrivate].ym}, within ${SOLD_SIGNAL_RECENT_MONTHS} months of ${dateToYm(from)}`],
         };
       }
     }

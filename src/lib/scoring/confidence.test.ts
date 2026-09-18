@@ -103,7 +103,6 @@ describe("scoreListing (§5, §9)", () => {
         },
         market,
       }),
-      NOW,
     );
     assert.equal(r.engine_version, ENGINE_VERSION);
     assert.equal(r.unit, "pct_of_value");
@@ -116,12 +115,12 @@ describe("scoreListing (§5, §9)", () => {
     assert.equal(r.partial, undefined);
     assert.deepEqual(r.checks.map((c) => [c.check, c.status, c.kind]), [["hand", "mismatch", "zero_km_undercount"], ["km", "match", undefined]]);
     assert.deepEqual(r.sold_signal, { strength: null, evidence: [] });
-    assert.deepEqual(r.facts, { dealer_transfers: 0, months_since_test: 8, km_per_month_since_test: 125, test_expiry: "2027-01-27", months_left: 4, current_owner_registry: null });
+    assert.deepEqual(r.facts, { dealer_transfers: 0, months_since_test: 8, km_per_month_since_test: 125, test_expiry: "2027-01-27", current_owner_registry: null });
     assert.deepEqual(r.confidence, { level: "medium", items: [{ kind: "counted_mismatch", ref: "hand:zero_km_undercount" }] });
   });
 
   it("km unavailable, history scored → condition = history alone, partial ['km']", () => {
-    const r = scoreListing(input({ listing: { price: 100000 }, car: { hand: 2, ownership_history: rows("private 2021-01, private 2023-01") }, market }), NOW);
+    const r = scoreListing(input({ listing: { price: 100000 }, car: { hand: 2, ownership_history: rows("private 2021-01, private 2023-01") }, market }));
     assert.equal(r.condition_score, -4);
     assert.deepEqual(r.partial, ["km"]);
     assert.equal(r.rows[2].reason, "no_km");
@@ -132,7 +131,7 @@ describe("scoreListing (§5, §9)", () => {
   it("history unavailable → condition, vs typical and deal are null; price stands alone", () => {
     // Day 14: a car with no record takes the cell's typical, so "history unavailable" now needs a cell
     // that has no typical either.
-    const r = scoreListing(input({ listing: { price: 80000 }, market: cell({ median_history: null }) }), NOW);
+    const r = scoreListing(input({ listing: { price: 80000 }, market: cell({ median_history: null }) }));
     assert.equal(r.price_advantage, 20);
     assert.equal(r.condition_score, null);
     assert.equal(r.condition_vs_typical, null);
@@ -144,7 +143,7 @@ describe("scoreListing (§5, §9)", () => {
   // the listing is medium — never low for being thin.
   it("thin cell, no new price → no typical_history, no deal; both rows thin_cell → one item, medium", () => {
     // P1: a thin cell carries no median_history — fewer than MIN_SAMPLE listings in total.
-    const r = scoreListing(input({ listing: { km_declared: 10000 }, car: { ownership_history: rows("private 2023-01"), first_registration: new Date("2023-01-01T00:00:00.000Z") }, market: cell({ median_history: null, sample_size: 3 }) }), NOW);
+    const r = scoreListing(input({ listing: { km_declared: 10000 }, car: { ownership_history: rows("private 2023-01"), first_registration: new Date("2023-01-01T00:00:00.000Z") }, market: cell({ median_history: null, sample_size: 3 }) }));
     assert.equal(r.typical_history, null);
     assert.equal(r.deal_score, null);
     assert.deepEqual(r.rows.map((x) => x.reason), ["thin_cell", undefined, "thin_cell"]);
@@ -153,14 +152,14 @@ describe("scoreListing (§5, §9)", () => {
   });
 
   it("medium sold signal → checks skipped, possibly_sold item", () => {
-    const r = scoreListing(input({ listing: { seller_type: "dealer", hand_declared: 1, km_declared: 1 }, car: { ownership_history: rows("private 2021-01, dealer 2026-06, private 2026-08") }, market }), NOW);
+    const r = scoreListing(input({ listing: { seller_type: "dealer", hand_declared: 1, km_declared: 1 }, car: { ownership_history: rows("private 2021-01, dealer 2026-06, private 2026-08") }, market }));
     assert.equal(r.sold_signal.strength, "medium");
     assert.deepEqual(r.checks.map((c) => [c.status, c.reason]), [["skipped", "possibly_sold"], ["skipped", "possibly_sold"]]);
     assert.deepEqual(r.confidence.items.filter((i) => i.kind === "possibly_sold"), [{ kind: "possibly_sold", ref: "sold_signal:medium" }]);
   });
 
   it("always three rows and two checks, in order", () => {
-    const r = scoreListing(input(), NOW);
+    const r = scoreListing(input());
     assert.deepEqual(r.rows.map((x) => x.row), ["price", "history", "km"]);
     assert.deepEqual(r.checks.map((c) => c.check), ["hand", "km"]);
     // price: no_market_row; history: no_typical_history; km: no_km (km_declared is checked before the market)
@@ -177,7 +176,6 @@ describe("scoreListing (§5, §9)", () => {
         car: { first_registration: new Date("2024-09-06T12:00:00.000Z") },
         market,
       }),
-      NOW,
     );
     assert.equal(r.rows[1].source, "typical");
     assert.equal(r.rows[1].note, "assumed_typical"); // §9.9: a code, not prose
@@ -200,7 +198,6 @@ describe("scoreListing (§5, §9)", () => {
         market: cell({ median_history: MEDIAN_HISTORY }),
         model_stats: modelNorm({ km_slope: -1.19, km_slope_n: 99 }), // below the floor → the default slope, as v2 used
       }),
-      NOW,
     );
     assert.equal(r.rows[2].raw.slope_source, "default");
 
@@ -223,7 +220,6 @@ describe("scoreListing (§5, §9)", () => {
         market: cell({ median_history: null, sample_size: 3 }),
         pool_stats: poolNorm(),
       }),
-      NOW,
     );
     assert.equal(r.rows[0].status, "scored");
     assert.equal(r.rows[0].source, "anchor");

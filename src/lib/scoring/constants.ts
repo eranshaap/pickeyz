@@ -1,7 +1,7 @@
 // Stage A scoring engine — every table and threshold (BRIEF Day 11, §3).
 // Every constant carries its source in a comment and must not be changed in code without changing the comment.
 
-export const ENGINE_VERSION = 4;
+export const ENGINE_VERSION = 5;
 // 1 — Day 11 — first engine
 // 2 — Day 12 — no number changed; the invoice gained value_by_reality (history row) and condition_by_reality (sum)
 // 3 — Day 14 — three norm levels, each keyed at its own level (cell / model / pool): the typical is the cell's median
@@ -11,6 +11,11 @@ export const ENGINE_VERSION = 4;
 //              anchor applies by model-year point, not by age range; a cancelled car's invoice has no rows and no
 //              sums; the registry's current holder is recorded as a fact; the colour facts (changed / mismatch)
 //              and color_mismatch as a confidence item.
+// 5 — Day 19 — the clock freeze: every number is paired with the car's age at the moment it was observed (km at
+//              listings.km_observed_at, price at its last price observation) in the km row, the anchor and both
+//              norm fits; the sold window is measured back from first_seen_at; km-per-month since the last test
+//              is measured to km_observed_at; the months-left fact left the invoice (test_expiry stays); the auditor's
+//              run-clock label retired.
 export const MIN_SAMPLE = 5;              // source: Day 9 decision, guess; revisit with volume
 export const ANCHOR_POINT_MIN_SAMPLE = 10; // source: measurement — Day 18, M10: p90 line shift with a point of 5 → 3.6 pp, 10 → 2.4, 15 → 2.2; curve error 3.95
 export const ANCHOR_MIN_POINTS = 3;        // source: mechanism — a fitted line with a leave-one-out error needs at least 3 points
@@ -49,7 +54,7 @@ export const AGE_FLOOR_YEARS = 0.5;                  // source: mechanism — av
 
 // --- cross-checks -------------------------------------------------------------
 export const KM_BELOW_THRESHOLD = 5000;              // source: our data — gap between −3,900 and −6,900
-export const KM_IMPLAUSIBLE_PER_MONTH = 5000;        // source: our data — one case at 30,000/month, the rest ≤ 2,400
+export const KM_IMPLAUSIBLE_PER_MONTH = 5000;        // source: our data — one case at 30,000/month, the rest ≤ 2,400. Day 19 (§4): the rate is measured from the last test to the day the ad's km was OBSERVED (listings.km_observed_at), not to the run clock — the value is unchanged.
 
 export const HAND_CHECK_KINDS = {                    // counts = enters the confidence count. source: Day 11 data pass, §7
   zero_km_undercount: { counts: true  },  // source: seller hides a registered leasing owner; no disclosure in the ad (verified on 4 live ads)
@@ -63,7 +68,7 @@ export const KM_CHECK_KINDS = {                      // source: Day 11 data pass
 } as const;
 
 // --- sold signal -------------------------------------------------------------
-export const SOLD_SIGNAL_RECENT_MONTHS = 3;          // source: guess; measure later
+export const SOLD_SIGNAL_RECENT_MONTHS = 3;          // source: guess; measure later. Day 19 (§4): the months are counted back from the LISTING's first_seen_at, not from the run clock — the value is unchanged.
 
 // --- confidence ----------------------------------------------------------------
 // items = missing-row reasons (each reason once, §18.17) + counted mismatches + unverified-source rows + possibly_sold (§18.8) + color_mismatch (Day 18 §9)

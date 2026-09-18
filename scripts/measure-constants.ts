@@ -4,12 +4,24 @@
 // no Prisma mutation is imported, nothing is written to the database and no file is written here.
 //
 // Rule of the day (§0): every classification of a listing — history class, zero-km, fleet first
-// owner, hand kind, km kind — is taken from the stored `score_breakdown` or from the engine's own
-// functions imported from src/lib/scoring/. Nothing is re-implemented. Prices are asking prices.
+// owner, hand kind, km kind — is taken from the invoice or from the engine's own functions imported
+// from src/lib/scoring/. Nothing is re-implemented. Prices are asking prices.
 //
-// Every table is split three ways: MAZDA 3 · IONIQ HYBRID · both. Every number carries its n.
-// The one exception is M8c (trim residuals off the anchor curve): a trim belongs to one model, so it is split per
-// model only — there is no 'both' table.
+// Day 19 (§10) — what this script measures now:
+//   • THE POOL IS THE NORMS MARKET. Not the scored live listings: the 90-day window ending at this run's
+//     `now`, every listing that was on air inside it, one listing per car, cancelled cars out — the very
+//     population compute-market-stats.ts fits the norms on (src/lib/norms/market-listings.ts). A constant is
+//     therefore measured against the same market that produced the norm it is checked against.
+//   • THE INVOICES ARE COMPUTED IN THE RUN, by the current engine, with the norm rows in force. Nothing
+//     stored is read — not listing_scores, not listings.score_breakdown — so nothing can be "unscored" and
+//     the old exclusion guard is gone with the reading.
+//   • M8c is gone: the per-trim table is printed by every norms run since v4.
+//   • §10.5 adds a self-check: this run's M8 points and curve against the latest pool_stats row, a GATE only
+//     while that row carries this engine_version.
+// Its numbers are NOT comparable with those of a run before Day 19 — the pool changed.
+//
+// Every table is split three ways: MAZDA 3 · IONIQ HYBRID · both — with no exception since M8c left
+// (Day 19). Every number carries its n.
 // Where a measurement has a floor on n, below the floor the line prints NOT MEASURABLE, never a
 // number. Every derivation that was not read straight out of the breakdown, every floor that bit
 // and every fit that was dropped is listed in the INTERPRETED, NOT READ section.
@@ -34,7 +46,11 @@ import {
 import { analyzeHistory } from "@/lib/scoring/history";
 import { BELOW_THRESHOLD_FLOOR_PCT, PRICE_VS_NEW_CEILING_PCT } from "@/lib/selection/constants";
 import { parseOwnershipHistory, scoringSubject, sellerTypeOf } from "@/lib/scoring-input";
-import type { Check, Row, ScoreResult, ScoringInput } from "@/lib/scoring";
+import { isCancelled, scoreListing, type Check, type Row, type ScoreResult, type ScoringInput } from "@/lib/scoring";
+import { ageYears } from "@/lib/scoring/age";
+import { GROUP_VERSION } from "@/lib/comparison-group";
+import { parseAnchorPoints } from "@/lib/norms/anchor-points";
+import { marketListings, marketModels, type MarketListing } from "@/lib/norms/market-listings";
 
 const SEED = 20260909; // M4's fixed random seed
 const M4_SUBSAMPLES = 2000; // §M4: 2,000 random subsamples per n
@@ -56,7 +72,6 @@ const M3_FLOOR_CASES = 50;
 const M3_LIST_ABOVE = 2000;
 const M5_FLOOR_LISTINGS = 60;
 const M6_CLASS_FLOOR = 8; // §M6: >= 8 private-only AND >= 8 full-leasing in the cell
-const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
 
 function log(line = "") {
   console.log(line);
@@ -343,7 +358,7 @@ type Loaded = {
   cell_label: string;
   degem_code: string;
   vehicle_class: string;
-  sub_model: string | null; // models.sub_model = the catalog's ramat_gimur; the trim M8c groups by
+  sub_model: string | null; // models.sub_model = the catalog's ramat_gimur; carried for the per-trim reading the norms run prints
   new_price: number | null;
   bd: ScoreResult;
   input: ScoringInput;
@@ -378,39 +393,118 @@ async function main() {
   const now = new Date();
   log(`# measure-constants — read-only. now = ${now.toISOString()}, engine_version in code = ${ENGINE_VERSION}`);
 
-  const rows = await db.listings.findMany({
-    where: { delisted_at: null },
-    include: {
-      car: { include: { model: true } },
-      dealer: { select: { dealer_type: true } },
-      market_stats: { select: { id: true, median_price: true, sample_size: true } },
-    },
-    orderBy: { id: "asc" },
-  });
+  // ---------- the pool: the norms market (Day 19 §10.2) ----------
+  // Until Day 19 this script measured the SCORED LIVE listings and read their stored invoices. It now measures
+  // exactly the population the norms are fitted on — src/lib/norms/market-listings.ts, the 90-day window ending
+  // at this run's `now`, every listing that was on air inside it (delisted ones included), one listing per car
+  // (its latest), cancelled cars out — so a constant is measured against the same market that produced the norm
+  // it is checked against. Its numbers are NOT comparable with an earlier run's; that is the point of the move.
+  const WINDOW_DAYS = 90;
+  const windowEnd = now;
+  const windowStart = new Date(now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const marketRows: MarketListing[] = [];
+  for (const modelKey of await marketModels({ windowStart, windowEnd })) {
+    for (const l of await marketListings({ modelKey, windowStart, windowEnd })) marketRows.push(l);
+  }
+  marketRows.sort((a, b) => a.id - b.id);
 
+  // Day 19 (§1.4): the loader self-check, over the same rows the invoices are computed from.
+  {
+    const noHistory = marketRows.filter((l) => l.price_history.length === 0);
+    const priceDiffers = marketRows.filter((l) => l.price_history.length > 0 && l.price_history[0].price !== l.price);
+    log(`listings without a price-history row: ${noHistory.length}${noHistory.length ? ` (${noHistory.map((l) => l.id).join(", ")})` : ""}`);
+    log(`latest history price != listings.price: ${priceDiffers.length}${priceDiffers.length ? ` (${priceDiffers.map((l) => l.id).join(", ")})` : ""}`);
+  }
+
+  // The new-car price, joined exactly as select-three.ts joins it: the latest published_at row on
+  // (degem_code, sug_degem, shnat_yitzur); null when no row matches.
+  const keyText = (k: NewPriceKey) => `${k.degem_code}|${k.shnat_yitzur}|${k.sug_degem}`;
+  const wanted = new Map<string, NewPriceKey>();
+  for (const l of marketRows) {
+    const m = l.car.model;
+    if (m.degem_code === null || m.vehicle_class === null || l.car.year === null) continue;
+    const k: NewPriceKey = { degem_code: m.degem_code, sug_degem: m.vehicle_class, shnat_yitzur: l.car.year };
+    wanted.set(keyText(k), k);
+  }
+  const priceRows = wanted.size
+    ? await db.new_car_prices.findMany({ where: { OR: [...wanted.values()] }, orderBy: [{ published_at: "desc" }, { id: "desc" }] })
+    : [];
+  const latestNew = new Map<string, { id: number; mehir: number; published_at: Date }>();
+  for (const r of priceRows) {
+    const k = keyText(r);
+    if (!latestNew.has(k)) latestNew.set(k, { id: r.id, mehir: r.mehir, published_at: r.published_at });
+  }
+  const publications = [...new Set([...latestNew.values()].map((v) => v.published_at.toISOString().slice(0, 10)))].sort();
+
+  // ---------- the norm rows in force (Day 19 §10.3) ----------
+  // The same selection a plain `score-listings.ts` run makes: per cell and per model the latest row by
+  // (computed_at desc, id desc) at GROUP_VERSION, and for the pool the latest row of the table (pool_stats
+  // carries no group_version — P3). Repeated here by query shape rather than moved out of score-listings.ts,
+  // which this run does not touch; see Interpretations.
+  const cellRowCache = new Map<string, Awaited<ReturnType<typeof db.market_stats.findFirst>>>();
+  async function cellRowFor(group: string, year: number) {
+    const k = `${group} ${year}`;
+    if (!cellRowCache.has(k)) {
+      cellRowCache.set(k, await db.market_stats.findFirst({
+        where: { comparison_group: group, year, group_version: GROUP_VERSION },
+        orderBy: [{ computed_at: "desc" }, { id: "desc" }],
+      }));
+    }
+    return cellRowCache.get(k) ?? null;
+  }
+  const modelRowCache = new Map<string, Awaited<ReturnType<typeof db.model_stats.findFirst>>>();
+  async function modelRowFor(make: string, model: string) {
+    const k = `${make}|${model}`;
+    if (!modelRowCache.has(k)) {
+      modelRowCache.set(k, await db.model_stats.findFirst({
+        where: { make, model, group_version: GROUP_VERSION },
+        orderBy: [{ computed_at: "desc" }, { id: "desc" }],
+      }));
+    }
+    return modelRowCache.get(k) ?? null;
+  }
+  const poolRowInForce = await db.pool_stats.findFirst({ orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
+
+  // ---------- the invoices: COMPUTED in this run, never read (Day 19 §10.3) ----------
+  // Nothing stored is read any more — not listing_scores, not listings.score_breakdown — so nothing can be
+  // "unscored" and the old guard and its header line are gone with the reading.
   const pool: Loaded[] = [];
-  // Day 18 §0.5: live listings imported after the last scoring run get their first score at the v4 write, by
-  // decision. They are excluded here, and counted in the line under the header instead of stopping the run.
-  const unscored: string[] = [];
-  for (const l of rows) {
+  for (const l of marketRows) {
     const plate = l.car.license_plate;
     if (plate === null) throw new Error(`listing ${l.id}: cars.license_plate is null`);
-    if (l.score_breakdown === null) {
-      unscored.push(plate);
-      continue;
-    }
-    if (l.engine_version !== ENGINE_VERSION) {
-      throw new Error(`listing ${l.id} (${plate}): engine_version ${l.engine_version ?? "null"} != ${ENGINE_VERSION}`);
-    }
     const m = l.car.model;
+    if (m.make === null) throw new Error(`listing ${l.id} (${plate}): models.make is null`);
     if (m.model === null) throw new Error(`listing ${l.id} (${plate}): models.model is null`);
     if (m.comparison_group === null) throw new Error(`listing ${l.id} (${plate}): models.comparison_group is null`);
     if (m.degem_code === null) throw new Error(`listing ${l.id} (${plate}): models.degem_code is null`);
     if (m.vehicle_class === null) throw new Error(`listing ${l.id} (${plate}): models.vehicle_class is null`);
     if (l.car.year === null) throw new Error(`listing ${l.id} (${plate}): cars.year is null`);
-    const bd = l.score_breakdown as unknown as ScoreResult;
-    if (!Array.isArray(bd.rows) || !Array.isArray(bd.checks)) throw new Error(`listing ${l.id} (${plate}): score_breakdown is not a ScoreResult`);
-    const subject = scoringSubject(l, l.car, l.dealer.dealer_type);
+
+    const np = latestNew.get(keyText({ degem_code: m.degem_code, sug_degem: m.vehicle_class, shnat_yitzur: l.car.year })) ?? null;
+    const subject = scoringSubject(l, l.car, l.dealer.dealer_type, np === null ? null : { id: np.id, mehir: np.mehir });
+    const cellRow = await cellRowFor(m.comparison_group, l.car.year);
+    const modelRow = await modelRowFor(m.make, m.model);
+    const input: ScoringInput = {
+      ...subject,
+      market: cellRow === null ? null : {
+        id: cellRow.id, median_price: cellRow.median_price, median_km: cellRow.median_km, median_history: cellRow.median_history,
+        sample_size: cellRow.sample_size, window_days: cellRow.window_days, group_version: cellRow.group_version, engine_version: cellRow.engine_version,
+      },
+      model_stats: modelRow === null ? null : { id: modelRow.id, km_slope: modelRow.km_slope, km_slope_n: modelRow.km_slope_n },
+      pool_stats: poolRowInForce === null ? null : {
+        id: poolRowInForce.id,
+        anchor_ratio_intercept: poolRowInForce.anchor_ratio_intercept, anchor_ratio_per_year: poolRowInForce.anchor_ratio_per_year,
+        anchor_error_pct: poolRowInForce.anchor_error_pct, anchor_age_min_years: poolRowInForce.anchor_age_min_years,
+        anchor_age_max_years: poolRowInForce.anchor_age_max_years,
+        anchor_points: parseAnchorPoints(poolRowInForce.anchor_points, `pool_stats ${poolRowInForce.id}`),
+        anchor_n: poolRowInForce.anchor_n, anchor_listings: poolRowInForce.anchor_listings,
+      },
+    };
+    const invoice = scoreListing(input);
+    // The market rule drops cancelled cars, so a cancelled invoice here would mean the rule and the registry
+    // disagree — that is a stop, not a row to skip.
+    if (isCancelled(invoice)) throw new Error(`listing ${l.id} (${plate}): the market rule kept a car the engine reports cancelled`);
+
     pool.push({
       id: l.id,
       car_id: l.car_id,
@@ -429,30 +523,16 @@ async function main() {
       degem_code: m.degem_code,
       vehicle_class: m.vehicle_class,
       sub_model: m.sub_model,
-      new_price: null,
-      bd,
-      input: { ...subject, market: null },
-      hclass: historyClass(bd, plate),
+      new_price: np?.mehir ?? null,
+      bd: invoice,
+      input,
+      hclass: historyClass(invoice, plate),
     });
   }
-  log(`unscored live listings excluded: ${unscored.length} (plates: ${unscored.length ? unscored.join(", ") : "none"})`);
-
-  // The new-car price, joined exactly as select-three.ts joins it: the latest published_at row on
-  // (degem_code, sug_degem, shnat_yitzur); null when no row matches.
-  const keyText = (k: NewPriceKey) => `${k.degem_code}|${k.shnat_yitzur}|${k.sug_degem}`;
-  const keyOf = (p: Loaded): NewPriceKey => ({ degem_code: p.degem_code, sug_degem: p.vehicle_class, shnat_yitzur: p.year });
-  const wanted = new Map<string, NewPriceKey>();
-  for (const p of pool) wanted.set(keyText(keyOf(p)), keyOf(p));
-  const priceRows = wanted.size
-    ? await db.new_car_prices.findMany({ where: { OR: [...wanted.values()] }, orderBy: [{ published_at: "desc" }, { id: "desc" }] })
-    : [];
-  const latestNew = new Map<string, { mehir: number; published_at: Date }>();
-  for (const r of priceRows) {
-    const k = keyText(r);
-    if (!latestNew.has(k)) latestNew.set(k, { mehir: r.mehir, published_at: r.published_at });
-  }
-  for (const p of pool) p.new_price = latestNew.get(keyText(keyOf(p)))?.mehir ?? null;
-  const publications = [...new Set([...latestNew.values()].map((v) => v.published_at.toISOString().slice(0, 10)))].sort();
+  log(
+    `pool: the norms market — ${pool.length} listings / ${new Set(pool.map((p) => p.car_id)).size} cars · ` +
+    `window ${WINDOW_DAYS} days to ${windowEnd.toISOString().slice(0, 10)}`,
+  );
 
   // ---------- splits ----------
   const labels = [...new Set(pool.map((p) => p.model_label))].sort();
@@ -471,7 +551,7 @@ async function main() {
   const cars = new Set(pool.map((p) => p.car_id));
   log("");
   log(
-    `pool: ${pool.length} live listings (delisted_at is null), ${cars.size} cars, ${new Set(pool.map((p) => p.cell_key)).size} (comparison_group × year) cells; ` +
+    `pool: ${pool.length} market listings (the norms market, ${WINDOW_DAYS}-day window), ${cars.size} cars, ${new Set(pool.map((p) => p.cell_key)).size} (comparison_group × year) cells; ` +
       splits.slice(0, 2).map((s) => `${s.name} ${s.pool.length}`).join(", ") +
       `; new price joined for ${pool.filter((p) => p.new_price !== null).length}${publications.length ? ` (publication(s) ${publications.join(", ")})` : ""}`,
   );
@@ -602,7 +682,7 @@ async function main() {
       m3All.push({ l: p, rate: stored, from: "breakdown" });
       continue;
     }
-    const fromFn = kmFacts(p.input, p.first_seen_at).km_per_month_since_test;
+    const fromFn = kmFacts(p.input).km_per_month_since_test;
     if (fromFn === null) {
       m3NoRate++;
       continue;
@@ -1022,7 +1102,8 @@ async function main() {
       m8NoReg++;
       continue;
     }
-    m8All.push({ l: p, ratio: p.price / p.new_price, age: (p.first_seen_at.getTime() - p.first_registration.getTime()) / YEAR_MS });
+    // Day 19 (10.1): the age M8 pairs the price ratio with is the car's age on the day that price was observed.
+    m8All.push({ l: p, ratio: p.price / p.new_price, age: ageYears(p.first_registration, p.input.listing.price_observed_at) });
   }
   if (m8NoNew) note(`M8: ${m8NoNew} listing(s) have no new_car_prices row on their key and are out of M8.`);
   if (m8NoReg) note(`M8: ${m8NoReg} listing(s) have no first_registration and are out of M8.`);
@@ -1174,12 +1255,15 @@ async function main() {
   log("For each model-year: ratio = a + b × age is fitted on the listings of the OTHER model-years only, then asked for the held-out model-year's");
   log("median ratio at its median age. error = |predicted − actual median ratio| / actual × 100. No listing sits in a fit that judges it.");
   log("");
-  type MYear = { key: string; model: string; year: number; n: number; medianRatio: number; medianAge: number };
+  // Day 19 (10.5): `make` joins the point so it can be matched against pool_stats.anchor_points, whose key is
+  // (make, model, year). It comes off the scoring input, which is where the engine reads it from too.
+  type MYear = { key: string; make: string; model: string; year: number; n: number; medianRatio: number; medianAge: number };
   const myears: MYear[] = m8Keys.map((k) => {
     const [modelName, yearText] = k.split("|");
     const set = m8All.filter((r) => r.l.model_label === modelName && String(r.l.year) === yearText);
     return {
       key: k,
+      make: set[0].l.input.car.make,
       model: modelName,
       year: Number(yearText),
       n: set.length,
@@ -1265,124 +1349,6 @@ async function main() {
   log("");
   log("Reported separately, as the brief asks. The two rules below are measured against the POOLED curve, not this one.");
 
-  // ======================================================================== M8c
-  h2("M8c — a trim's residual off the anchor curve, across model years");
-  log('The anchor the engine uses is new price × the pool_stats curve per model-year, blind to trim (constants ledger, "עקומת העוגן — M8c"; plan, Day 18 item (ג)).');
-  log("This measures only whether a trim's residual off that curve is stable across model years. Read-only, and the verdict is Eran's.");
-  log("");
-  log("residual % = (price ÷ (new_price × ratio(age)) − 1) × 100 per listing, with ratio(age) = anchor_ratio_intercept + anchor_ratio_per_year × age.");
-  log(
-    "Listing set = exactly the listings the norms script fits the anchor on. compute-market-stats.ts (§5.3) selects them INLINE — a live listing " +
-      "with a new price > 0 and a first_registration — so M8c mirrors that selection rather than importing it; the mirror is M8's own set above, " +
-      "built from the same predicate, the same age and the same new-price join.",
-  );
-  log("Age and new price are M8's, unchanged: age = first_registration → first_seen_at in 365.25-day years; new price = the latest published_at row of new_car_prices on (degem_code, sug_degem, shnat_yitzur).");
-  log("Trim = models.sub_model (the catalog's ramat_gimur); empty = its own group `(none)`.");
-  log("");
-
-  // The curve: the row the engine reads — highest computed_at, ties by id, exactly as score-listings.ts reads it.
-  const m8cCurve = await db.pool_stats.findFirst({ orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
-  if (m8cCurve === null) throw new Error("M8c: pool_stats has no row — there is no anchor curve to measure against.");
-  log(
-    `**The curve** — pool_stats id ${m8cCurve.id}, computed_at ${m8cCurve.computed_at.toISOString()}: ` +
-      `anchor_ratio_intercept ${f(m8cCurve.anchor_ratio_intercept, 6)}, anchor_ratio_per_year ${f(m8cCurve.anchor_ratio_per_year, 6)}, ` +
-      `anchor_error_pct ${f(m8cCurve.anchor_error_pct, 6)}, anchor_age_min_years ${f(m8cCurve.anchor_age_min_years, 6)}, ` +
-      `anchor_age_max_years ${f(m8cCurve.anchor_age_max_years, 6)}, anchor_n ${m8cCurve.anchor_n} model-year point(s), anchor_listings ${m8cCurve.anchor_listings}.`,
-  );
-  log("");
-  {
-    const aI = m8cCurve.anchor_ratio_intercept;
-    const aP = m8cCurve.anchor_ratio_per_year;
-    const ageMin = m8cCurve.anchor_age_min_years;
-    const ageMax = m8cCurve.anchor_age_max_years;
-    if (aI === null || aP === null || ageMin === null || ageMax === null) {
-      log("NOT MEASURABLE — the row carries no curve (the five anchor values are null together, P4). M8c needs one.");
-      note("M8c: the latest pool_stats row has null anchor values, so no residual can be computed — M8c is NOT MEASURABLE.");
-    } else {
-      // The listing set, and the count the brief asks to print next to anchor_listings. A difference is a finding, not a stop.
-      const sameCount = m8All.length === m8cCurve.anchor_listings;
-      log(
-        `**The listing set** — ${m8All.length} listing(s) satisfy the norms script's inline selection here, against anchor_listings ${m8cCurve.anchor_listings} on the row` +
-          (sameCount ? " — equal, as expected." : ` — **they differ by ${Math.abs(m8All.length - m8cCurve.anchor_listings)}**; the row was fitted on a different pool state. Reported, not a stop.`),
-      );
-      if (!sameCount) {
-        note(`M8c: the listing set is ${m8All.length}, the curve row's anchor_listings is ${m8cCurve.anchor_listings} — a difference of ${Math.abs(m8All.length - m8cCurve.anchor_listings)}.`);
-      }
-
-      type M8cRow = { l: Loaded; trim: string; residual: number };
-      const inSet: M8cRow[] = [];
-      const outOfRange: M8Row[] = [];
-      for (const r of m8All) {
-        if (r.age < ageMin || r.age > ageMax) {
-          outOfRange.push(r);
-          continue;
-        }
-        const ratio = aI + aP * r.age;
-        if (!(ratio > 0)) throw new Error(`M8c: ratio(age) = ${ratio} at age ${r.age} (listing ${r.l.id}, ${r.l.plate}) — the curve gives a non-positive anchor, stop`);
-        inSet.push({
-          l: r.l,
-          trim: r.l.sub_model !== null && r.l.sub_model.trim() !== "" ? r.l.sub_model : "(none)",
-          residual: (r.l.price / ((r.l.new_price as number) * ratio) - 1) * 100,
-        });
-      }
-      // The two exclusions the fit itself makes, plus the age-range cut this measurement makes.
-      const noNew = pool.filter((p) => p.new_price === null || p.new_price <= 0);
-      const noReg = pool.filter((p) => !(p.new_price === null || p.new_price <= 0) && p.first_registration === null);
-      log("");
-      log(
-        `**Excluded** — no new price on the key: ${noNew.length}; no first_registration: ${noReg.length} (both are out of the fit too); ` +
-          `age outside the curve's range ${f(ageMin, 3)} … ${f(ageMax, 3)} yrs: ${outOfRange.length}. Measured: ${inSet.length} of ${pool.length} live listing(s).`,
-      );
-      log("");
-
-      const m8cCell = (rows: M8cRow[]): string => {
-        if (rows.length === 0) return "-";
-        const v = rows.map((r) => r.residual);
-        return `${rows.length} · ${sgn(median(v), 1)} % · (${sgn(percentile(v, 0.25), 1)} … ${sgn(percentile(v, 0.75), 1)})`;
-      };
-
-      for (const modelName of ordered) {
-        const mine = inSet.filter((r) => r.l.model_label === modelName);
-        log(`**${modelName}** — ${mine.length} measured listing(s). Cell = n · median % · IQR (P25 … P75).`);
-        log("");
-        if (mine.length === 0) {
-          log("NOT MEASURABLE — no measured listing of this model.");
-          log("");
-          continue;
-        }
-        const years = [...new Set(mine.map((r) => r.l.year))].sort((a, b) => a - b);
-        const trims = [...new Set(mine.map((r) => r.trim))].sort();
-        table(
-          ["trim (models.sub_model)", ...years.map(String), "overall (n · median %)", "range of the per-year medians (max − min)"],
-          trims.map((t) => {
-            const its = mine.filter((r) => r.trim === t);
-            const perYear = years
-              .map((y) => its.filter((r) => r.l.year === y))
-              .filter((rows) => rows.length > 0)
-              .map((rows) => median(rows.map((r) => r.residual)));
-            const spread = perYear.length >= 2 ? f(Math.max(...perYear) - Math.min(...perYear), 1) : `NOT MEASURABLE (${perYear.length} year with listings)`;
-            return [t, ...years.map((y) => m8cCell(its.filter((r) => r.l.year === y))), `${its.length} · ${sgn(median(its.map((r) => r.residual)), 1)} %`, spread];
-          }),
-        );
-        log("");
-        log(
-          "per-year median over all trims: " +
-            years
-              .map((y) => {
-                const its = mine.filter((r) => r.l.year === y);
-                return `${y}: ${its.length} · ${sgn(median(its.map((r) => r.residual)), 1)} %`;
-              })
-              .join("   |   "),
-        );
-        const mNoNew = noNew.filter((p) => p.model_label === modelName).length;
-        const mNoReg = noReg.filter((p) => p.model_label === modelName).length;
-        const mOut = outOfRange.filter((r) => r.l.model_label === modelName).length;
-        log(`excluded for ${modelName}: no new price ${mNoNew}, no first_registration ${mNoReg}, age out of range ${mOut}.`);
-        log("");
-      }
-    }
-  }
-
   // ======================================================================== M10
   h2("M10 — anchor year-point stability: the point and the line, built from n listings");
   log("The points are M8b's model-year points on M8's listing set: r_full = the median ratio (price / new_price) of the model-year's listings, a_year = their median age.");
@@ -1420,33 +1386,87 @@ async function main() {
       `**Reference — the full fit** through the ${myears.length} points: intercept ${f(full.a, 6)}, slope ${f(full.b, 6)} per year, ` +
         `error % ${fullErrorPct === null ? "NOT MEASURABLE (a leave-one-out fit produced no error)" : f(fullErrorPct, 6)} (the worst model-year's leave-one-out error, as pool_stats.anchor_error_pct is computed).`,
     );
-    log(
-      `stored pool_stats id ${m8cCurve.id}: intercept ${f(m8cCurve.anchor_ratio_intercept, 6)}, slope ${f(m8cCurve.anchor_ratio_per_year, 6)}, error % ${f(m8cCurve.anchor_error_pct, 6)}, ` +
-        `${m8cCurve.anchor_n} points, ${m8cCurve.anchor_listings} listings.`,
-    );
-    // Day 18 §0.5: the six-point fit against the stored row, field by field. compute-market-stats.ts writes each
-    // decimal rounded to 6 places (its stored()), so the fit is rounded the same way before the === comparison.
-    {
-      const at6 = (v: number | null): number | null => (v === null ? null : Number(v.toFixed(6)));
-      const fields: [string, number | null, number | null][] = [
-        ["intercept", full.a, m8cCurve.anchor_ratio_intercept],
-        ["slope", full.b, m8cCurve.anchor_ratio_per_year],
-        ["error %", fullErrorPct, m8cCurve.anchor_error_pct],
-        ["age min", Math.min(...ages), m8cCurve.anchor_age_min_years],
-        ["age max", Math.max(...ages), m8cCurve.anchor_age_max_years],
-      ];
-      const differing = fields.filter(([, fit, row]) => at6(fit) !== row);
+  // ---------- Day 19 (§10.5): the self-check, two live readings ----------
+  // M8's model-year POINTS and its CURVE, computed in this run, against the latest pool_stats row — field by
+  // field, after the same 6-decimal rounding compute-market-stats.ts applies before it stores a value.
+  // The comparison is a GATE only when that row was written by this engine: a row of an older engine was
+  // fitted at other ages, so a difference is the version's, not a fault, and the run prints both and says so.
+  {
+    const at6 = (v: number | null): number | null => (v === null ? null : Number(v.toFixed(6)));
+    const storedPool = await db.pool_stats.findFirst({ orderBy: [{ computed_at: "desc" }, { id: "desc" }] });
+    if (storedPool === null) {
+      log("**§10.5 self-check** — NOT MEASURABLE: pool_stats has no row to compare against.");
+    } else {
+      const isGate = storedPool.engine_version === ENGINE_VERSION;
+      const storedPoints = parseAnchorPoints(storedPool.anchor_points, `pool_stats ${storedPool.id}`);
       log(
-        `six-point fit vs stored pool_stats id ${m8cCurve.id} (fit rounded to 6 dp, as stored): ` +
-          fields.map(([name, fit, row]) => `${name} ${f(at6(fit), 6)} / ${f(row, 6)}`).join(" · ") +
-          " — " +
-          (differing.length === 0
-            ? "**identical** in all five fields."
-            : `**not identical** — difference (fit − stored): ${differing
-                .map(([name, fit, row]) => `${name} ${fit === null || row === null ? `${fit === null ? "fit" : "stored"} is null` : sgn((at6(fit) as number) - row, 6)}`)
-                .join(" · ")}.`),
+        `**§10.5 self-check** — this run's M8 against pool_stats id ${storedPool.id} ` +
+        `(engine_version ${storedPool.engine_version}, computed_at ${storedPool.computed_at.toISOString()}). ` +
+        (isGate ? "The row is this engine's: any difference is a fault and throws." : "The row is from an older engine."),
       );
+
+      // (i) the curve.
+      const curve: [string, number | null, number | null][] = [
+        ["intercept", at6(full.a), storedPool.anchor_ratio_intercept],
+        ["per_year", at6(full.b), storedPool.anchor_ratio_per_year],
+        ["error_pct", at6(fullErrorPct), storedPool.anchor_error_pct],
+      ];
+      log("");
+      table(
+        ["curve field", "this run", "stored", "same?"],
+        curve.map(([n, a, b]) => [n, f(a, 6), f(b, 6), a === b ? "yes" : "NO"]),
+      );
+
+      // (ii) the model-year points, matched by (make, model, year).
+      const mine = myears.map((my) => ({
+        key: `${my.make} ${my.model} ${my.year}`,
+        n: my.n, ratio: at6(my.medianRatio), median_age: at6(my.medianAge),
+      }));
+      const theirs = new Map((storedPoints ?? []).map((p) => [`${p.make} ${p.model} ${p.year}`, p]));
+      const keys = [...new Set([...mine.map((x) => x.key), ...theirs.keys()])].sort();
+      log("");
+      table(
+        ["model-year", "n this / stored", "ratio this / stored", "median_age this / stored", "same?"],
+        keys.map((k) => {
+          const a = mine.find((x) => x.key === k) ?? null;
+          const b = theirs.get(k) ?? null;
+          const same = a !== null && b !== null && a.n === b.n && a.ratio === at6(b.ratio) && a.median_age === at6(b.median_age);
+          return [
+            k,
+            `${a?.n ?? "-"} / ${b?.n ?? "-"}`,
+            `${f(a?.ratio ?? null, 6)} / ${f(b === null ? null : at6(b.ratio), 6)}`,
+            `${f(a?.median_age ?? null, 6)} / ${f(b === null ? null : at6(b.median_age), 6)}`,
+            same ? "yes" : "NO",
+          ];
+        }),
+      );
+
+      const curveDiffs = curve.filter(([, a, b]) => a !== b).map(([n]) => n);
+      const pointDiffs = keys.filter((k) => {
+        const a = mine.find((x) => x.key === k) ?? null;
+        const b = theirs.get(k) ?? null;
+        return !(a !== null && b !== null && a.n === b.n && a.ratio === at6(b.ratio) && a.median_age === at6(b.median_age));
+      });
+      const differs = curveDiffs.length > 0 || pointDiffs.length > 0;
+      log("");
+      if (!differs) {
+        log("identical in every field — the points and the curve this run computes are the stored row's.");
+      } else if (isGate) {
+        throw new Error(
+          `§10.5 self-check: pool_stats ${storedPool.id} is engine ${storedPool.engine_version} = ENGINE_VERSION, so this run's M8 must reproduce it. ` +
+          `curve fields differing: ${curveDiffs.join(", ") || "none"}; model-years differing: ${pointDiffs.join("; ") || "none"}`,
+        );
+      } else {
+        log(`comparison deferred — stored row is engine ${storedPool.engine_version}`);
+        note(
+          `§10.5: this run's M8 differs from pool_stats ${storedPool.id} (curve: ${curveDiffs.join(", ") || "none"}; ` +
+          `model-years: ${pointDiffs.join("; ") || "none"}). The stored row is engine ${storedPool.engine_version}, ` +
+          `fitted at first-seen ages; this run measures ages at the price observation. The comparison becomes a gate once the row is engine ${ENGINE_VERSION}.`,
+        );
+      }
     }
+  }
+
     const m8Both = m8Fits.find((x) => x.name === "both");
     log(
       `M8's own table above fits over LISTINGS, not points: both — ` +
@@ -1729,7 +1749,7 @@ async function main() {
   log("");
   log("- History class: the engine's analyzeHistory over the record in the history row's raw.owners — zero_km_deal → zero-km, else has_fleet_row → full leasing / fleet, else private-only. A history row that is unavailable or whose source is 'ad' (no record at all) is 'other'.");
   log("- Seller type: the engine's sellerTypeOf(dealers.dealer_type) — 'private' → private seller, anything else → lot (dealer).");
-  log("- M3 rate: the stored checks.km rate is the engine's own, computed against the scoring run's `now`, not against first_seen_at. The fallback path (a check that stored no rate) calls kmFacts with first_seen_at as `now`, as the brief describes. The two denominators differ; the source of every case is counted in the M3 table.");
+  log("- M3 rate: both paths are the engine's own denominator now (Day 19) - the months from the last test to the listing's km_observed_at. The invoice's checks.km rate and the kmFacts() fallback are the same number; the source of every case is still counted in the M3 table.");
   log("- M2 / M3 population: km_declared, km_at_last_test and the test date are read from the database row — they are inputs, not classifications, and the Day 13 §1 regression pass found no difference between them and the values the breakdown carries.");
   log("- Widest empty interval: the widest span between two consecutive OBSERVED values that both lie inside the stated range. The range boundaries are not treated as observations.");
   log("- M4 full-cell median: the median over the cell's live listings — the same set the subsamples are drawn from — not market_stats.median_price, which is that median rounded to whole shekels.");
@@ -1745,7 +1765,6 @@ async function main() {
   log("- Rule (a) count: a cell anchors on the curve when its listing count is BELOW the candidate constant — the candidate is the smallest n whose median is already as good as the curve, so a cell that reaches it keeps its own median.");
   log("- The candidate constant is printed twice, once against the max leave-one-out curve error and once against the mean, because the brief asks for both n and names neither as the constant. The count line uses the max-error candidate, the same bar rule (b) switches on, and repeats the count for the mean-error candidate when the two differ.");
   log("- M8b holds out a MODEL-YEAR, not a listing: the fit that predicts a model-year's median ratio contains none of that model-year's listings. 'age' and 'ratio' are M8's, unchanged.");
-  log("- M8c reads the anchor curve off the latest pool_stats row (highest computed_at, ties by id — the row score-listings.ts reads) and measures each listing's residual off it. The listing set is the one the norms script fits the anchor on; compute-market-stats.ts selects it INLINE, so M8c mirrors the selection through M8's own set instead of importing a function, and prints its count next to the row's anchor_listings. A listing whose age falls outside the row's age range is counted and excluded, as it is in the fit. M8c is split per model only, not three ways: a trim belongs to one model, so a 'both' column would mix trims that never compete.");
   log(`- M10's line is the model-year-point fit (the pool_stats anchor, compute-market-stats.ts §5.3), not M8's listing fit: the brief refits 'the line through the six points'. compute-market-stats.ts composes that fit inline and runs on import, so M10 composes it from this file's ols() and loo() on M8b's points, and prints the stored pool_stats row beside it. The RNG restarts at seed ${M10_SEED} at the top of each model-year and walks n = ${M10_NS.join(", ")} on that one stream. The per-n worst is taken over the model-years where n < N only.`);
   log("- Verdicts are computed mechanically on the 'both' split: HOLDS = the value in use lies strictly inside the measured empty gap, or inside the 95 % interval, or (MIN_SAMPLE) is at least the smallest n the measurement needs. SAME BALLPARK = leasing within ±8 points of the coefficient; slope inside the interval widened by 0.1; a threshold within 20 % of the nearer edge of the gap. FLAG = outside. NOT MEASURABLE = below the floor.");
   log("");

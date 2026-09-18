@@ -4,6 +4,7 @@
 
 import type { CancelledResult, ConfidenceItem, ConfidenceLevel, Row, RowSource, ScoreResult } from "../scoring/types";
 import type { CandidateListing } from "./types";
+import { ENGINE_VERSION } from "../scoring/constants";
 
 export type Spec = {
   id: number;
@@ -36,7 +37,7 @@ function r1(v: number): number {
 // Day 18 (engine v4 §8): the cancelled invoice, exactly the engine's shape.
 export function cancelledInvoice(cancelled_at: string): CancelledResult {
   return {
-    engine_version: 4,
+    engine_version: ENGINE_VERSION,
     reason: "cancelled",
     cancelled_at,
     rows: [],
@@ -97,7 +98,7 @@ export function invoice(s: Spec): ScoreResult {
   const deal_score = price_advantage !== null && condition_vs_typical !== null ? r1(price_advantage + condition_vs_typical) : null;
 
   const result: ScoreResult = {
-    engine_version: 4,
+    engine_version: ENGINE_VERSION,
     unit: "pct_of_value",
     rows: [priceRow, historyRow, kmRow],
     condition_score,
@@ -111,7 +112,7 @@ export function invoice(s: Spec): ScoreResult {
       { check: "km", status: "unavailable", reason: "fixture" },
     ],
     sold_signal: { strength: s.sold ?? null, evidence: s.sold ? ["fixture"] : [] },
-    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, months_left: null, current_owner_registry: null },
+    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, current_owner_registry: null },
     confidence: { level: s.confidence ?? "high", items: s.confidence_items ?? [] },
   };
   if (km === null && history !== null) result.partial = ["km"];

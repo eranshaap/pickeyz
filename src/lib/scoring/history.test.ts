@@ -3,8 +3,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { ENGINE_VERSION } from "./constants";
 import { analyzeHistory, combineDeductions, historyRow } from "./history";
-import { cell, input, NOW, rows, scoreScored as scoreListing } from "./fixtures";
+import { cell, input, rows, scoreScored as scoreListing } from "./fixtures";
 
 describe("history row — the four known cars (§4.2)", () => {
   it("74294402: leasing 2021-10 → private 2021-10 — zero-km; users 1; [zero_km −10 full]; first hand 0 → −10", () => {
@@ -256,7 +257,7 @@ describe("reality reading (Day 12 §1, §5)", () => {
       assert.equal(typeof r.value, "number");
       assert.equal(r.value_by_reality, r.value);
 
-      const s = scoreListing(input({ listing: { ...kmScored.listing, ...f.over.listing }, car: { ...kmScored.car, ...f.over.car }, market }), NOW);
+      const s = scoreListing(input({ listing: { ...kmScored.listing, ...f.over.listing }, car: { ...kmScored.car, ...f.over.car }, market }));
       assert.notEqual(s.condition_score, null);
       assert.equal(s.condition_by_reality, s.condition_score);
     });
@@ -270,7 +271,7 @@ describe("reality reading (Day 12 §1, §5)", () => {
     assert.equal(r.source, "typical");
     assert.equal(r.value_by_reality, r.value);
 
-    const s = scoreListing(input({ ...kmScored, market }), NOW);
+    const s = scoreListing(input({ ...kmScored, market }));
     assert.equal(s.condition_score, -8.7); // typical −12 + km +3.3
     assert.equal(s.condition_by_reality, s.condition_score);
   });
@@ -284,14 +285,14 @@ describe("reality reading (Day 12 §1, §5)", () => {
       assert.equal("value" in r, false);
       assert.equal("value_by_reality" in r, false);
 
-      const s = scoreListing(input({ listing: { ...kmScored.listing, ...over.listing }, car: kmScored.car, market: noTypical }), NOW);
+      const s = scoreListing(input({ listing: { ...kmScored.listing, ...over.listing }, car: kmScored.car, market: noTypical }));
       assert.equal(s.condition_score, null);
       assert.equal(s.condition_by_reality, null);
     }
   });
 
   it("§5.5 zero-km car, km row unavailable: condition_score −10 (partial km), condition_by_reality 0 — not null", () => {
-    const s = scoreListing(input({ car: { hand: 2, ownership_history: rows("leasing 2021-10, private 2021-10") }, market }), NOW);
+    const s = scoreListing(input({ car: { hand: 2, ownership_history: rows("leasing 2021-10, private 2021-10") }, market }));
     assert.equal(s.rows[2].status, "unavailable");
     assert.deepEqual(s.partial, ["km"]);
     assert.equal(s.condition_score, -10);
@@ -299,7 +300,7 @@ describe("reality reading (Day 12 §1, §5)", () => {
   });
 
   it("§5.5 no history row, km row unavailable: condition_by_reality is null exactly when condition_score is null", () => {
-    const s = scoreListing(input({ market: cell({ median_history: null }) }), NOW);
+    const s = scoreListing(input({ market: cell({ median_history: null }) }));
     assert.equal(s.condition_score, null);
     assert.equal(s.condition_by_reality, null);
   });
@@ -321,9 +322,8 @@ describe("reality reading (Day 12 §1, §5)", () => {
         },
         market,
       }),
-      NOW,
     );
-    assert.equal(s.engine_version, 4); // Day 18: v4 — the rows and sums of this case did not move
+    assert.equal(s.engine_version, ENGINE_VERSION); // Day 19: v5 — the rows and sums of this case still did not move
     assert.equal(s.condition_score, -4);
     assert.equal(s.condition_by_reality, 6);
     // everything else in the invoice is the paper reading, unchanged

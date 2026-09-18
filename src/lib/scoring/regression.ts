@@ -3,15 +3,14 @@
 // carry it inline; it now keeps only the loading, the recompute callback and the printing.
 //
 // One difference between a stored score and the recomputed one gets exactly one label, the first that
-// applies: VERSION (with its two named sub-rules), NEW, CLOCK, DATA, NORM, NORM (…), else UNEXPLAINED.
-// Only UNEXPLAINED counts as a regression (decision, Eran 09/09: a difference explained by the clock is
-// not one). Every label keeps the meaning and the identity it was given on the day it was written:
+// applies: VERSION (with its two named sub-rules), NEW, DATA, NORM, NORM (…), else UNEXPLAINED.
+// Only UNEXPLAINED counts as a regression. Every label keeps the meaning and the identity it was given on
+// the day it was written:
 //
 //   VERSION           Day 14 §6.3 — a v2 -> v3 move, checked term by term against the per-cell constant.
 //   VERSION (anchor)  Day 14 Q13 (a) — the thin-cell anchor (§0.5).
 //   VERSION (typical) Day 14 Q13 (b) — the re-sourced history (§0.4).
 //   NEW               no stored score at all: first scoring.
-//   CLOCK             the same inputs and the same norm rows, only `now` moved back to scored_at.
 //   DATA              an input the stored breakdown carries has changed since.
 //   NORM              the cell's SET moved (sample_size / window_days / the row itself appearing).
 //   NORM (…)          Day 17 run 4 §2 — the composed norm identity, below.
@@ -31,13 +30,19 @@
 // the stored invoice. The recomputation is unchanged: still ONE run with all three stored rows. A row
 // that moved but was not read is still printed under the line, marked with why it is not named.
 //
-// This module opens no database and reads no argv. `scoreWith(normRows, at)` is the caller's — it is the
-// engine re-run with those rows and that clock over the listing's CURRENT data (DATA is checked first, so
-// by the time the identity runs the inputs are already known to be unchanged).
+// This module opens no database and reads no argv. `scoreWith(normRows, clock)` is the caller's — it is the
+// engine re-run with those rows over the listing's CURRENT data (DATA is checked first, so by the time the
+// identity runs the inputs are already known to be unchanged). Day 19 (§5.2): `clock` is null for the input
+// exactly as loaded, with its own observation dates, or a date that REPLACES all three of them — which is
+// how an engine <= 4 read the car, on its own run clock.
+//
+// Day 19 (§5.1) — the run-clock label is retired. The engine no longer reads a run clock, so a difference
+// between two scores of the same engine version, with the same recorded inputs and no read norm row changed,
+// has no name any more: it is UNEXPLAINED.
 //
 // Day 18 run 3c §13 — the auditor at a version write: ONE rule for every version write, no identity per version.
 // Order: NEW; DATA (a listing whose inputs changed is DATA, version change or not); then, when the stored
-// engine_version differs from ENGINE_VERSION, the version rule; then CLOCK / NORM / UNEXPLAINED as before.
+// engine_version differs from ENGINE_VERSION, the version rule; then NORM / UNEXPLAINED as before.
 //   The version rule is the NORM identity's recomputation: the current engine, the norm rows the stored score read,
 //   at the stored score's date. Reproduced (within ROUNDING_ALLOWANCE) -> VERSION, naming the rows whose VALUES
 //   changed among those the stored score read — (median), (slope), (anchor) — plus (anchor gate) when a vs_new_price
@@ -45,6 +50,9 @@
 //   confidence move is the v4-only item color_mismatch. No name -> plain VERSION. Not reproduced -> only a declared
 //   identity for the pair (from, to) may explain it: (2, 3) is versionExpectation() below; any other pair is
 //   UNEXPLAINED ("engine moved a listing; no declared identity for v<from> → v<to>").
+//   Day 19 (§5.3): every recomputation "at the old date" passes clock = scored_at when the stored engine read a
+//   run clock (engine < FIRST_CLOCK_FREE_ENGINE) and null when it did not. The declared 4 -> 5 move is that the
+//   replacement IS the identity — only the age moved.
 //   A stored pool row from before anchor_points (null): the recomputation gets a synthetic points list — the
 //   listing's own (make, model, year) when the stored invoice's price row is the anchor's, [] otherwise — so the
 //   yes / no of the anchor comes from the record while the number is still recomputed. The engine is untouched.
@@ -65,12 +73,15 @@ export const NORM_KINDS = ["median", "slope", "anchor"] as const;
 export type NormKind = (typeof NORM_KINDS)[number];
 
 // Day 18 run 3c: the names a VERSION line may carry, in this order.
-export const VERSION_NAMES = ["median", "slope", "anchor", "anchor gate", "confidence: color"] as const;
+// Day 19 (§5.4): `age` comes first — it is on the line exactly when the stored score was reproduced by
+// replacing its three observation dates with its own run clock, i.e. when the stored engine read a clock.
+// A stored score of engine >= FIRST_CLOCK_FREE_ENGINE never carries it.
+export const VERSION_NAMES = ["age", "median", "slope", "anchor", "anchor gate", "confidence: color"] as const;
 export type VersionName = (typeof VERSION_NAMES)[number];
 
 export type Label =
   | "VERSION" | `VERSION (${string})` | "VERSION (typical)"
-  | "NEW" | "CLOCK" | "DATA"
+  | "NEW" | "DATA"
   | "NORM"
   | "NORM (median)" | "NORM (slope)" | "NORM (anchor)"
   | "NORM (median, slope)" | "NORM (median, anchor)" | "NORM (slope, anchor)"
@@ -87,7 +98,7 @@ const VERSION_LABELS: Label[] = Array.from({ length: 2 ** VERSION_NAMES.length }
   versionNamedLabel(VERSION_NAMES.filter((_, i) => (mask >> i) & 1)),
 );
 export const LABELS: Label[] = [
-  ...VERSION_LABELS, "VERSION (typical)", "NEW", "CLOCK", "DATA",
+  ...VERSION_LABELS, "VERSION (typical)", "NEW", "DATA",
   "NORM", "NORM (median)", "NORM (slope)", "NORM (anchor)",
   "NORM (median, slope)", "NORM (median, anchor)", "NORM (slope, anchor)", "NORM (median, slope, anchor)",
   "UNEXPLAINED",
@@ -102,7 +113,35 @@ export function normLabel(kinds: readonly NormKind[]): Label {
 // `median` is the cell row (market_stats), `slope` the model row (model_stats), `anchor` the pool row
 // (pool_stats) — the names the labels use, so a label and the row it blames read the same.
 export type NormRows = { median: CellNorm | null; slope: ModelNorm | null; anchor: PoolNorm | null };
-export type ScoreWith = (norms: NormRows, at: Date) => Invoice;
+/**
+ * Day 19 (§5.2) — the recompute callback.
+ *   clock = null   the input exactly as loaded, with its own observation dates;
+ *   clock = a date the same input with listing.km_observed_at, listing.price_observed_at and
+ *                  listing.first_seen_at all replaced by that date — how an engine <= 4 read the car, on
+ *                  its own run clock, whose scored_at is that date.
+ */
+export type ScoreWith = (norms: NormRows, clock: Date | null) => Invoice;
+
+/**
+ * Day 19 (§5.2) — the clock replacement, as a pure function: a COPY of the input whose three observation
+ * dates are all the given clock. Nothing else moves, and the argument is never mutated.
+ *
+ * soldSignal is the only engine site that reads first_seen_at; the km row and kmFacts read km_observed_at,
+ * and the anchor price row reads price_observed_at. Replacing all three is exactly what an engine that had
+ * one `now` did.
+ */
+export function atRunClock(input: ScoringInput, clock: Date): ScoringInput {
+  return { ...input, listing: { ...input.listing, first_seen_at: clock, km_observed_at: clock, price_observed_at: clock } };
+}
+
+// Day 19 (§5.3) — the first engine that reads no run clock. THE DECLARED 4 -> 5 MOVE: only the age moved,
+// so the new engine, at the age the old score read, reproduces the old score. The replacement is the
+// identity; 4 -> 5 needs no identity function of its own. Every stored score of a clock-reading engine is
+// covered — the engine-3 rows of 11/09 included, not only the adjacent pair.
+export const FIRST_CLOCK_FREE_ENGINE = 5;
+/** The clock a recomputation "at the old date" must use for a stored score of this engine. */
+export const clockFor = (storedEngine: number | null, scored_at: Date): Date | null =>
+  storedEngine !== null && storedEngine < FIRST_CLOCK_FREE_ENGINE ? scored_at : null;
 
 export const normId = (n: NormRows, kind: NormKind): number | null => n[kind]?.id ?? null;
 
@@ -179,6 +218,8 @@ export function storedRowValue(bd: StoredBreakdown, row: string): number | null 
 // not comparable; make / model / cancelled_at are not carried at all.
 export const DATA_COVERS = [
   "listing.price", "listing.km_declared", "car.hand", "car.ownership_history", "car.test_expiry",
+  "listing.km_observed_at (km row raw — v5 invoices only)",
+  "listing.price_observed_at (anchor price row raw — v5 anchor rows only)",
   "listing.hand_declared (unless the hand check was skipped)",
   "car.km_at_last_test, car.mivchan_acharon_dt (unless the km check was skipped or had no declaration)",
   "car.current_owner_type (facts.current_owner_registry — v4 invoices only)",
@@ -225,6 +266,11 @@ export function storedInputs(bd: StoredBreakdown): Map<string, unknown> {
   if (history && "owners" in history) m.set("car.ownership_history", ownersKey(history.owners));
   if (bd.facts && "test_expiry" in bd.facts) m.set("car.test_expiry", bd.facts.test_expiry);
   if (bd.facts && "current_owner_registry" in bd.facts) m.set("car.current_owner_type", bd.facts.current_owner_registry);
+  // Day 19 (§5.5): the two observation dates are inputs now, recorded in the invoice (§3.2). A stored invoice
+  // that lacks the key — every invoice before v5, and every price row that is not an anchor row — is simply
+  // not compared on it: the same null-over-value treatment the three v4 fields above get.
+  if (km && "km_observed_at" in km) m.set("listing.km_observed_at", km.km_observed_at);
+  if (price && "price_observed_at" in price) m.set("listing.price_observed_at", price.price_observed_at);
   // hand_declared: checks.hand carries it unless the check was skipped (§18.8); 'no_declaration' means null.
   const hand = checkOf(bd, "hand");
   if (hand && hand.status !== "skipped") m.set("listing.hand_declared", hand.reason === "no_declaration" ? null : hand.declared ?? null);
@@ -249,6 +295,9 @@ export function currentInputs(input: ScoringInput): Map<string, unknown> {
     ["car.mivchan_acharon_dt", car.mivchan_acharon_dt === null ? null : dateToIso(car.mivchan_acharon_dt)],
     ["car.test_expiry", car.test_expiry === null ? null : dateToIso(car.test_expiry)],
     ["car.current_owner_type", car.current_owner_type],
+    // Day 19 (§5.5): compared as the invoice records them — ISO-8601 strings.
+    ["listing.km_observed_at", listing.km_observed_at.toISOString()],
+    ["listing.price_observed_at", listing.price_observed_at.toISOString()],
   ]);
 }
 
@@ -495,6 +544,9 @@ function describeMove(kind: NormKind, x: RegressionInput): string {
 export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: Label; detail: string[] } | null; tried: string[] } {
   const when = x.stored.scored_at;
   if (when === null) return { hit: null, tried: [] };
+  // Day 19 (§5.3): "at the old date" means the stored engine's run clock only when that engine read one.
+  const clock = clockFor(x.stored.engine_version, when);
+  const at = clock === null ? "its own observation dates" : `the stored scored_at ${when.toISOString()}`;
   if (x.stored.missing.length > 0) {
     return {
       hit: null,
@@ -517,7 +569,7 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
       (named.includes(k) ? "" : !valued.includes(k) ? " - not named: a new row with the same values" : ` - not named: ${notReadBecause(k)}`),
   );
   const ids = NORM_KINDS.map((k) => `${k} ${num(normId(x.stored.norms, k))}`).join(", ");
-  const got = triple(x.scoreWith(x.stored.norms, when));
+  const got = triple(x.scoreWith(x.stored.norms, clock));
   if (same(got, sto)) {
     if (label === null) {
       // The identity holds, but every row that moved is one the old score never read. The rule names no
@@ -527,7 +579,7 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
         hit: null,
         tried: [
           ...moved,
-          `the identity holds (recomputed with the STORED norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(got)} = the stored values), ` +
+          `the identity holds (recomputed with the STORED norm rows (${ids}) at ${at} -> ${showTriple(got)} = the stored values), ` +
             `but no row that moved was read by the stored score, so the rule names none and no NORM (...) label is given`,
         ],
       };
@@ -537,7 +589,7 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
         label,
         detail: [
           ...moved,
-          `identity: recomputed with the STORED norm rows (${ids}) at the stored scored_at ${when.toISOString()} -> ${showTriple(got)} = the stored values`,
+          `identity: recomputed with the STORED norm rows (${ids}) at ${at} -> ${showTriple(got)} = the stored values`,
         ],
       },
       tried: [],
@@ -547,7 +599,7 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
     hit: null,
     tried: [
       ...moved,
-      `${label ?? `NORM (no row read)`}: recomputed with the stored norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(got)}, not the stored ${showTriple(sto)} - the identity does not hold`,
+      `${label ?? `NORM (no row read)`}: recomputed with the stored norm rows (${ids}) at ${at} -> ${showTriple(got)}, not the stored ${showTriple(sto)} - the identity does not hold`,
     ],
   };
 }
@@ -632,16 +684,26 @@ function versionRule(x: RegressionInput, sto: Triple, bd: StoredBreakdown | null
   const { norms, note } = recomputationNorms(x, bd);
   if (note !== null) detail.push(note);
   const ids = NORM_KINDS.map((k) => `${k} ${num(normId(x.stored.norms, k))}`).join(", ");
-  const got = x.scoreWith(norms, when);
+  // Day 19 (§5.3): a stored score of a clock-reading engine is recomputed with its three observation dates
+  // replaced by its own scored_at — the declared 4 -> 5 move, and the same for every earlier clock-reading
+  // engine. A stored score of engine >= FIRST_CLOCK_FREE_ENGINE is recomputed on its own dates.
+  const clock = clockFor(from, when);
+  const at = clock === null ? "its own observation dates" : `the stored scored_at ${when.toISOString()} (its three observation dates replaced by that clock)`;
+  const got = x.scoreWith(norms, clock);
   const rep = reproduction(got, sto, from);
   if (!rep.ok) {
-    detail.push(`recomputed with the current engine and the STORED norm rows (${ids}) at ${when.toISOString()} -> ${showTriple(triple(got))}, not the stored ${showTriple(sto)}`);
+    detail.push(`recomputed with the current engine and the STORED norm rows (${ids}) at ${at} -> ${showTriple(triple(got))}, not the stored ${showTriple(sto)}`);
     return hasDeclaredIdentity(from, to) ? declared() : undeclared();
   }
 
-  // (b): the names. Rows read by the stored score whose values differ from the rows the current score used.
+  // (b): the names. Day 19 (§5.4): `age` first — the line was reproduced by the clock replacement, so the age
+  // is what moved. Then the existing order.
   const read = readNormKinds(bd);
   const names: VersionName[] = [];
+  if (clock !== null) {
+    names.push("age");
+    detail.push(`age: reproduced with the three observation dates replaced by the stored run clock ${when.toISOString()} — engine ${from} read the car on its own clock`);
+  }
   for (const k of NORM_KINDS) {
     if (!normValuesDiffer(k, x.stored.norms, x.norms)) continue;
     if (read.includes(k)) names.push(k);
@@ -657,7 +719,7 @@ function versionRule(x: RegressionInput, sto: Triple, bd: StoredBreakdown | null
     names.push("confidence: color");
     detail.push(`confidence ${sto.confidence ?? "-"} -> ${triple(got).confidence ?? "-"}: the only move is the item color_mismatch, which engine ${from} could not record`);
   }
-  detail.push(`identity: recomputed with the current engine and the STORED norm rows (${ids}) at the stored scored_at ${when.toISOString()} -> ${showTriple(triple(got))} = the stored values`);
+  detail.push(`identity: recomputed with the current engine and the STORED norm rows (${ids}) at ${at} -> ${showTriple(triple(got))} = the stored values`);
   if (rep.allowance) detail.push(`reproduced within the ±${ROUNDING_ALLOWANCE} rounding allowance, not exactly`);
   return { label: versionNamedLabel(names), head, detail };
 }
@@ -666,7 +728,8 @@ function versionRule(x: RegressionInput, sto: Triple, bd: StoredBreakdown | null
 /**
  * One listing -> one labelled line, or null when the stored and the recomputed score agree (no line).
  * First match wins; the order is the one Day 13 §1 fixed, Day 14 / Day 17 extended and Day 18 run 3c §13.2 (e)
- * set for a version write: NEW, DATA, the version rule, then CLOCK / DATA / NORM / UNEXPLAINED as before.
+ * set for a version write: NEW, DATA, the version rule, then DATA / NORM / UNEXPLAINED as before
+ * (Day 19 §5.1: the run-clock label is gone).
  */
 export function classify(x: RegressionInput): Classified | null {
   const cur: Triple = triple(x.result);
@@ -691,14 +754,13 @@ export function classify(x: RegressionInput): Classified | null {
   }
   if (same(sto, cur)) return null; // stored and recomputed agree — no line
 
-  // CLOCK: the same inputs and the same norm rows, only `now` moved back to scored_at.
-  const then = triple(x.scoreWith(x.norms, x.stored.scored_at));
+  // Day 19 (§5.1): the run-clock label is retired. The engine reads no run clock, so two scores of the SAME
+  // engine version with the same recorded inputs and no read norm row changed cannot differ by the clock —
+  // such a line has no name any more and falls through to UNEXPLAINED below.
+  const clock = clockFor(x.stored.engine_version, x.stored.scored_at);
+  const then = triple(x.scoreWith(x.norms, clock));
   const normDiffs = bd === null ? [] : diffMaps(storedNorm(bd), currentNorm(x.input.market));
   const cellMoved = normDiffs.some((d) => d.startsWith("sample_size") || d.startsWith("window_days") || d.startsWith("market_row"));
-  if (same(then, sto)) {
-    detail.push(`recomputed with now = stored scored_at ${x.stored.scored_at.toISOString()}: ${showTriple(then)} = the stored values (same inputs, same norm row as today)`);
-    return { label: "CLOCK", head, detail };
-  }
   if (dataDiffs.length) {
     for (const d of dataDiffs) detail.push(`input ${d}`);
     return { label: "DATA", head, detail };
@@ -715,7 +777,7 @@ export function classify(x: RegressionInput): Classified | null {
     return { label: named.hit.label, head, detail };
   }
   if (bd === null) detail.push(`the stored breakdown is null: neither DATA nor NORM could be checked`);
-  detail.push(`at the stored scored_at ${x.stored.scored_at.toISOString()}: ${showTriple(then)} - not the stored values`);
+  detail.push(`recomputed ${clock === null ? "on its own observation dates" : `at the stored scored_at ${x.stored.scored_at.toISOString()}`}: ${showTriple(then)} - not the stored values`);
   for (const d of normDiffs) detail.push(`norm ${d} (same sample_size and window_days: same set, different norm)`);
   for (const t of named.tried) detail.push(t);
   return { label: "UNEXPLAINED", head, detail };

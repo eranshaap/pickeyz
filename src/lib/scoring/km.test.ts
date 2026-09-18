@@ -4,6 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { KM_SLOPE_MIN_SAMPLE, KM_SLOPE_PCT_PER_1000_PER_YEAR } from "./constants";
+import { YEAR_MS } from "./age";
 import { kmRow } from "./km";
 import { priceRow } from "./price";
 import { anchorPoint, cell, input, modelNorm, NOW, poolNorm, rows, scoreScored as scoreListing } from "./fixtures";
@@ -11,13 +12,12 @@ import { anchorPoint, cell, input, modelNorm, NOW, poolNorm, rows, scoreScored a
 const market = cell({ median_history: null });
 const twoYearsAgo = new Date("2024-09-06T12:00:00.000Z");
 
-const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
 // first_registration that makes the car exactly `age` years old at NOW (both sides are whole milliseconds).
 const regAt = (age: number) => new Date(NOW.getTime() - age * YEAR_MS);
 
 describe("km row (§4.3)", () => {
   it("under the median → positive; 10,000 km/year under at the default slope −0.6 → +6", () => {
-    const r = kmRow(input({ listing: { km_declared: 20000 }, car: { first_registration: twoYearsAgo }, market }), NOW);
+    const r = kmRow(input({ listing: { km_declared: 20000 }, car: { first_registration: twoYearsAgo }, market }));
     assert.equal(r.status, "scored");
     assert.equal(r.source, "ad");
     assert.equal(r.value, 6);
@@ -27,35 +27,35 @@ describe("km row (§4.3)", () => {
   });
 
   it("over the median → negative", () => {
-    const r = kmRow(input({ listing: { km_declared: 60000 }, car: { first_registration: twoYearsAgo }, market }), NOW);
+    const r = kmRow(input({ listing: { km_declared: 60000 }, car: { first_registration: twoYearsAgo }, market }));
     assert.equal(r.value, -6);
   });
 
   it("capped at −11", () => {
-    const r = kmRow(input({ listing: { km_declared: 200000 }, car: { first_registration: twoYearsAgo }, market }), NOW);
+    const r = kmRow(input({ listing: { km_declared: 200000 }, car: { first_registration: twoYearsAgo }, market }));
     assert.equal(r.value, -11);
   });
 
   it("capped at +11", () => {
-    const r = kmRow(input({ listing: { km_declared: 0 }, car: { first_registration: twoYearsAgo }, market: cell({ median_km: 100000 }) }), NOW);
+    const r = kmRow(input({ listing: { km_declared: 0 }, car: { first_registration: twoYearsAgo }, market: cell({ median_km: 100000 }) }));
     assert.equal(r.value, 11);
   });
 
   it("age is floored at 0.5 years", () => {
-    const r = kmRow(input({ listing: { km_declared: 45000 }, car: { first_registration: new Date("2026-09-01T00:00:00.000Z") }, market }), NOW);
+    const r = kmRow(input({ listing: { km_declared: 45000 }, car: { first_registration: new Date("2026-09-01T00:00:00.000Z") }, market }));
     assert.equal(r.raw.age_years, 0.5);
     assert.equal(r.value, -6);
   });
 
   it("unavailable reasons: no_km | no_market_row | thin_cell | no_registration_date", () => {
-    assert.equal(kmRow(input({ market }), NOW).reason, "no_km");
-    assert.equal(kmRow(input({ listing: { km_declared: 1 } }), NOW).reason, "no_market_row");
-    assert.equal(kmRow(input({ listing: { km_declared: 1 }, market: cell({ sample_size: 4 }) }), NOW).reason, "thin_cell");
-    assert.equal(kmRow(input({ listing: { km_declared: 1 }, market }), NOW).reason, "no_registration_date");
+    assert.equal(kmRow(input({ market })).reason, "no_km");
+    assert.equal(kmRow(input({ listing: { km_declared: 1 } })).reason, "no_market_row");
+    assert.equal(kmRow(input({ listing: { km_declared: 1 }, market: cell({ sample_size: 4 }) })).reason, "thin_cell");
+    assert.equal(kmRow(input({ listing: { km_declared: 1 }, market })).reason, "no_registration_date");
   });
 
   it("§9.3: an unavailable row that got as far as the cell still carries based_on_n", () => {
-    assert.equal(kmRow(input({ listing: { km_declared: 1 }, market }), NOW).raw.based_on_n, 8);
+    assert.equal(kmRow(input({ listing: { km_declared: 1 }, market })).raw.based_on_n, 8);
   });
 });
 
@@ -71,7 +71,7 @@ describe("km row — the model's own slope (Day 14 §0.3)", () => {
   });
 
   it(`n = ${KM_SLOPE_MIN_SAMPLE} → the model's own slope; raw says so`, () => {
-    const r = kmRow(input({ ...under, model_stats: modelNorm({ id: 42, km_slope: -1.19, km_slope_n: KM_SLOPE_MIN_SAMPLE }) }), NOW);
+    const r = kmRow(input({ ...under, model_stats: modelNorm({ id: 42, km_slope: -1.19, km_slope_n: KM_SLOPE_MIN_SAMPLE }) }));
     assert.equal(r.value, 3);
     assert.equal(r.raw.slope_used, -1.19);
     assert.equal(r.raw.slope_source, "model");
@@ -80,7 +80,7 @@ describe("km row — the model's own slope (Day 14 §0.3)", () => {
   });
 
   it(`n = ${KM_SLOPE_MIN_SAMPLE - 1} → the default, although the row exists and carries a slope`, () => {
-    const r = kmRow(input({ ...under, model_stats: modelNorm({ id: 42, km_slope: -1.19, km_slope_n: KM_SLOPE_MIN_SAMPLE - 1 }) }), NOW);
+    const r = kmRow(input({ ...under, model_stats: modelNorm({ id: 42, km_slope: -1.19, km_slope_n: KM_SLOPE_MIN_SAMPLE - 1 }) }));
     assert.equal(r.value, 1.5);
     assert.equal(r.raw.slope_used, -0.6);
     assert.equal(r.raw.slope_source, "default");
@@ -89,7 +89,7 @@ describe("km row — the model's own slope (Day 14 §0.3)", () => {
   });
 
   it("no model row at all → the default; km_slope_n and model_stats_id are null", () => {
-    const r = kmRow(input(under), NOW);
+    const r = kmRow(input(under));
     assert.equal(r.value, 1.5);
     assert.equal(r.raw.slope_used, -0.6);
     assert.equal(r.raw.slope_source, "default");
@@ -98,22 +98,22 @@ describe("km row — the model's own slope (Day 14 §0.3)", () => {
   });
 
   it("a model row whose slope could not be measured (km_slope null) → the default", () => {
-    const r = kmRow(input({ ...under, model_stats: modelNorm({ id: 42, km_slope: null, km_slope_n: 0 }) }), NOW);
+    const r = kmRow(input({ ...under, model_stats: modelNorm({ id: 42, km_slope: null, km_slope_n: 0 }) }));
     assert.equal(r.value, 1.5);
     assert.equal(r.raw.slope_source, "default");
   });
 
   it("the sign is right on both slopes: km above the median is a deduction, below it a bonus", () => {
     const model = modelNorm({ km_slope: -1.19, km_slope_n: KM_SLOPE_MIN_SAMPLE });
-    assert.equal(kmRow(input(under), NOW).value, 1.5); // default, below the median → positive
-    assert.equal(kmRow(input(over), NOW).value, -1.5); // default, above the median → negative
-    assert.equal(kmRow(input({ ...under, model_stats: model }), NOW).value, 3); // model, below → positive
-    assert.equal(kmRow(input({ ...over, model_stats: model }), NOW).value, -3); // model, above → negative
+    assert.equal(kmRow(input(under)).value, 1.5); // default, below the median → positive
+    assert.equal(kmRow(input(over)).value, -1.5); // default, above the median → negative
+    assert.equal(kmRow(input({ ...under, model_stats: model })).value, 3); // model, below → positive
+    assert.equal(kmRow(input({ ...over, model_stats: model })).value, -3); // model, above → negative
   });
 
   // The row is unavailable long before the slope matters, but the choice is still recorded.
   it("an unavailable row still records the slope it would have used", () => {
-    const r = kmRow(input({ market, model_stats: modelNorm({ id: 42, km_slope: -1.19, km_slope_n: 200 }) }), NOW);
+    const r = kmRow(input({ market, model_stats: modelNorm({ id: 42, km_slope: -1.19, km_slope_n: 200 }) }));
     assert.equal(r.reason, "no_km");
     assert.equal(r.raw.slope_source, "model");
     assert.equal(r.raw.model_stats_id, 42);
@@ -122,7 +122,7 @@ describe("km row — the model's own slope (Day 14 §0.3)", () => {
 
 describe("price row (§4.1)", () => {
   it("10% under the median → +10, and the row carries based_on_n (§0.6)", () => {
-    const r = priceRow(input({ listing: { price: 90000 }, market }), NOW);
+    const r = priceRow(input({ listing: { price: 90000 }, market }));
     assert.equal(r.status, "scored");
     assert.equal(r.source, "market");
     assert.equal(r.value, 10);
@@ -130,7 +130,7 @@ describe("price row (§4.1)", () => {
   });
 
   it("no market row", () => {
-    assert.equal(priceRow(input(), NOW).reason, "no_market_row");
+    assert.equal(priceRow(input()).reason, "no_market_row");
   });
 });
 
@@ -141,7 +141,7 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
   const listing = { price: 119880, new_price: 200000, new_car_price_id: 900 };
 
   it("inside the range: price against new_price × (0.83 − 0.041 × 4) = 133,200 → +10", () => {
-    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm() }), NOW);
+    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm() }));
     assert.equal(r.status, "scored");
     assert.equal(r.source, "anchor");
     assert.equal(r.value, 10);
@@ -157,12 +157,12 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
   });
 
   it("at the young edge (age = age_min) and at the old edge (age = age_max): both score", () => {
-    const young = priceRow(input({ listing: { ...listing, price: 141400 }, car: { first_registration: regAt(3) }, market: thin, pool_stats: poolNorm() }), NOW);
+    const young = priceRow(input({ listing: { ...listing, price: 141400 }, car: { first_registration: regAt(3) }, market: thin, pool_stats: poolNorm() }));
     assert.equal(young.status, "scored");
     assert.equal(young.raw.anchor, 200000 * 0.707);
     assert.equal(young.value, 0);
 
-    const old = priceRow(input({ listing: { ...listing, price: 116800 }, car: { first_registration: regAt(6) }, market: thin, pool_stats: poolNorm() }), NOW);
+    const old = priceRow(input({ listing: { ...listing, price: 116800 }, car: { first_registration: regAt(6) }, market: thin, pool_stats: poolNorm() }));
     assert.equal(old.status, "scored");
     assert.equal(old.raw.anchor, 200000 * 0.584);
     assert.equal(old.value, 0);
@@ -175,7 +175,7 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
     const otherModel = poolNorm({ anchor_points: [anchorPoint({ model: "OTHER" })] });
     const otherMake = poolNorm({ anchor_points: [anchorPoint({ make: "OTHER" })] });
     for (const pool of [otherYear, otherModel, otherMake, poolNorm({ anchor_points: [] })]) {
-      const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: pool }), NOW);
+      const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: pool }));
       assert.equal(r.status, "unavailable");
       assert.equal(r.reason, "thin_cell");
       assert.equal(r.raw.anchor_unavailable, "not_an_anchor_point");
@@ -184,19 +184,19 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
   });
 
   it("the listing's model-year IS a point → the curve applies, and the point is recorded in raw", () => {
-    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm() }), NOW);
+    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm() }));
     assert.equal(r.status, "scored");
     assert.deepEqual(r.raw.anchor_point, { n: 12, ratio: 0.666, median_age: 4 });
   });
 
   it("a pool row written before anchor_points existed (null) anchors nothing", () => {
-    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm({ anchor_points: null }) }), NOW);
+    const r = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm({ anchor_points: null }) }));
     assert.equal(r.raw.anchor_unavailable, "not_an_anchor_point");
   });
 
   it("a car of a fitted year OUTSIDE the old age range now gets the anchor, at its current age", () => {
     for (const age of [2.9, 6.1, 9]) {
-      const r = priceRow(input({ listing, car: { first_registration: regAt(age) }, market: thin, pool_stats: poolNorm() }), NOW);
+      const r = priceRow(input({ listing, car: { first_registration: regAt(age) }, market: thin, pool_stats: poolNorm() }));
       assert.equal(r.status, "scored", `age ${age}`);
       assert.equal(r.source, "anchor");
       assert.equal(r.raw.age, age);
@@ -205,13 +205,13 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
   });
 
   it("no new price → thin_cell / no_new_price", () => {
-    const r = priceRow(input({ listing: { ...listing, new_price: null, new_car_price_id: null }, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm() }), NOW);
+    const r = priceRow(input({ listing: { ...listing, new_price: null, new_car_price_id: null }, car: { first_registration: regAt(4) }, market: thin, pool_stats: poolNorm() }));
     assert.equal(r.reason, "thin_cell");
     assert.equal(r.raw.anchor_unavailable, "no_new_price");
   });
 
   it("no pool row, and a pool row with no curve (P4) → thin_cell / no_anchor_curve", () => {
-    const noRow = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin }), NOW);
+    const noRow = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin }));
     assert.equal(noRow.reason, "thin_cell");
     assert.equal(noRow.raw.anchor_unavailable, "no_anchor_curve");
     assert.equal(noRow.raw.pool_stats_id, null);
@@ -224,7 +224,7 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
       anchor_age_max_years: null,
       anchor_n: 0,
     });
-    const noCurve = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: empty }), NOW);
+    const noCurve = priceRow(input({ listing, car: { first_registration: regAt(4) }, market: thin, pool_stats: empty }));
     assert.equal(noCurve.reason, "thin_cell");
     assert.equal(noCurve.raw.anchor_unavailable, "no_anchor_curve");
     assert.equal(noCurve.raw.pool_stats_id, 5);
@@ -233,13 +233,13 @@ describe("price row — the thin-cell anchor (Day 14 §0.5)", () => {
   // §9.6: P1 cannot produce a thin cell with a typical; a row that carries one is an invariant violation.
   it("a thin cell that carries a median_history → throw", () => {
     assert.throws(
-      () => priceRow(input({ listing, car: { first_registration: regAt(4) }, market: cell({ sample_size: 3, median_history: -4 }), pool_stats: poolNorm() }), NOW),
+      () => priceRow(input({ listing, car: { first_registration: regAt(4) }, market: cell({ sample_size: 3, median_history: -4 }), pool_stats: poolNorm() })),
       /is thin[\s\S]*median_history/,
     );
   });
 
   it("P2: no first_registration → the age runs from 1 January of cars.year, flagged in raw", () => {
-    const r = priceRow(input({ listing, car: { year: 2021, first_registration: null }, market: thin, pool_stats: poolNorm() }), NOW);
+    const r = priceRow(input({ listing, car: { year: 2021, first_registration: null }, market: thin, pool_stats: poolNorm() }));
     assert.equal(r.raw.age_source, "year_jan_1");
     assert.ok(Math.abs((r.raw.age as number) - 5.68) < 0.01, `age = ${r.raw.age}`);
     assert.equal(r.status, "scored");
@@ -256,7 +256,6 @@ describe("a thin-cell listing with an anchor (Day 14 §0.5)", () => {
         market: cell({ sample_size: 3 }),
         pool_stats: poolNorm(),
       }),
-      NOW,
     );
     assert.equal(r.rows[0].status, "scored");
     assert.equal(r.rows[0].source, "anchor");

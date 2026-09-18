@@ -21,26 +21,30 @@
 // anchor_unavailable 'not_an_anchor_point'. anchor_age_min_years / anchor_age_max_years describe the fit and are
 // no longer read. A pool row written before anchor_points existed (null) has no points, so nothing is anchored.
 //
-// Age (P2): years with decimals from cars.first_registration to the run's `now`; when first_registration
-// is null, from 1 January of cars.year, and raw.age_source says which was used. Nothing reads a clock.
+// Age (P2, as Day 19 §3 freezes it): years with decimals from cars.first_registration to the day the
+// listing's CURRENT PRICE was observed; when first_registration is null, from 1 January of cars.year, and
+// raw.age_source says which was used. The anchor row is the only price path that reads an age at all — the
+// cell-median row compares two prices and needs none — so the price's observation date enters here and
+// nowhere else. Nothing reads a clock.
 
+import { ageYears } from "./age";
 import { MIN_SAMPLE } from "./constants";
 import type { Row, ScoringInput } from "./types";
 import { round } from "./util";
 
-const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
-
 export type AgeSource = "first_registration" | "year_jan_1";
 
 // P2. Exported because the anchor's age is the one age the engine computes from a date it may not have.
-export function anchorAge(car: ScoringInput["car"], now: Date): { age: number; age_source: AgeSource } {
+// Day 19 (§3.2, §3.3): `at` is the day the price being scored was observed — the same fallback, the same
+// age_source, measured to that day instead of to the run clock.
+export function anchorAge(car: ScoringInput["car"], at: Date): { age: number; age_source: AgeSource } {
   if (car.first_registration !== null) {
-    return { age: (now.getTime() - car.first_registration.getTime()) / YEAR_MS, age_source: "first_registration" };
+    return { age: ageYears(car.first_registration, at), age_source: "first_registration" };
   }
-  return { age: (now.getTime() - Date.UTC(car.year, 0, 1)) / YEAR_MS, age_source: "year_jan_1" };
+  return { age: ageYears(new Date(Date.UTC(car.year, 0, 1)), at), age_source: "year_jan_1" };
 }
 
-export function priceRow(input: ScoringInput, now: Date): Row {
+export function priceRow(input: ScoringInput): Row {
   const { listing, car, market, pool_stats } = input;
   if (market === null) {
     return { row: "price", status: "unavailable", reason: "no_market_row", raw: { price: listing.price } };
@@ -64,11 +68,14 @@ export function priceRow(input: ScoringInput, now: Date): Row {
         `price row: market_stats ${market.id} is thin (sample_size ${market.sample_size} < ${MIN_SAMPLE}) but carries median_history ${market.median_history}`,
       );
     }
-    const { age, age_source } = anchorAge(car, now);
+    const { age, age_source } = anchorAge(car, listing.price_observed_at);
     Object.assign(raw, {
       new_price: listing.new_price,
       new_car_price_id: listing.new_car_price_id,
       age,
+      // Day 19 (§3.2): the anchor row records the date its age was read at, next to the age itself. The
+      // cell-median row below gains nothing — it reads no age.
+      price_observed_at: listing.price_observed_at.toISOString(),
       age_source,
       ratio: null,
       anchor: null,

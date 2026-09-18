@@ -50,7 +50,9 @@ export type ListingState = {
 // ---------- the output ----------
 export type Write =
   | { field: "price"; from: number; to: number; observed_at: Date }
-  | { field: "km_declared"; from: number | null; to: number }
+  // Day 19 (8.1): a km change is an OBSERVATION of a number, so it carries the day it was observed - exactly
+  // as the price variant above does. The engine pairs the ad's km with the car's age on that day.
+  | { field: "km_declared"; from: number | null; to: number; observed_at: Date }
   | { field: "hand_declared"; from: number | null; to: number }
   | { field: "last_verified_at"; from: Date | null; to: Date }
   | { field: "delisted_at"; from: null; to: Date };
@@ -191,7 +193,9 @@ export function decide(existing: ListingState | null, obs: Observation, seen: Da
     writes.push({ field: "price", from: existing.price, to: obs.price, observed_at: seen });
   }
   if (obs.km !== null && obs.km !== existing.km_declared) {
-    writes.push({ field: "km_declared", from: existing.km_declared, to: obs.km });
+    // Day 19 (8.1): `seen` is the run's verification date, midnight UTC - the day this km was observed.
+    // decide() takes `seen` as a required Date, so a km write can never be reached without one.
+    writes.push({ field: "km_declared", from: existing.km_declared, to: obs.km, observed_at: seen });
   }
   if (obs.hand !== null && obs.hand !== existing.hand_declared) {
     writes.push({ field: "hand_declared", from: existing.hand_declared, to: obs.hand });
@@ -246,7 +250,11 @@ export async function apply(client: Client, decision: Decision, deps: ApplyDeps 
   const patch: Record<string, Date | number> = {};
   for (const w of decision.writes) {
     if (w.field === "price") await deps.recordPrice(decision.listing_id, w.to, w.observed_at, client);
-    else patch[w.field] = w.to;
+    else if (w.field === "km_declared") {
+      // Day 19 (8.2): the number and the day it was observed land in the SAME listings.update.
+      patch.km_declared = w.to;
+      patch.km_observed_at = w.observed_at;
+    } else patch[w.field] = w.to;
   }
   if (Object.keys(patch).length > 0) {
     await client.listings.update({ where: { id: decision.listing_id }, data: patch });

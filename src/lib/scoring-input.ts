@@ -7,14 +7,34 @@
 import type { OwnershipRow, OwnershipType, ScoringInput, SellerType } from "@/lib/scoring";
 import { OWNERSHIP_CODES } from "@/lib/mot/translator";
 
+// Day 19 (§1.2): the listing's price history, latest row first. REQUIRED, not optional — the engine pairs the
+// ad's price with the car's age on the day that price was observed, and a caller that does not load the relation
+// must fail to compile rather than fall back to a date that is silently wrong. One row (the latest) is enough.
+export type PriceHistoryRowLike = { observed_at: Date; price: number };
+
 export type ListingRowLike = {
   id: number;
   price: number;
   km_declared: number | null;
   hand_declared: number | null;
   first_seen_at: Date;
+  km_observed_at: Date; // Day 19 (§1.1): listings.km_observed_at
   owners_at_first_seen: number | null;
+  price_history: PriceHistoryRowLike[];
 };
+
+/**
+ * Day 19 (§1.2) — the day the listing's CURRENT price was observed: the latest observed_at among its
+ * listing_price_history rows. A listing with no history row has never had a price change recorded, so the
+ * price it carries is the one it was first seen with — first_seen_at.
+ */
+export function priceObservedAt(history: readonly PriceHistoryRowLike[], first_seen_at: Date): Date {
+  let latest: Date | null = null;
+  for (const r of history) {
+    if (latest === null || r.observed_at.getTime() > latest.getTime()) latest = r.observed_at;
+  }
+  return latest ?? first_seen_at;
+}
 
 export type CarRowLike = {
   license_plate: string | null;
@@ -92,6 +112,8 @@ export function scoringSubject(
       km_declared: listing.km_declared,
       hand_declared: listing.hand_declared,
       first_seen_at: listing.first_seen_at,
+      km_observed_at: listing.km_observed_at,
+      price_observed_at: priceObservedAt(listing.price_history, listing.first_seen_at),
       seller_type: sellerTypeOf(dealer_type),
       owners_at_first_seen: listing.owners_at_first_seen,
       new_price: new_car_price === null ? null : new_car_price.mehir,

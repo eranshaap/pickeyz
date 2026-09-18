@@ -79,6 +79,7 @@ import { buildAnchorPoints, parseAnchorPoints, pointKey, sameAnchorPoints, type 
 import { marketListings, marketModels, type MarketListing } from "@/lib/norms/market-listings";
 import { ANCHOR_MIN_POINTS, ANCHOR_POINT_MIN_SAMPLE, ENGINE_VERSION, KM_SLOPE_MIN_SAMPLE, MIN_SAMPLE } from "@/lib/scoring/constants";
 import { historyRow, kmRow, priceRow, type AnchorPoint, type ScoringInput } from "@/lib/scoring";
+import { ageYears } from "@/lib/scoring/age";
 import { scoringSubject } from "@/lib/scoring-input";
 import { at, loo, ols, type Fit } from "./measure-constants";
 
@@ -88,7 +89,6 @@ const DRY = !process.argv.includes("--write");
 type Window = 90 | 180;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
 
 // M5's column name — at(fit, X_NAME) reads the slope out of the fit.
 const X_NAME = "x (km_dev/1000/yr)";
@@ -127,7 +127,6 @@ type PoolListing = {
   degem_code: string | null;
   new_price: number | null; // the latest new_car_prices row on the car's key; null when none matches
   new_car_price_id: number | null;
-  typical_v2: number | null; // score_breakdown.typical_condition as the listing carries it today (§5.5)
   key: string; // groupKey(fields)
   subject: Omit<ScoringInput, "market">; // the listing and car as the engine sees them (§10)
   stored_breakdown: unknown; // listings.score_breakdown — §11's "old" side reads the stored price row
@@ -171,6 +170,12 @@ function mix(pool: PoolListing[]): string {
 }
 
 const f = (v: number | null, d: number) => (v === null ? "-" : v.toFixed(d));
+// Day 19 (§6.5 b): a list of appended ids, contracted to `a-b` when it is one unbroken run.
+function idList(ids: number[]): string {
+  if (ids.length === 0) return "[]";
+  const run = ids.every((v, i) => i === 0 || v === ids[i - 1] + 1);
+  return run && ids.length > 2 ? `[${ids[0]}-${ids[ids.length - 1]}]` : `[${ids.join(", ")}]`;
+}
 const arrow = (a: number | string | null | undefined, b: number | string | null | undefined) => `${a === null || a === undefined ? "-" : a} -> ${b === null || b === undefined ? "-" : b}`;
 
 // Day 15, Run 1b (§1): the one place a written decimal is rounded. Null passes through - a null anchor is the
@@ -274,7 +279,6 @@ function toPool(l: LoadedListing): PoolListing {
     engine_size: m.engine_size, horsepower: m.horsepower, transmission: m.transmission,
     drive_type: m.drive_type, sub_model: m.sub_model,
   };
-  const bd = l.score_breakdown as { typical_condition?: unknown } | null;
   return {
     id: l.id, car_id: l.car_id, plate, year: l.car.year, price: l.price, km: l.km_declared,
     dealer_type: l.dealer.dealer_type, delisted_at: l.delisted_at,
@@ -283,7 +287,6 @@ function toPool(l: LoadedListing): PoolListing {
     make: m.make, model: m.model, sub_model: m.sub_model, vehicle_class: m.vehicle_class, degem_code: m.degem_code,
     new_price: null, // filled below from new_car_prices
     new_car_price_id: null,
-    typical_v2: bd !== null && typeof bd.typical_condition === "number" ? bd.typical_condition : null,
     key: groupKey(fields),
     subject: scoringSubject(l, l.car, l.dealer.dealer_type),
     stored_breakdown: l.score_breakdown,
@@ -300,17 +303,37 @@ async function main() {
   const models = await marketModels({ windowStart: windowStart(180), windowEnd: now });
   const market90: PoolListing[] = [];
   const market180: PoolListing[] = [];
+  // Day 19 (§1.4): the raw market rows are kept beside the mapped ones for the loader self-check below.
+  const marketRaw: MarketListing[] = [];
   for (const modelKey of models) {
-    for (const l of await marketListings({ modelKey, windowStart: windowStart(90), windowEnd: now })) market90.push(toPool(l));
-    for (const l of await marketListings({ modelKey, windowStart: windowStart(180), windowEnd: now })) market180.push(toPool(l));
+    for (const l of await marketListings({ modelKey, windowStart: windowStart(90), windowEnd: now })) { marketRaw.push(l); market90.push(toPool(l)); }
+    for (const l of await marketListings({ modelKey, windowStart: windowStart(180), windowEnd: now })) { marketRaw.push(l); market180.push(toPool(l)); }
   }
   // Every live listing, as before: the km filter chips (§1.2), P5, and §11's thin-cell count read these.
   const liveRaw = await db.listings.findMany({
     where: { delisted_at: null },
-    include: { car: { include: { model: true } }, dealer: { select: { dealer_type: true } } },
+    include: {
+      car: { include: { model: true } },
+      dealer: { select: { dealer_type: true } },
+      // Day 19 (§1.3): scoringSubject() needs the latest price-history row here too.
+      price_history: { orderBy: [{ observed_at: "desc" }, { id: "desc" }], take: 1, select: { observed_at: true, price: true } },
+    },
     orderBy: { id: "asc" },
   });
   const live = liveRaw.map(toPool);
+
+  // Day 19 (§1.4): the loader self-check. Until now listing_price_history was read by nothing but its writers,
+  // so this is the first run that asserts the relation says what listings.price says. Both must be 0; a non-zero
+  // is printed and reported, not a stop.
+  {
+    const seen = new Map<number, { id: number; price: number; price_history: { observed_at: Date; price: number }[] }>();
+    for (const l of [...liveRaw, ...marketRaw]) seen.set(l.id, l);
+    const rows = [...seen.values()].sort((a, b) => a.id - b.id);
+    const noHistory = rows.filter((l) => l.price_history.length === 0);
+    const priceDiffers = rows.filter((l) => l.price_history.length > 0 && l.price_history[0].price !== l.price);
+    console.log(`listings without a price-history row: ${noHistory.length}${noHistory.length ? ` (${noHistory.map((l) => l.id).join(", ")})` : ""}`);
+    console.log(`latest history price != listings.price: ${priceDiffers.length}${priceDiffers.length ? ` (${priceDiffers.map((l) => l.id).join(", ")})` : ""}`);
+  }
 
   // The new-car price, joined exactly as select-three.ts joins it: the latest published_at row of
   // new_car_prices on (degem_code = models.degem_code, sug_degem = models.vehicle_class, shnat_yitzur = cars.year).
@@ -423,7 +446,7 @@ async function main() {
     if (cellRow.sample_size < MIN_SAMPLE) { m5Thin++; continue; }
     if (cellRow.median_price <= 0) throw new Error(`cell ${cellRow.comparison_group} x ${cellRow.year}: median_price ${cellRow.median_price}`);
     const input: ScoringInput = { ...l.subject, market: cellNormOf(cellRow) };
-    const km = kmRow(input, now);
+    const km = kmRow(input); // Day 19 (§6.2): each listing at its own km_observed_at
     const dev = km.raw.km_dev_per_year;
     if (km.status !== "scored" || typeof dev !== "number") { m5NoKmRow++; continue; }
     m5All.push({ l, y: ((l.price - cellRow.median_price) / cellRow.median_price) * 100, x: dev / 1000 });
@@ -464,7 +487,7 @@ async function main() {
   for (const l of market90) {
     if (l.new_price === null || l.new_price <= 0) { m8NoNew++; continue; }
     if (l.first_registration === null) { m8NoReg++; continue; }
-    m8All.push({ l, ratio: l.price / l.new_price, age: (l.first_seen_at.getTime() - l.first_registration.getTime()) / YEAR_MS });
+    m8All.push({ l, ratio: l.price / l.new_price, age: ageYears(l.first_registration, l.subject.listing.price_observed_at) });
   }
   // Day 18 (§5): the fit's points are MODEL-YEARS keyed (make, model, year), equal weight, each with at least
   // ANCHOR_POINT_MIN_SAMPLE listings: median ratio, median age, rounded to DECIMALS — the data as stored.
@@ -519,19 +542,13 @@ async function main() {
 
   // ---------- 6. report (§5.5) ----------
   console.log(`\n===== CELL ROWS (${cellRows.length}) =====`);
-  console.log("comparison_group | year | window | sample_size | median_price | median_km | median_history (n) | old typical (v2) | difference");
+  console.log("comparison_group | year | window | sample_size | median_price | median_km | median_history (n)");
   for (const r of cellRows) {
     const flag = r.sample_size < MIN_SAMPLE ? " THIN" : "";
     const hist = r.median_history === null ? "-" : `${f(r.median_history, 2)} (${r.histories})`;
-    // §5.5: the old typical as the cell's listings carry it today, from score_breakdown.typical_condition.
-    const olds = [...new Set(r.pool.map((l) => l.typical_v2).filter((v): v is number => v !== null))];
-    const oldText = olds.length === 0 ? "-" : olds.length === 1 ? f(olds[0], 2) : `${olds.map((v) => f(v, 2)).join(" / ")} (NOT ONE VALUE)`;
-    const diff = olds.length === 1 && r.median_history !== null ? f(olds[0] - r.median_history, 2) : "-";
-    console.log(`\n${r.comparison_group} | ${r.year} | ${r.window_days} | ${r.sample_size} | ${r.median_price} | ${r.median_km ?? "-"} | ${hist} | ${oldText} | ${diff}${flag}`);
+    console.log(`\n${r.comparison_group} | ${r.year} | ${r.window_days} | ${r.sample_size} | ${r.median_price} | ${r.median_km ?? "-"} | ${hist}${flag}`);
     console.log(`  dealer_type mix: ${mix(r.pool)}; listings with a registry record: ${r.with_record} of ${r.sample_size}`);
   }
-  console.log(`\n(difference = old typical_condition (v2) - new median_history. §0.7: within a cell every listing's deal moves by exactly this constant,`);
-  console.log(` plus the change of its km row where the model's slope replaces the default.)`);
 
   console.log(`\n===== MODEL ROWS (${modelRows.length}) =====`);
   console.log(`regression pool: ${m5All.length} of ${market90.length} 90-day market listings (dropped: ${m5NoCell} with no cell row, ${m5Thin} in a thin cell, ${m5NoKmRow} with no scored km row)`);
@@ -584,7 +601,7 @@ async function main() {
       if (!trims.has(k)) trims.set(k, []);
       (trims.get(k) as M8Row[]).push(r);
     }
-    console.log(`distance per listing = (price / new_price - (intercept + per_year × age at first_seen_at)) × 100, in ratio points; ${m8All.length} listings with a new price and a first registration`);
+    console.log(`distance per listing = (price / new_price - (intercept + per_year × age at price_observed_at)) × 100, in ratio points; ${m8All.length} listings with a new price and a first registration`);
     console.log("make | model | ramat_gimur | n (cars) | model years | median distance | spread (max - min of the per-year medians)");
     for (const [k, rows] of [...trims.entries()].sort((x, y) => x[0].localeCompare(y[0]))) {
       const [make, model, trim] = k.split("|");
@@ -662,7 +679,7 @@ async function main() {
     if (c.sample_size >= MIN_SAMPLE) continue;
     const newPrice = l.new_price === null ? null : { id: l.new_car_price_id as number, mehir: l.new_price };
     const subject = { ...l.subject, listing: { ...l.subject.listing, new_price: newPrice?.mehir ?? null, new_car_price_id: newPrice?.id ?? null } };
-    const p = priceRow({ ...subject, market: cellNormOf(c), pool_stats: inputPool }, now);
+    const p = priceRow({ ...subject, market: cellNormOf(c), pool_stats: inputPool });
     newThin.push({ l, why: p.status === "scored" ? "anchored" : String(p.raw.anchor_unavailable ?? p.reason) });
   }
   const newWithout = newThin.filter((x) => x.why !== "anchored");
@@ -758,7 +775,8 @@ async function main() {
   });
 
   // Day 15 (§1.3): the same three lines in both modes — what a --write would append, and for the model rows
-  // which column made each of them differ.
+  // which column made each of them differ. Day 19 (§6.5 b): after a --write the ids of the appended rows are
+  // printed per table; a dry run keeps printing `would append`.
   console.log(`\n===== ROWS THIS RUN WOULD APPEND (skip rule §0.1) =====`);
   console.log(`pool_stats:   ${poolChanged ? 1 : 0} new, ${poolChanged ? 0 : 1} skipped (identical)`);
   console.log(`model_stats:  ${modelsToWrite.length} new, ${modelRows.length - modelsToWrite.length} skipped (identical)`);
@@ -789,11 +807,21 @@ async function main() {
           })),
         })).count
       : 0;
-    return { pool: poolWritten === null ? 0 : 1, model: modelWritten, cell: cellWritten };
+    // Day 19 (§6.5 b): the ids of the rows this run appended, per table. createMany returns only a count, so
+    // each table is read back inside the transaction by `now` — the computed_at stamp every row of the run carries.
+    const modelIds = modelWritten === 0 ? [] : (await tx.model_stats.findMany({ where: { computed_at: now }, select: { id: true }, orderBy: { id: "asc" } })).map((r) => r.id);
+    const cellIds = cellWritten === 0 ? [] : (await tx.market_stats.findMany({ where: { computed_at: now }, select: { id: true }, orderBy: { id: "asc" } })).map((r) => r.id);
+    return {
+      pool: poolWritten === null ? 0 : 1, model: modelWritten, cell: cellWritten,
+      poolIds: poolWritten === null ? [] : [poolWritten.id], modelIds, cellIds,
+    };
   }, WRITE_TRANSACTION_OPTIONS);
   console.log(`\npool_stats:   ${written.pool} written, ${1 - written.pool} skipped (unchanged)`);
   console.log(`model_stats:  ${written.model} written, ${modelRows.length - written.model} skipped (unchanged)`);
   console.log(`market_stats: ${written.cell} written, ${cellRows.length - written.cell} skipped (unchanged)`);
+  console.log(
+    `appended: pool_stats ${idList(written.poolIds)} · model_stats ${idList(written.modelIds)} · market_stats ${idList(written.cellIds)}`,
+  );
 }
 
 main()

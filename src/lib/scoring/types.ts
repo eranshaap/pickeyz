@@ -60,6 +60,10 @@ export type ScoringInput = {
     km_declared: number | null;
     hand_declared: number | null; // Day 14 (§0.4): recorded, never scored — the declared hand enters no row
     first_seen_at: Date;
+    // Day 19 (§1.1) — the clock freeze: every number is paired with the car's age on the day that number was
+    // observed, so the two observation dates are inputs like the numbers themselves.
+    km_observed_at: Date; // listings.km_observed_at — the first sighting, then the day of each km change
+    price_observed_at: Date; // the day the listing's CURRENT price was observed (its latest listing_price_history row)
     seller_type: SellerType;
     owners_at_first_seen: number | null;
     new_price: number | null; // Day 14 (§3.2): the car's new list price, the join select-three.ts uses; null when no row matches
@@ -147,8 +151,8 @@ export type ScoreResult = {
     dealer_transfers: number | null;
     months_since_test: number | null;
     km_per_month_since_test: number | null;
-    test_expiry: string | null;
-    months_left: number | null; // to test_expiry from now, floored at 0
+    test_expiry: string | null; // Day 19 (§3.7): the months-left fact LEFT the invoice — the one fact that depends on
+    // the day of viewing, so the invoice keeps the date and the display layer counts the months.
     current_owner_registry: OwnershipType | null; // Day 18 (§3.3): cars.current_owner_type as the engine received it; null = unknown
     color_changed_reported?: true; // Day 18 (§9): present only when history 1 says the colour was changed
     color_mismatch?: ColorMismatch; // Day 18 (§9): present only when both families are known and differ

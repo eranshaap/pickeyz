@@ -52,7 +52,7 @@ function result(over: Partial<ScoreResult> = {}): ScoreResult {
     deal_score: 6,
     checks: [],
     sold_signal: { strength: null, evidence: [] },
-    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, months_left: null, current_owner_registry: null },
+    facts: { dealer_transfers: null, months_since_test: null, km_per_month_since_test: null, test_expiry: null, current_owner_registry: null },
     confidence: { level: "high", items: [] },
     ...over,
   };
@@ -285,10 +285,12 @@ describe("the labels that were already there (§2.1)", () => {
     assert.equal(c?.label, "NEW");
   });
 
-  it("the same inputs and norm rows, only the clock moved back -> CLOCK", () => {
-    const c = run({}, (_norms, at) => (at.getTime() === SCORED_AT.getTime() ? result({ deal_score: STORED_TRIPLE.score, price_advantage: 5.5 }) : CURRENT));
-    assert.equal(c?.label, "CLOCK");
-    assert.ok(c?.detail.some((d) => d.includes("recomputed with now = stored scored_at")));
+  // Day 19 (5.1): the run-clock label is retired. The stored score is engine 5 here - the same engine, the same
+  // recorded inputs, no read norm row changed - so a triple that still differs has no name left: UNEXPLAINED.
+  it("a stored engine-5 score, nothing changed, a different triple -> UNEXPLAINED (the run-clock label is gone)", () => {
+    const c = run({}, () => CURRENT);
+    assert.equal(c?.label, "UNEXPLAINED");
+    assert.ok(c?.detail.some((d) => d.includes("not the stored values")));
   });
 
   it("an input the stored breakdown carries has changed -> DATA", () => {
@@ -323,6 +325,9 @@ describe("the labels that were already there (§2.1)", () => {
 // appends for a cell whose market did not move.
 const SAME_VALUES_CELL: CellNorm = cell({ id: 88, median_price: 92_500, median_km: 50_000, median_history: -6, sample_size: 20, window_days: 90 });
 
+// Day 19 (§5.4): every stored side in this block is a clock-reading engine, so the version rule reproduces it
+// by replacing its three observation dates with its own scored_at - and the label therefore leads with `age`.
+// Only that name was added below; no other expectation of these tests moved.
 describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
   // A stored v3 score against the current engine. The stub stands for the recomputation: the current engine, the norm
   // rows it is handed, the stored clock. The names come from comparing the stored rows' VALUES with the current ones.
@@ -347,31 +352,31 @@ describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
 
   it("reproduced, rows value-identical -> VERSION", () => {
     const c = runV({}, ALWAYS);
-    assert.equal(c?.label, "VERSION");
+    assert.equal(c?.label, "VERSION (age)");
     assert.ok(c?.detail.includes(`stored engine_version 3 -> ${ENGINE_VERSION}`));
     assert.ok(c?.detail.some((d) => d.includes("= the stored values")));
   });
 
   it("cell values differ -> VERSION (median)", () => {
     const c = runV({ norms: { ...CURRENT_NORMS, median: STORED_CELL } }, ALWAYS);
-    assert.equal(c?.label, "VERSION (median)");
+    assert.equal(c?.label, "VERSION (age, median)");
     assert.ok(c?.detail.some((d) => d.includes("cell row market_stats 88 -> 104")));
   });
 
   it("slope in use and its values differ -> VERSION (slope)", () => {
     const c = runV({ norms: { ...CURRENT_NORMS, slope: STORED_SLOPE }, breakdown: storedBreakdown({ slope_source: "model" }) }, ALWAYS);
-    assert.equal(c?.label, "VERSION (slope)");
+    assert.equal(c?.label, "VERSION (age, slope)");
   });
 
   it("slope values differ but the stored score used the default slope -> not named", () => {
     const c = runV({ norms: { ...CURRENT_NORMS, slope: STORED_SLOPE }, breakdown: storedBreakdown({ slope_source: "default" }) }, ALWAYS);
-    assert.equal(c?.label, "VERSION");
+    assert.equal(c?.label, "VERSION (age)");
     assert.ok(c?.detail.some((d) => d.includes("not named: the stored score's km row used the default slope")));
   });
 
   it("both differ -> VERSION (median, slope)", () => {
     const c = runV({ norms: { median: STORED_CELL, slope: STORED_SLOPE, anchor: INPUT.pool_stats } }, ALWAYS);
-    assert.equal(c?.label, "VERSION (median, slope)");
+    assert.equal(c?.label, "VERSION (age, median, slope)");
   });
 
   it("thin cell, the curve differs, both invoices anchored -> VERSION (anchor)", () => {
@@ -380,14 +385,14 @@ describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
       ALWAYS,
       { current: anchored(result()) },
     );
-    assert.equal(c?.label, "VERSION (anchor)");
+    assert.equal(c?.label, "VERSION (age, anchor)");
     assert.ok(c?.detail.some((d) => d.includes("pool row pool_stats 2 -> 3")));
   });
 
   it("a new pointer with identical values -> plain VERSION", () => {
     const sameSlope = modelNorm({ id: 1, km_slope: -1.181408, km_slope_n: 134 });
     const c = runV({ norms: { ...CURRENT_NORMS, median: SAME_VALUES_CELL, slope: sameSlope } }, ALWAYS);
-    assert.equal(c?.label, "VERSION");
+    assert.equal(c?.label, "VERSION (age)");
     assert.ok(!c?.detail.some((d) => d.includes("cell row") || d.includes("model row")));
   });
 
@@ -404,7 +409,7 @@ describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
       },
       { norms: { ...CURRENT_NORMS, anchor: pre } }, // as in Run 3c: the current score reads the same pre-v4 row
     );
-    assert.equal(c?.label, "VERSION (anchor gate)");
+    assert.equal(c?.label, "VERSION (age, anchor gate)");
     // the curve is the stored row's own; only the yes / no came from the record
     assert.equal(seen.length, 1);
     assert.equal(seen[0].anchor?.anchor_ratio_intercept, 0.804155);
@@ -420,7 +425,7 @@ describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
       (n) => (JSON.stringify(n.anchor?.anchor_points) === "[]" ? STORED_RESULT() : CURRENT),
       { norms: { ...CURRENT_NORMS, anchor: pre } },
     );
-    assert.equal(c?.label, "VERSION");
+    assert.equal(c?.label, "VERSION (age)");
     assert.ok(c?.detail.some((d) => d.includes("the recomputation reads no point")));
   });
 
@@ -432,6 +437,8 @@ describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
   });
 
   it("not reproduced, pair (2, 3) -> versionExpectation() as before", () => {
+    // Day 19: NOT reproduced by recomputation, so this takes the DECLARED (2, 3) identity, which carries no
+    // names - `age` belongs to the reproduced path only. The label stays plain VERSION.
     // The stored deal equals the current one and every row holds: the v2 -> v3 identity passes with constant 0.
     const c = classify({
       make: "יונדאי", model: "IONIQ HYBRID",
@@ -466,13 +473,13 @@ describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
 
   it("reproduced within the rounding allowance -> VERSION, and the allowance is printed", () => {
     const c = runV({}, () => result({ deal_score: 6.6 }));
-    assert.equal(c?.label, "VERSION");
+    assert.equal(c?.label, "VERSION (age)");
     assert.ok(c?.detail.some((d) => d.includes("within the ±0.1 rounding allowance")));
   });
 
   it("(f) the only confidence move is color_mismatch -> VERSION (confidence: color)", () => {
     const c = runV({}, () => result({ deal_score: 6.5, confidence: { level: "medium", items: [{ kind: "color_mismatch", ref: "color:mismatch" }] } }));
-    assert.equal(c?.label, "VERSION (confidence: color)");
+    assert.equal(c?.label, "VERSION (age, confidence: color)");
   });
 
   it("(f) a confidence move by another item is not the version's -> UNEXPLAINED", () => {
@@ -491,3 +498,105 @@ describe("the NORM (…) naming compares values (Day 18 run 3c §13.2 b)", () =>
     assert.ok(c?.detail.some((d) => d.includes("not named: a new row with the same values")));
   });
 });
+
+// ---------------------------------------------------------------------------------------------------
+// Day 19 (§12.7) — the version rule with the clock replacement.
+//
+// The declared 4 -> 5 move is that ONLY THE AGE MOVED: the new engine, at the age the old score read,
+// reproduces the old score. The replacement IS the identity, so `age` is on the label exactly when the
+// stored engine read a run clock — and never on a stored score of engine 5 or later.
+describe("Day 19 §5 — the version rule, the clock replacement and the `age` name", () => {
+  const V4 = { engine_version: 4 as number };
+  // Reproduces the stored triple only when it is asked for a non-null clock at the stored scored_at.
+  const reproducesAtClock: ScoreWith = (_norms, clock) =>
+    clock !== null && clock.getTime() === SCORED_AT.getTime()
+      ? result({ deal_score: STORED_TRIPLE.score, price_advantage: 5.5 })
+      : CURRENT;
+
+  it("a stored engine-4 score reproduced at its scored_at -> VERSION (age)", () => {
+    const c = run({ ...V4 }, reproducesAtClock);
+    assert.equal(c?.label, "VERSION (age)");
+    assert.ok(c?.detail.some((d) => d.includes("stored engine_version 4 -> 5")));
+    assert.ok(c?.detail.some((d) => d.includes("three observation dates replaced by the stored run clock")));
+  });
+
+  it("the SAME input recomputed with clock = null does NOT reproduce it — so the clock is what matters", () => {
+    // Same stored side, a callback that reproduces only on its own observation dates: the version rule
+    // passes a clock for an engine-4 row, gets the current triple, and finds no declared identity for 4 -> 5.
+    const onlyWithoutClock: ScoreWith = (_norms, clock) =>
+      clock === null ? result({ deal_score: STORED_TRIPLE.score, price_advantage: 5.5 }) : CURRENT;
+    const c = run({ ...V4 }, onlyWithoutClock);
+    assert.equal(c?.label, "UNEXPLAINED");
+    assert.ok(c?.detail.some((d) => d.includes("no declared identity for v4 → v5")));
+  });
+
+  it("a read norm row changed as well -> VERSION (age, slope), age first", () => {
+    const c = run(
+      { ...V4, norms: { ...CURRENT_NORMS, slope: STORED_SLOPE }, breakdown: storedBreakdown({ slope_source: "model" }) },
+      reproducesAtClock,
+    );
+    assert.equal(c?.label, "VERSION (age, slope)");
+    assert.ok(c?.detail.some((d) => d.includes("model row model_stats 1 -> 5")));
+  });
+
+  it("a stored engine-5 score never carries `age` — it is recomputed on its own dates", () => {
+    // Engine 5 == ENGINE_VERSION, so this does not even reach the version rule; it is the UNEXPLAINED
+    // path above. The point here is the callback: it is called with clock = null, never with a date.
+    const clocks: (Date | null)[] = [];
+    run({}, (_n, clock) => { clocks.push(clock); return CURRENT; });
+    assert.ok(clocks.length > 0, "the classifier must have recomputed at least once");
+    assert.ok(clocks.every((c) => c === null), `a stored engine-5 score must be recomputed with clock = null, got ${clocks}`);
+  });
+
+  it("an engine-3 row is covered too — every clock-reading engine, not only the adjacent pair", () => {
+    const c = run({ engine_version: 3 }, reproducesAtClock);
+    assert.equal(c?.label, "VERSION (age)");
+  });
+});
+
+describe("Day 19 §5.5 — the two observation dates in the DATA check", () => {
+  // A v5 invoice records km_observed_at on the km row and price_observed_at on an anchor price row.
+  const withDates = (over: { km?: string; price?: string } = {}): ScoreResult => {
+    const bd = storedBreakdown();
+    bd.rows[2].raw = { ...bd.rows[2].raw, km_observed_at: over.km ?? INPUT.listing.km_observed_at.toISOString() };
+    if (over.price !== undefined) {
+      bd.rows[0].source = "anchor";
+      bd.rows[0].note = "vs_new_price";
+      bd.rows[0].raw = { ...bd.rows[0].raw, price_observed_at: over.price };
+    }
+    return bd;
+  };
+
+  it("a stored v5 invoice whose km_observed_at differs from the input -> DATA naming the field", () => {
+    const c = run({ breakdown: withDates({ km: "2026-01-01T00:00:00.000Z" }) }, NEVER);
+    assert.equal(c?.label, "DATA");
+    assert.ok(
+      c?.detail.some((d) => d.startsWith("input listing.km_observed_at: 2026-01-01T00:00:00.000Z ->")),
+      `expected a km_observed_at line, got ${JSON.stringify(c?.detail)}`,
+    );
+  });
+
+  it("the same date as the input -> not DATA", () => {
+    const c = run({ breakdown: withDates() }, NEVER);
+    assert.notEqual(c?.label, "DATA");
+  });
+
+  it("price_observed_at is compared on an anchor price row", () => {
+    const c = run({ breakdown: withDates({ price: "2026-02-02T00:00:00.000Z" }) }, NEVER);
+    assert.equal(c?.label, "DATA");
+    assert.ok(c?.detail.some((d) => d.startsWith("input listing.price_observed_at: 2026-02-02T00:00:00.000Z ->")));
+  });
+
+  it("a stored engine-4 invoice lacks both keys -> it is not compared on them, so not DATA", () => {
+    // storedBreakdown() carries neither key: the same null-over-value treatment the v4 fields get.
+    const c = run({ engine_version: 4, breakdown: storedBreakdown() }, reproducesAtClockForData);
+    assert.ok(c?.label.startsWith("VERSION"), `expected a VERSION label, got ${c?.label}`);
+    assert.ok(!c?.detail.some((d) => d.includes("km_observed_at:")));
+    assert.ok(!c?.detail.some((d) => d.includes("price_observed_at:")));
+  });
+});
+
+const reproducesAtClockForData: ScoreWith = (_norms, clock) =>
+  clock !== null && clock.getTime() === SCORED_AT.getTime()
+    ? result({ deal_score: STORED_TRIPLE.score, price_advantage: 5.5 })
+    : CURRENT;

@@ -24,6 +24,12 @@
 // and the registry's are both known and differ — also one confidence item. An unknown side (null, or a word
 // not in src/lib/mot/colors.ts) is no comparison.
 //
+// Day 19 (§3) — the clock freeze: scoreListing takes no clock. Every number is paired with the car's age on
+// the day that number was observed, and each site reads its own date off the input: the km row and the
+// months since the last test at listing.km_observed_at, the anchor price row at listing.price_observed_at,
+// the sold window back from listing.first_seen_at. The months-left fact is gone — it is the one fact that
+// depends on the day of viewing, so the invoice keeps facts.test_expiry and the display layer counts.
+//
 // Pure: no Prisma, no database, no I/O. The result object is what listings.score_breakdown stores.
 
 import { colorFamily } from "../mot/colors";
@@ -35,7 +41,7 @@ import { kmRow } from "./km";
 import { priceRow } from "./price";
 import { soldSignal } from "./sold";
 import type { CancelledResult, ColorMismatch, Invoice, Row, ScoreResult, ScoringInput } from "./types";
-import { dateToIso, monthsBetween, round } from "./util";
+import { dateToIso, round } from "./util";
 
 export type { AnchorPoint, CancelledResult, Check, ConfidenceItem, ConfidenceLevel, Deduction, Invoice, OwnershipRow, OwnershipType, Row, ScoreResult, ScoringInput, SellerType, SoldSignal } from "./types";
 export { isCancelled } from "./types";
@@ -55,7 +61,7 @@ export function colorMismatch(car: ScoringInput["car"]): ColorMismatch | null {
   return { ad: car.color as string, registry: car.registry_color as string, ad_family: adFamily, registry_family: registryFamily };
 }
 
-export function scoreListing(input: ScoringInput, now: Date): Invoice {
+export function scoreListing(input: ScoringInput): Invoice {
   // §8: a cancelled car — no rows, no sums, no confidence.
   if (input.car.cancelled_at !== null) {
     const cancelled: CancelledResult = {
@@ -73,18 +79,18 @@ export function scoreListing(input: ScoringInput, now: Date): Invoice {
     };
     return cancelled;
   }
-  return scoreRows(input, now);
+  return scoreRows(input);
 }
 
-function scoreRows(input: ScoringInput, now: Date): ScoreResult {
-  const price = priceRow(input, now);
+function scoreRows(input: ScoringInput): ScoreResult {
+  const price = priceRow(input);
   const history = historyRow(input);
-  const km = kmRow(input, now);
+  const km = kmRow(input);
   const rows: Row[] = [price, history, km];
 
   // §18.8: a fired sold signal skips both checks; otherwise they run on the full record.
-  const sold = soldSignal(input, now);
-  const checks = [handCheck(input, sold), kmCheck(input, now, sold)];
+  const sold = soldSignal(input);
+  const checks = [handCheck(input, sold), kmCheck(input, sold)];
 
   // §5 sums
   const historyValue = valueOf(history);
@@ -117,14 +123,14 @@ function scoreRows(input: ScoringInput, now: Date): ScoreResult {
   const deal_score = price_advantage !== null && condition_vs_typical !== null ? round(price_advantage + condition_vs_typical) : null;
 
   // §9 facts
-  const kf = kmFacts(input, now);
+  const kf = kmFacts(input);
   const dealer_transfers = history.status === "scored" && typeof history.raw.dealer_transfers === "number" ? history.raw.dealer_transfers : null;
   const facts: ScoreResult["facts"] = {
     dealer_transfers,
     months_since_test: kf.months_since_test,
     km_per_month_since_test: kf.km_per_month_since_test === null ? null : round(kf.km_per_month_since_test),
+    // Day 19 (§3.7): the date, not a count of months from today — the months left are computed at display.
     test_expiry: input.car.test_expiry === null ? null : dateToIso(input.car.test_expiry),
-    months_left: input.car.test_expiry === null ? null : Math.max(monthsBetween(now, input.car.test_expiry), 0),
     current_owner_registry: input.car.current_owner_type,
   };
   if (input.car.color_changed === true) facts.color_changed_reported = true;

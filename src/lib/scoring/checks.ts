@@ -5,6 +5,10 @@
 //   medium  -> both checks status 'skipped', reason 'possibly_sold'
 //   null    -> both run on the FULL record (there is no record_at_listing)
 // A skipped check is neither an item nor a mismatch.
+//
+// Day 19 (§3.5, §3.6) — the clock freeze: the months since the last test are counted up to the day the
+// ad's km was OBSERVED (listings.km_observed_at), because the pair being judged is that km against that
+// test. The run clock is not in it. The floor of 1 month and the implausible-growth rule are unchanged.
 
 import { HAND_CHECK_KINDS, KM_BELOW_THRESHOLD, KM_CHECK_KINDS, KM_IMPLAUSIBLE_PER_MONTH } from "./constants";
 import { analyzeHistory } from "./history";
@@ -54,10 +58,10 @@ export function handCheck(input: ScoringInput, sold: SoldSignal): Check {
 // The km facts the result reports (§9 facts) — computed once, shared by the km check.
 export type KmFacts = { months_since_test: number | null; km_per_month_since_test: number | null; diff: number | null };
 
-export function kmFacts(input: ScoringInput, now: Date): KmFacts {
+export function kmFacts(input: ScoringInput): KmFacts {
   const test = input.car.mivchan_acharon_dt;
   if (test === null) return { months_since_test: null, km_per_month_since_test: null, diff: null };
-  const months_since_test = Math.max(monthsBetween(test, now), 1);
+  const months_since_test = Math.max(monthsBetween(test, input.listing.km_observed_at), 1);
   const { km_declared } = input.listing;
   const { km_at_last_test } = input.car;
   if (km_declared === null || km_at_last_test === null) return { months_since_test, km_per_month_since_test: null, diff: null };
@@ -65,7 +69,7 @@ export function kmFacts(input: ScoringInput, now: Date): KmFacts {
   return { months_since_test, km_per_month_since_test: diff > 0 ? diff / months_since_test : null, diff };
 }
 
-export function kmCheck(input: ScoringInput, now: Date, sold: SoldSignal): Check {
+export function kmCheck(input: ScoringInput, sold: SoldSignal): Check {
   const skip = skipped("km", sold);
   if (skip) return skip;
 
@@ -79,7 +83,7 @@ export function kmCheck(input: ScoringInput, now: Date, sold: SoldSignal): Check
   const official_date = dateToIso(test);
   if (official === 0) return { check: "km", status: "unavailable", reason: "official_is_intake", declared, official, official_date };
 
-  const f = kmFacts(input, now);
+  const f = kmFacts(input);
   const diff = f.diff as number;
   const months_since_test = f.months_since_test as number;
   const raw = { diff, months_since_test, km_per_month_since_test: f.km_per_month_since_test };
