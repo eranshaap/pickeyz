@@ -1264,6 +1264,10 @@ async function main() {
   log("");
   // Day 19 (10.5): `make` joins the point so it can be matched against pool_stats.anchor_points, whose key is
   // (make, model, year). It comes off the scoring input, which is where the engine reads it from too.
+  // Run 5e (§1): the median ratio and the median age are rounded to six decimals HERE, before any fit reads
+  // them — buildAnchorPoints() rounds the same two fields at the same place (src/lib/norms/anchor-points.ts:50),
+  // so every fit below runs on the points as pool_stats.anchor_points stores them, not on unrounded medians.
+  const p6 = (v: number): number => Number(v.toFixed(6));
   type MYear = { key: string; make: string; model: string; year: number; n: number; medianRatio: number; medianAge: number };
   const myears: MYear[] = m8Keys.map((k) => {
     const [modelName, yearText] = k.split("|");
@@ -1274,8 +1278,8 @@ async function main() {
       model: modelName,
       year: Number(yearText),
       n: set.length,
-      medianRatio: median(set.map((r) => r.ratio)),
-      medianAge: median(set.map((r) => r.age)),
+      medianRatio: p6(median(set.map((r) => r.ratio))),
+      medianAge: p6(median(set.map((r) => r.age))),
     };
   });
   // loo() is now module-level (exported for §5.3); MYear and M8Row satisfy its structural parameters.

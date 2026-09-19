@@ -92,7 +92,17 @@ export function readRunnerUp(res: SelectionResult): RunnerUpRead {
   };
 }
 
-const sameRunnerUp = (a: RunnerUpRead, b: RunnerUpRead): boolean => JSON.stringify(a) === JSON.stringify(b);
+// Run 5e (§3): the runner-up verdict compares the RUNNER-UP, like the pick lines do — the state, the listing,
+// whether the rule triggered, and every other recorded field. Only the GAP is left out: it is a number ABOUT
+// the runner-up, not the runner-up, and the preview prints it before -> after on its own line, so a move in it
+// stays visible without being called a change. `triggered` is compared explicitly here — it used to ride along
+// inside the whole-object comparison, and a runner-up that appeared or disappeared must never be hidden.
+function runnerUpIdentity(r: RunnerUpRead): Record<string, unknown> {
+  if (r.state !== "recorded") return { ...r }; // no_pick / not_evaluated: state, reason, and triggered where it exists
+  return { state: r.state, listing_id: r.listing_id, triggered: r.triggered, price_over_pct: r.price_over_pct, also_won: r.also_won };
+}
+const sameRunnerUp = (a: RunnerUpRead, b: RunnerUpRead): boolean =>
+  JSON.stringify(runnerUpIdentity(a)) === JSON.stringify(runnerUpIdentity(b));
 
 /**
  * The two selections, compared. `before` is the stored side, `after` the fresh one.

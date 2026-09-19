@@ -222,6 +222,41 @@ describe("readRunnerUp — select-three.ts's reading", () => {
   });
 });
 
+// Run 5e (§3): the verdict word on the preview's runner-up line compares the RUNNER-UP, like the pick lines.
+// The gap is printed before -> after on that same line, so a move in it alone is not a change.
+describe("compareSelections — runner_up.changed leaves the gap out (Run 5e §3)", () => {
+  /** The standard side with the cheapest pick's recorded entry rebuilt: only the gap and `triggered` vary. */
+  function sideWith(ru: number, gap: number, triggered = true): SelectionResult {
+    const s = side({ runnerUp: ru });
+    s.results[2].trace = [runnerUpTrace(ru, gap, triggered)];
+    return s;
+  }
+
+  it("R1: the same runner-up, the same triggered, only the gap differs -> not a change", () => {
+    const c = compareSelections(sideWith(2, 4), sideWith(2, 6.3));
+    assert.equal(c.runner_up.changed, false);
+    // both gaps are still carried, so the preview can print them before -> after
+    assert.equal(c.runner_up.before.state === "recorded" && c.runner_up.before.gap, 4);
+    assert.equal(c.runner_up.after.state === "recorded" && c.runner_up.after.gap, 6.3);
+  });
+
+  it("R2: the gap differs AND triggered differs -> a change (the gap never hides `triggered`)", () => {
+    const c = compareSelections(sideWith(2, 4, true), sideWith(2, 6.3, false));
+    assert.equal(c.runner_up.changed, true);
+  });
+
+  it("R4: a recorded runner-up on one side, no cheapest pick on the other -> a change", () => {
+    const gone = side({ picks: { cheapest: null } });
+    gone.missing = { cheapest: "no_candidate" };
+    const c = compareSelections(sideWith(2, 4), gone);
+    assert.equal(c.runner_up.after.state, "no_pick");
+    assert.equal(c.runner_up.changed, true);
+  });
+
+  // R3 (a different runner-up listing -> true) and R5 (both sides identical -> false) are already asserted:
+  // "a runner-up change is reported as a change" above, and "nothing changed" in the first describe.
+});
+
 describe("compareSelections — the finish test on each side", () => {
   it("runs finishTest() on both and reports a side that fails", () => {
     const broken = side({ picks: { peace_of_mind: null } }); // null with no recorded reason = claim 1 fails

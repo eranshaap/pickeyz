@@ -482,9 +482,12 @@ const showTriple = (t: Triple) => `${fmt(t.score)} / ${fmt(t.condition_score)} /
 //   anchor read <=> the price row is marked vs_new_price. price.ts writes note 'vs_new_price' together
 //                   with source 'anchor' on the thin-cell anchor path, and writes neither anywhere else;
 //                   either mark is accepted so an older invoice that carried only one still reads right.
-//   slope read  <=> the km row's raw.slope_source is 'model'. km.ts's slopeFor() writes 'model' exactly
-//                   when km_slope is present and km_slope_n >= KM_SLOPE_MIN_SAMPLE, 'default' otherwise,
-//                   and it writes the mark on an unavailable km row too.
+//   slope read  <=> the km row is AVAILABLE and its raw.slope_source is 'model'. km.ts's slopeFor() writes
+//                   'model' exactly when km_slope is present and km_slope_n >= KM_SLOPE_MIN_SAMPLE, 'default'
+//                   otherwise, and km.ts writes the mark on an UNAVAILABLE row too (kmRow() builds `raw` with
+//                   the slope choice in it before the first unavailable return) — so the mark alone does not
+//                   mean the score read the slope. Run 5e (§2): an unavailable km row produced no value, so
+//                   its score multiplied nothing by the slope; the slope row was not read and is not named.
 // A missing invoice can claim only the row every score reads.
 export function readNormKinds(bd: StoredBreakdown | null): NormKind[] {
   const read = new Set<NormKind>(["median"]);
@@ -492,7 +495,8 @@ export function readNormKinds(bd: StoredBreakdown | null): NormKind[] {
     const price = bd.rows?.find((r) => r.row === "price");
     const km = bd.rows?.find((r) => r.row === "km");
     if (price?.note === "vs_new_price" || price?.source === "anchor") read.add("anchor");
-    if (km?.raw?.slope_source === "model") read.add("slope");
+    // storedRowValue() is this file's "the row is available" predicate: status 'scored' with a numeric value.
+    if (storedRowValue(bd, "km") !== null && km?.raw?.slope_source === "model") read.add("slope");
   }
   return NORM_KINDS.filter((k) => read.has(k)); // always in NORM_KINDS order
 }

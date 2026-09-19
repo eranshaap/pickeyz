@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { ENGINE_VERSION } from "./constants";
 import { classify, type NormRows, type ScoreWith, type StoredSide } from "./regression";
 import { cell, input as scoringInput, modelNorm, poolNorm, rows } from "./fixtures";
+import { slopeFor } from "./km";
 import type { CellNorm, ScoreResult } from "./types";
 
 const SCORED_AT = new Date("2026-09-11T00:23:59.420Z");
@@ -63,7 +64,12 @@ const STORED_TRIPLE = { score: 6.5, condition_score: -5, confidence: "high" };
 
 /** The stored invoice: the same inputs, the deal the stored side holds; `over` moves one raw value. */
 function storedBreakdown(
-  over: { median_price?: number; sample_size?: number; price?: number; price_from_anchor?: boolean; slope_source?: "model" | "default" } = {},
+  over: {
+    median_price?: number; sample_size?: number; price?: number; price_from_anchor?: boolean;
+    slope_source?: "model" | "default";
+    /** Run 5e (§2.3): the km row as km.ts writes it for a cell with no km median of its own — a thin cell. */
+    km_unavailable?: boolean;
+  } = {},
 ): ScoreResult {
   const r = result({ deal_score: 6.5, price_advantage: 5.5 });
   r.rows[0].raw = {
@@ -79,6 +85,24 @@ function storedBreakdown(
   if (over.price_from_anchor) {
     r.rows[0].source = "anchor";
     r.rows[0].note = "vs_new_price";
+  }
+  // Run 5e (§2.3): the thin-cell km row, in the exact shape km.ts's kmRow() returns at its `thin_cell`
+  // branch — no `source`, no `value`, and a `raw` that already carries the slope choice (slopeFor() is
+  // called before the first unavailable return) as well as km_declared, km_observed_at, median_km and
+  // based_on_n. The mark is there; the row carries no value, so the score never used the slope.
+  if (over.km_unavailable) {
+    r.rows[2] = {
+      row: "km",
+      status: "unavailable",
+      reason: "thin_cell",
+      raw: {
+        km_declared: INPUT.listing.km_declared,
+        km_observed_at: INPUT.listing.km_observed_at.toISOString(),
+        ...slopeFor(INPUT.model_stats),
+        median_km: INPUT.market?.median_km ?? null,
+        based_on_n: INPUT.market?.sample_size ?? null,
+      },
+    };
   }
   if (over.slope_source) (r.rows[2].raw as Record<string, unknown>).slope_source = over.slope_source;
   return r;
@@ -254,6 +278,34 @@ describe("the composed label names only the rows the old score READ (Day 17 run 
     assert.ok(c?.detail.some((d) => d.includes("recomputed with the STORED norm rows (median 88, slope 1, anchor 2)")));
   });
 
+  // Run 5e (§2): a thin-cell invoice — price row from the anchor, km row UNAVAILABLE — whose km row still
+  // carries slope_source 'model' (km.ts writes the mark on an unavailable row too). That score multiplied
+  // nothing by the slope, so the slope row is not one it read, and the name never carries `slope`.
+  it("an unavailable km row marked slope_source 'model': the slope row moved but is not named -> NORM (anchor)", () => {
+    const c = run(
+      {
+        norms: { median: INPUT.market, slope: STORED_SLOPE, anchor: OTHER_ANCHOR },
+        breakdown: storedBreakdown({ price_from_anchor: true, km_unavailable: true, slope_source: "model" }),
+      },
+      reproduces((n) => idsOf(n) === "104/1/2"),
+    );
+    assert.equal(c?.label, "NORM (anchor)");
+    assert.ok(c?.detail.some((d) => d.includes("pool row pool_stats 2 -> 3")));
+    assert.ok(c?.detail.some((d) => d.includes("model row model_stats 1 -> 5") && d.includes("not named")));
+  });
+
+  it("the alarm: an unavailable km row, only the slope row moved -> UNEXPLAINED", () => {
+    const c = run(
+      {
+        norms: { median: INPUT.market, slope: STORED_SLOPE, anchor: INPUT.pool_stats },
+        breakdown: storedBreakdown({ price_from_anchor: true, km_unavailable: true, slope_source: "model" }),
+      },
+      reproduces((n) => idsOf(n) === "104/1/3"),
+    );
+    assert.equal(c?.label, "UNEXPLAINED");
+    assert.ok(c?.detail.some((d) => d.includes("no row that moved was read by the stored score")));
+  });
+
   it("every row that moved is one the stored score never read -> no NORM (...) is claimed", () => {
     // The rule names no row, and there is no label for that: the line stays UNEXPLAINED and says so
     // rather than widening back to the rows that moved. (Not reachable on today's data — see REPORT.md.)
@@ -372,6 +424,24 @@ describe("the auditor at a version write (Day 18 run 3c §13.3)", () => {
     const c = runV({ norms: { ...CURRENT_NORMS, slope: STORED_SLOPE }, breakdown: storedBreakdown({ slope_source: "default" }) }, ALWAYS);
     assert.equal(c?.label, "VERSION (age)");
     assert.ok(c?.detail.some((d) => d.includes("not named: the stored score's km row used the default slope")));
+  });
+
+  // Run 5e (§2): the same thin-cell breakdown as the NORM case above, under the version rule. The slope row
+  // moved and the km row carries slope_source 'model', but that row is unavailable — the name keeps `anchor`
+  // and drops `slope`.
+  it("an unavailable km row marked slope_source 'model', slope and anchor moved -> VERSION (age, anchor)", () => {
+    const c = runV(
+      {
+        norms: { median: INPUT.market, slope: STORED_SLOPE, anchor: poolNorm({ id: 2, anchor_ratio_intercept: 0.8 }) },
+        breakdown: storedBreakdown({ price_from_anchor: true, km_unavailable: true, slope_source: "model" }),
+      },
+      ALWAYS,
+      // both invoices anchored, like the thin-cell case above — so no `anchor gate` rider joins the name
+      // and the case stays about the one thing it tests: which rows the name lists.
+      { current: anchored(result()) },
+    );
+    assert.equal(c?.label, "VERSION (age, anchor)");
+    assert.ok(c?.detail.some((d) => d.includes("model row model_stats 1 -> 5") && d.includes("not named")));
   });
 
   it("both differ -> VERSION (median, slope)", () => {
