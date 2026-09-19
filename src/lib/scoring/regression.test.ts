@@ -664,3 +664,61 @@ describe("the km check's official reading, per stored engine (Run 5c2 §4.2)", (
     assert.ok((c?.detail ?? []).some((l) => l.includes("car.km_at_last_test: 79000 -> 60000")));
   });
 });
+
+// Day 19 (Run 5c3, §3) — the after reading moves what the km check RECORDS, so it moves what the DATA check
+// compares. The current side is read straight off the current check (regression.ts, currentKmOfficial), so it
+// follows the new rule by itself: these two tests are what proves it. The stored invoice is the same in both —
+// an engine-5 score that recorded the before reading; only the later reading in the current input differs.
+describe("a later reading and the DATA check (Run 5c3 §3)", () => {
+  const d = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
+  const OBSERVED = d("2026-06-15");
+  const BEFORE = { test_date: d("2026-02-02"), km: 60_000 }; // the last test before the km was seen
+  const LATER = d("2026-08-03"); // 49 days after the observation: allowance 8,166.67, threshold 13,166.67
+
+  const withLater = (km: number) =>
+    scoringInput({
+      listing: { price: 100_000, km_declared: 73_000, km_observed_at: OBSERVED },
+      car: {
+        hand: 2,
+        ownership_history: rows("private 2021-01"),
+        test_readings: [BEFORE, { test_date: LATER, km }],
+        mivchan_acharon_dt: LATER,
+        km_at_last_test: km,
+      },
+      market: INPUT.market,
+      model_stats: INPUT.model_stats,
+      pool_stats: INPUT.pool_stats,
+    });
+
+  /** The stored engine-5 invoice: a match against the BEFORE reading, which is what 5c2 would have written. */
+  function storedAgainstBefore(): ScoreResult {
+    const r = storedBreakdown();
+    (r.rows[2].raw as Record<string, unknown>).km_declared = 73_000;
+    r.checks = [{ check: "km", status: "match", declared: 73_000, official: BEFORE.km, official_date: "2026-02-02" }];
+    return r;
+  }
+
+  const classifyLater = (km: number) =>
+    classify({
+      make: "יונדאי", model: "IONIQ HYBRID",
+      result: CURRENT, input: withLater(km), norms: CURRENT_NORMS,
+      stored: stored({ engine_version: ENGINE_VERSION, breakdown: storedAgainstBefore() }),
+      engine_version: ENGINE_VERSION,
+      scoreWith: NEVER,
+    });
+
+  it("the later reading is WITHIN the allowance -> not DATA: the check still records the before reading", () => {
+    // 73,000 against 79,000 seven weeks later is 6,000 below — inside 13,166.67.
+    const c = classifyLater(79_000);
+    assert.notEqual(c?.label, "DATA");
+    assert.ok(!(c?.detail ?? []).some((l) => l.startsWith("input car.km_at_last_test") || l.startsWith("input car.mivchan_acharon_dt")));
+  });
+
+  it("the later reading is BEYOND the allowance -> DATA on the km official: the check records the after reading", () => {
+    // 73,000 against 93,000 seven weeks later is 20,000 below — beyond 13,166.67, so km_below on that reading.
+    const c = classifyLater(93_000);
+    assert.equal(c?.label, "DATA");
+    assert.ok((c?.detail ?? []).some((l) => l.includes("car.km_at_last_test: 60000 -> 93000")));
+    assert.ok((c?.detail ?? []).some((l) => l.includes("car.mivchan_acharon_dt: 2026-02-02 -> 2026-08-03")));
+  });
+});

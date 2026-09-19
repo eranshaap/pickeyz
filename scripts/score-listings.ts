@@ -92,9 +92,9 @@ import { GROUP_VERSION, groupKey, type GroupFields } from "@/lib/comparison-grou
 import { isCancelled, scoreListing, type Invoice, type ScoreResult, type ScoringInput } from "@/lib/scoring";
 import { colorFamily } from "@/lib/mot/colors";
 import { parseAnchorPoints } from "@/lib/norms/anchor-points";
-import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
+import { ENGINE_VERSION, KM_BELOW_THRESHOLD, KM_IMPLAUSIBLE_PER_MONTH, MIN_SAMPLE } from "@/lib/scoring/constants";
 import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
-import { testReadingAt } from "@/lib/scoring/checks";
+import { DAYS_PER_MONTH, testReadingAfter, testReadingAt } from "@/lib/scoring/checks";
 import { assemblePoolPreview, type PoolScore } from "@/lib/search/assemble";
 import { selectThree } from "@/lib/selection";
 import { compareSelections, TOP_N } from "@/lib/selection/compare";
@@ -777,27 +777,41 @@ async function main() {
     );
   }
 
-  // (f) a test newer than the km observation. Day 19 (Run 5c2, §3): the selection is unchanged — the cars whose
-  // LATEST test is newer than the day the ad's km was seen — but from this run those are exactly the cars where
-  // the check no longer reads that test. The block now shows which reading it read instead.
-  log(`\n-- (f) the latest test is newer than the km observation — what the check read instead`);
+  // (f) a test newer than the km observation. Day 19 (Run 5c3, §2): the selection is unchanged — the cars whose
+  // LATEST test is newer than the day the ad's km was seen. From Run 5c3 those are exactly the cars that have an
+  // AFTER reading, so the block shows both readings, the allowance the after one earns and the threshold it was
+  // judged against, and which of the two the check ended up recording.
+  log(`\n-- (f) the latest test is newer than the km observation — both readings, and what the check read`);
   const testAfterKm = scored.filter((s) => {
     const t = s.input.car.mivchan_acharon_dt;
     return t !== null && t.getTime() > s.input.listing.km_observed_at.getTime();
   });
   log(`the latest test is newer than the km observation: ${testAfterKm.length}`);
-  if (testAfterKm.length) log("plate | km_observed_at | latest pair (date, km) | known readings | reading used | km check stored -> fresh");
+  if (testAfterKm.length) {
+    log("plate | km_observed_at | km_declared | before (date, km) -> gap | after (date, km) -> gap | days_after | allowance_km | threshold used | km check stored -> fresh | reading recorded");
+  }
   const kmCheckText = (c: { kind?: string; reason?: string; status?: string } | undefined) => c?.kind ?? c?.reason ?? c?.status ?? "-";
+  const isoDay = (d: Date) => d.toISOString().slice(0, 10);
   for (const s of testAfterKm) {
-    const readings = s.input.car.test_readings ?? [];
-    const used = testReadingAt(s.input);
-    const storedKm = storedBd(s)?.checks?.find((c) => c.check === "km");
+    const observed = s.input.listing.km_observed_at;
+    const declared = s.input.listing.km_declared;
+    const before = testReadingAt(s.input);
+    const after = testReadingAfter(s.input);
+    const gap = (r: { km: number } | null) => (r === null || declared === null ? "-" : `${declared - r.km}`);
+    const shown = (r: { test_date: Date; km: number } | null) => (r === null ? "none" : `(${isoDay(r.test_date)}, ${r.km})`);
+    // The same day count and allowance the check used (checks.ts §1.2), recomputed here for the read-back.
+    const days_after = after === null ? null : Math.max((Date.parse(isoDay(after.test_date)) - Date.parse(isoDay(observed))) / 86_400_000, 1);
+    const allowance = days_after === null ? null : (KM_IMPLAUSIBLE_PER_MONTH * days_after) / DAYS_PER_MONTH;
+    const fresh = s.result.checks?.find((c) => c.check === "km");
+    const recorded = (fresh?.raw as { reading?: string } | undefined)?.reading ?? "-";
+    // The threshold the recorded reading was judged against: the plain one for a before reading, the grown one
+    // for an after reading. When the check recorded nothing (unavailable), the after threshold is the live one.
+    const threshold = recorded === "before" ? KM_BELOW_THRESHOLD : allowance === null ? KM_BELOW_THRESHOLD : KM_BELOW_THRESHOLD + allowance;
     log(
-      `${s.plate} | ${s.input.listing.km_observed_at.toISOString().slice(0, 10)} | ` +
-      `(${(s.input.car.mivchan_acharon_dt as Date).toISOString().slice(0, 10)}, ${s.input.car.km_at_last_test ?? "-"}) | ` +
-      `${readings.length === 0 ? "none" : readings.map((r) => `${r.test_date.toISOString().slice(0, 10)} ${r.km}`).join(", ")} | ` +
-      `${used === null ? "none" : `${used.test_date.toISOString().slice(0, 10)}, ${used.km}`} | ` +
-      `${kmCheckText(storedKm)} -> ${kmCheckText(s.result.checks?.find((c) => c.check === "km"))}`,
+      `${s.plate} | ${isoDay(observed)} | ${declared ?? "-"} | ` +
+      `${shown(before)} -> ${gap(before)} | ${shown(after)} -> ${gap(after)} | ` +
+      `${days_after ?? "-"} | ${allowance === null ? "-" : r2(allowance)} | ${r2(threshold)} | ` +
+      `${kmCheckText(storedBd(s)?.checks?.find((c) => c.check === "km"))} -> ${kmCheckText(fresh)} | ${recorded}`,
     );
   }
 

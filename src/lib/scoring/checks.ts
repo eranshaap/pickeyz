@@ -17,6 +17,18 @@
 // nothing. The check records the CHOSEN reading as official / official_date — that is how the invoice says
 // which test was used.
 
+// Day 19 (Run 5c3, §1) — the cross-check also reads the first test AFTER the observation. The question it asks
+// is unchanged: was the km in the ad false on the day it was observed? Two readings can answer it —
+//   before: the last reading dated on or before the observation day. A contradiction when the ad is below it by
+//           more than KM_BELOW_THRESHOLD. Unchanged from Run 5c2.
+//   after:  the first reading dated after the observation day. A contradiction only when the ad is below it by
+//           more than KM_BELOW_THRESHOLD plus a driving allowance — KM_IMPLAUSIBLE_PER_MONTH per month between
+//           the observation and that test, pro-rated by days. What the car drove in between is not held against
+//           the ad; what it cannot have driven is.
+// One contradiction is enough, and the direction stays single: an ad ABOVE a reading says nothing. A car with no
+// reading at all still gets no comparison — so 'test_after_observation' is gone: that case is now judged against
+// the after reading. kmFacts is unchanged: it is about the before reading.
+
 import { HAND_CHECK_KINDS, KM_BELOW_THRESHOLD, KM_CHECK_KINDS, KM_IMPLAUSIBLE_PER_MONTH } from "./constants";
 import { analyzeHistory } from "./history";
 import type { Check, ScoringInput, SoldSignal, TestReading } from "./types";
@@ -91,6 +103,39 @@ export function testReadingAt(input: ScoringInput): TestReading | null {
   return chosen;
 }
 
+/**
+ * Day 19 (Run 5c3, §1.1) — the other reading the km check reads: among the known readings, the EARLIEST one
+ * whose test_date is after the day the ad's km was observed. None -> null.
+ *
+ * The same known-readings helper and the same UTC-calendar-day comparison as testReadingAt, so the two are
+ * exact complements: a test on the observation day itself is a BEFORE reading, never an after one.
+ */
+export function testReadingAfter(input: ScoringInput): TestReading | null {
+  const observed = dateToIso(input.listing.km_observed_at);
+  let chosen: TestReading | null = null;
+  for (const r of knownReadings(input)) {
+    if (dateToIso(r.test_date) <= observed) continue;
+    if (chosen === null || r.test_date.getTime() < chosen.test_date.getTime()) chosen = r;
+  }
+  return chosen;
+}
+
+// Run 5c3 (§1.2): the driving allowance is pro-rated by days, and a month is 30 days — the unit the ledger row
+// of KM_BELOW_THRESHOLD speaks in (KM_IMPLAUSIBLE_PER_MONTH per month, pro-rated by days, a month = 30 days).
+export const DAYS_PER_MONTH = 30;
+
+// Whole UTC calendar days from the observation day to a reading's test_date, floored at 1: an after reading is
+// at least one day later by construction, and a same-day reading is a before reading, not an after one.
+function daysAfterObservation(observed_at: Date, test_date: Date): number {
+  const days = (Date.parse(dateToIso(test_date)) - Date.parse(dateToIso(observed_at))) / 86_400_000;
+  return Math.max(days, 1);
+}
+
+// Run 5c3 (§1.2): what the car may plausibly have driven between the observation and a later test. Not rounded.
+function drivingAllowance(days_after: number): number {
+  return (KM_IMPLAUSIBLE_PER_MONTH * days_after) / DAYS_PER_MONTH;
+}
+
 // The km facts the result reports (§9 facts) — computed once, shared by the km check.
 export type KmFacts = { months_since_test: number | null; km_per_month_since_test: number | null; diff: number | null };
 
@@ -122,24 +167,53 @@ export function kmCheck(input: ScoringInput, sold: SoldSignal): Check {
   // there is an official record at all, not which reading is the right one to read.
   if (latest_km === null) return { check: "km", status: "unavailable", reason: "no_official_km", declared };
   if (latest_date === null) return { check: "km", status: "unavailable", reason: "no_test_date", declared, official: latest_km };
-  // Run 5c2 (§1.4): every reading we hold is later than the day the km was seen -> no comparison.
-  const reading = testReadingAt(input);
-  if (reading === null) return { check: "km", status: "unavailable", reason: "test_after_observation", declared };
-  const official = reading.km;
-  const official_date = dateToIso(reading.test_date);
-  if (official === 0) return { check: "km", status: "unavailable", reason: "official_is_intake", declared, official, official_date };
+  // Run 5c3 (§1.3): the two readings that can answer the question. At least one of them exists here — the car's
+  // latest pair is itself a known reading, and it is either on or before the observation day, or after it.
+  const before = testReadingAt(input);
+  const after = testReadingAfter(input);
+  // A reading of 0 km is the intake record, not a test: it contradicts nothing and is set aside.
+  const usable_before = before !== null && before.km !== 0 ? before : null;
+  const usable_after = after !== null && after.km !== 0 ? after : null;
+  if (usable_before === null && usable_after === null) {
+    // Only intake records to judge by — recorded as before: the intake reading itself is the official.
+    const intake = (before ?? after) as TestReading;
+    return { check: "km", status: "unavailable", reason: "official_is_intake", declared, official: intake.km, official_date: dateToIso(intake.test_date) };
+  }
+  const primary = (usable_before ?? usable_after) as TestReading;
 
+  // The facts are the before reading's, as they were — null throughout when there is no before reading.
   const f = kmFacts(input);
-  const diff = f.diff as number;
-  const months_since_test = f.months_since_test as number;
-  const raw = { diff, months_since_test, km_per_month_since_test: f.km_per_month_since_test };
-  const base = { check: "km" as const, declared, official, diff, official_date, raw };
+  const facts = { diff: f.diff, months_since_test: f.months_since_test, km_per_month_since_test: f.km_per_month_since_test };
+  const at = (reading: TestReading, which: "before" | "after") => {
+    const days_after = which === "after" ? daysAfterObservation(input.listing.km_observed_at, reading.test_date) : null;
+    return {
+      check: "km" as const,
+      declared,
+      official: reading.km,
+      diff: declared - reading.km,
+      official_date: dateToIso(reading.test_date),
+      raw: days_after === null
+        ? { ...facts, reading: which }
+        : { ...facts, reading: which, days_after, allowance_km: drivingAllowance(days_after) },
+    };
+  };
 
-  if (diff < -KM_BELOW_THRESHOLD) {
-    return { ...base, status: "mismatch", kind: "km_below", counts: KM_CHECK_KINDS.km_below.counts };
+  // 4. the before reading: the ad below it by more than the threshold is a contradiction, as it always was.
+  if (usable_before !== null && declared - usable_before.km < -KM_BELOW_THRESHOLD) {
+    return { ...at(usable_before, "before"), status: "mismatch", kind: "km_below", counts: KM_CHECK_KINDS.km_below.counts };
   }
-  if (diff > 0 && diff / months_since_test > KM_IMPLAUSIBLE_PER_MONTH) {
-    return { ...base, status: "mismatch", kind: "km_implausible_growth", counts: KM_CHECK_KINDS.km_implausible_growth.counts };
+  // 5. the after reading: the threshold grows by what the car may have driven since the observation.
+  if (usable_after !== null) {
+    const allowance = drivingAllowance(daysAfterObservation(input.listing.km_observed_at, usable_after.test_date));
+    if (declared - usable_after.km < -(KM_BELOW_THRESHOLD + allowance)) {
+      return { ...at(usable_after, "after"), status: "mismatch", kind: "km_below", counts: KM_CHECK_KINDS.km_below.counts };
+    }
   }
-  return { ...base, status: "match" };
+  // 6. implausible growth — against the before reading only, on its own facts, unchanged. A before reading that
+  //    is the intake record is set aside here too: growth away from 0 km is not a claim about the ad.
+  if (usable_before !== null && f.diff !== null && f.diff > 0 && f.months_since_test !== null && f.diff / f.months_since_test > KM_IMPLAUSIBLE_PER_MONTH) {
+    return { ...at(usable_before, "before"), status: "mismatch", kind: "km_implausible_growth", counts: KM_CHECK_KINDS.km_implausible_growth.counts };
+  }
+  // 7. no contradiction: the primary reading is what the invoice records.
+  return { ...at(primary, usable_before !== null ? "before" : "after"), status: "match" };
 }
