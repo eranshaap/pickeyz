@@ -292,6 +292,11 @@ describe("the composed label names only the rows the old score READ (Day 17 run 
     assert.equal(c?.label, "NORM (anchor)");
     assert.ok(c?.detail.some((d) => d.includes("pool row pool_stats 2 -> 3")));
     assert.ok(c?.detail.some((d) => d.includes("model row model_stats 1 -> 5") && d.includes("not named")));
+    // Run 5e2 (§1.3): the reason names the unavailability and its own reason. The default-slope sentence is
+    // false here — the row carries slope_source 'model' and no value at all — so it must not be printed.
+    const slopeLine = c?.detail.find((d) => d.includes("model row model_stats 1 -> 5"));
+    assert.ok(slopeLine?.includes("not named: the stored score's km row was unavailable (thin_cell), so the score read no slope"));
+    assert.ok(!slopeLine?.includes("default slope"));
   });
 
   it("the alarm: an unavailable km row, only the slope row moved -> UNEXPLAINED", () => {

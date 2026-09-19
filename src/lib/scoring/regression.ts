@@ -183,7 +183,7 @@ const num = (n: number | null | undefined): string => (n === null || n === undef
 
 // ---------- what this module reads out of a stored breakdown ----------
 export type StoredBreakdown = {
-  rows?: { row?: string; status?: string; source?: string; note?: string; value?: number; raw?: Record<string, unknown> }[];
+  rows?: { row?: string; status?: string; source?: string; note?: string; reason?: string; value?: number; raw?: Record<string, unknown> }[];
   checks?: { check?: string; status?: string; reason?: string; declared?: number; official?: number; official_date?: string }[];
   facts?: Record<string, unknown>;
   typical_condition?: number | null; // v2's name for the cell's typical
@@ -528,8 +528,22 @@ export function normValuesDiffer(kind: NormKind, a: NormRows, b: NormRows): bool
 }
 
 /** Why a row that moved is not named — the half of the rule that kept it out. */
-function notReadBecause(kind: NormKind): string {
-  if (kind === "slope") return "the stored score's km row used the default slope, not the model slope";
+function notReadBecause(kind: NormKind, bd: StoredBreakdown | null): string {
+  if (kind === "slope") {
+    // Run 5e2 (§1.2): readNormKinds() keeps the slope row out for either of two reasons, and the
+    // availability test is the first of them — so the reason follows the same order and reuses the same
+    // predicate. An unavailable km row produced no value, so that score multiplied nothing by any slope:
+    // saying it used the default slope would be false, whatever mark km.ts left in the row's raw.
+    if (bd === null || storedRowValue(bd, "km") === null) {
+      const km = bd?.rows?.find((r) => r.row === "km");
+      // Two cases: the row's own unavailable reason, or no km row at all (a breakdown without one, and a
+      // missing invoice, which carries no rows). A row present but carrying no reason is neither — it is
+      // printed as what it is rather than read as one of the two.
+      const reason = km === undefined ? "no km row" : km.reason ?? "no reason recorded";
+      return `the stored score's km row was unavailable (${reason}), so the score read no slope`;
+    }
+    return "the stored score's km row used the default slope, not the model slope";
+  }
   if (kind === "anchor") return "the stored score's price row came from the cell, not the anchor";
   return "the stored score did not read the cell row";
 }
@@ -590,13 +604,14 @@ export function composedNorm(x: RegressionInput, sto: Triple): { hit: { label: L
   // untouched — it still recomputes once with all three stored rows — and a row that moved unread is
   // still printed, marked with why the rule does not name it.
   // Run 3c §13.2 (b): a row is named by its VALUES; a pointer that moved onto identical values names nothing.
-  const read = readNormKinds((x.stored.breakdown ?? null) as StoredBreakdown | null);
+  const bd = (x.stored.breakdown ?? null) as StoredBreakdown | null;
+  const read = readNormKinds(bd);
   const valued = differ.filter((k) => normValuesDiffer(k, x.stored.norms, x.norms));
   const named = valued.filter((k) => read.includes(k));
   const label = named.length > 0 ? normLabel(named) : null;
   const moved = differ.map((k) =>
     describeMove(k, x) +
-      (named.includes(k) ? "" : !valued.includes(k) ? " - not named: a new row with the same values" : ` - not named: ${notReadBecause(k)}`),
+      (named.includes(k) ? "" : !valued.includes(k) ? " - not named: a new row with the same values" : ` - not named: ${notReadBecause(k, bd)}`),
   );
   const ids = NORM_KINDS.map((k) => `${k} ${num(normId(x.stored.norms, k))}`).join(", ");
   const got = triple(x.scoreWith(x.stored.norms, clock));
@@ -737,7 +752,7 @@ function versionRule(x: RegressionInput, sto: Triple, bd: StoredBreakdown | null
   for (const k of NORM_KINDS) {
     if (!normValuesDiffer(k, x.stored.norms, x.norms)) continue;
     if (read.includes(k)) names.push(k);
-    detail.push(describeMove(k, x) + (read.includes(k) ? "" : ` - not named: ${notReadBecause(k)}`));
+    detail.push(describeMove(k, x) + (read.includes(k) ? "" : ` - not named: ${notReadBecause(k, bd)}`));
   }
   const oldAnchor = bd !== null && anchorPriceRow(bd.rows);
   const newAnchor = anchorPriceRow(x.result.rows);
