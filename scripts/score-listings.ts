@@ -94,6 +94,10 @@ import { colorFamily } from "@/lib/mot/colors";
 import { parseAnchorPoints } from "@/lib/norms/anchor-points";
 import { ENGINE_VERSION, MIN_SAMPLE } from "@/lib/scoring/constants";
 import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
+import { testReadingAt } from "@/lib/scoring/checks";
+import { assemblePoolPreview, type PoolScore } from "@/lib/search/assemble";
+import { selectThree } from "@/lib/selection";
+import { compareSelections, TOP_N } from "@/lib/selection/compare";
 import {
   atRunClock, classify, fmt, storedRowValue, storedSums, versionExpectation,
   DATA_COVERS, DATA_MISSING, LABELS, LABEL_WIDTH, ROUNDING_ALLOWANCE,
@@ -180,7 +184,9 @@ async function main() {
   const listings = await db.listings.findMany({
     where: { delisted_at: null },
     include: {
-      car: { include: { model: true } },
+      // Day 19 (Run 5c2, §2.2): the car's test readings — the km cross-check reads the last one dated on or
+      // before km_observed_at. scoringSubject() requires the relation, so a loader that forgets it fails to compile.
+      car: { include: { model: true, test_readings: { select: { test_date: true, km: true } } } },
       dealer: { select: { dealer_type: true } },
       // Day 19 (§1.3): the latest price-history row — the day the listing's CURRENT price was observed.
       // scoringSubject() requires the relation, so a loader that forgets it fails to compile.
@@ -368,6 +374,28 @@ async function main() {
     const priceDiffers = listings.filter((l) => l.price_history.length > 0 && l.price_history[0].price !== l.price);
     log(`listings without a price-history row: ${noHistory.length}${noHistory.length ? ` (${noHistory.map((l) => l.id).join(", ")})` : ""}`);
     log(`latest history price != listings.price: ${priceDiffers.length}${priceDiffers.length ? ` (${priceDiffers.map((l) => l.id).join(", ")})` : ""}`);
+  }
+
+  // Day 19 (Run 5c2, §2.2): the same check for the relation this run started reading. car_test_readings is
+  // meant to hold EVERY (car, test date) pair ever read, so the car's own latest pair must be one of its rows.
+  // Over the cars of the live listings, each car once. Expected 0 / 0; a non-zero is printed and reported,
+  // never a stop. The second line names the reason the first one can be non-zero: the table and cars disagree
+  // about the km of a test date both of them know.
+  {
+    const day = (d: Date) => d.toISOString().slice(0, 10);
+    const cars = new Map<number, (typeof listings)[number]["car"]>();
+    for (const l of listings) if (!cars.has(l.car_id)) cars.set(l.car_id, l.car);
+    const missingPair: string[] = [];
+    const kmConflict: string[] = [];
+    for (const car of cars.values()) {
+      if (car.mivchan_acharon_dt === null || car.km_at_last_test === null) continue;
+      const plate = car.license_plate ?? "?";
+      const sameDate = car.test_readings.filter((r) => day(r.test_date) === day(car.mivchan_acharon_dt as Date));
+      if (!sameDate.some((r) => r.km === car.km_at_last_test)) missingPair.push(plate);
+      if (sameDate.length > 0 && !sameDate.some((r) => r.km === car.km_at_last_test)) kmConflict.push(plate);
+    }
+    log(`cars whose latest test pair is not in car_test_readings: ${missingPair.length}${missingPair.length ? ` (${missingPair.join(", ")})` : ""}`);
+    log(`same test date, different km (car_test_readings vs cars): ${kmConflict.length}${kmConflict.length ? ` (${kmConflict.join(", ")})` : ""}`);
   }
 
   // Day 18 (§8): the scored invoices, for the sections below that read rows, checks or the sold signal.
@@ -749,19 +777,27 @@ async function main() {
     );
   }
 
-  // (f) a test newer than the km observation. Information for the chat; no rule reads it.
-  log(`\n-- (f) test newer than the km observation`);
+  // (f) a test newer than the km observation. Day 19 (Run 5c2, §3): the selection is unchanged — the cars whose
+  // LATEST test is newer than the day the ad's km was seen — but from this run those are exactly the cars where
+  // the check no longer reads that test. The block now shows which reading it read instead.
+  log(`\n-- (f) the latest test is newer than the km observation — what the check read instead`);
   const testAfterKm = scored.filter((s) => {
     const t = s.input.car.mivchan_acharon_dt;
     return t !== null && t.getTime() > s.input.listing.km_observed_at.getTime();
   });
-  log(`test newer than the km observation: ${testAfterKm.length}`);
-  if (testAfterKm.length) log("plate | km_observed_at | mivchan_acharon_dt | km_declared | km_at_last_test | km check kind");
+  log(`the latest test is newer than the km observation: ${testAfterKm.length}`);
+  if (testAfterKm.length) log("plate | km_observed_at | latest pair (date, km) | known readings | reading used | km check stored -> fresh");
+  const kmCheckText = (c: { kind?: string; reason?: string; status?: string } | undefined) => c?.kind ?? c?.reason ?? c?.status ?? "-";
   for (const s of testAfterKm) {
-    const kc = s.result.checks?.find((c) => c.check === "km");
+    const readings = s.input.car.test_readings ?? [];
+    const used = testReadingAt(s.input);
+    const storedKm = storedBd(s)?.checks?.find((c) => c.check === "km");
     log(
-      `${s.plate} | ${s.input.listing.km_observed_at.toISOString().slice(0, 10)} | ${(s.input.car.mivchan_acharon_dt as Date).toISOString().slice(0, 10)} | ` +
-      `${s.input.listing.km_declared ?? "-"} | ${s.input.car.km_at_last_test ?? "-"} | ${kc?.kind ?? kc?.status ?? "-"}`,
+      `${s.plate} | ${s.input.listing.km_observed_at.toISOString().slice(0, 10)} | ` +
+      `(${(s.input.car.mivchan_acharon_dt as Date).toISOString().slice(0, 10)}, ${s.input.car.km_at_last_test ?? "-"}) | ` +
+      `${readings.length === 0 ? "none" : readings.map((r) => `${r.test_date.toISOString().slice(0, 10)} ${r.km}`).join(", ")} | ` +
+      `${used === null ? "none" : `${used.test_date.toISOString().slice(0, 10)}, ${used.km}`} | ` +
+      `${kmCheckText(storedKm)} -> ${kmCheckText(s.result.checks?.find((c) => c.check === "km"))}`,
     );
   }
 
@@ -785,6 +821,101 @@ async function main() {
   }
   if (mismatches.length === 0) log("  none");
   void r1;
+
+  // ---------- the picks preview (Day 19, Run 5c2, §7) ----------
+  // The plain dry run only. It runs selectThree() twice over the same pool — once with the scores listings
+  // holds now, once with the scores this run has just computed — and prints what a version write would change.
+  // NOTHING IS WRITTEN: the fresh scores go into an in-memory map, never into the database. It goes through
+  // assemblePoolPreview(), which is assemblePool() minus the version check (v5 code on v4 scores would stop it).
+  if (AGAINST !== null || WRITE) {
+    log(`\npicks preview: not run (--against / --write)`);
+  } else {
+    log(`\n===== PICKS PREVIEW (stored scores -> this run's scores; nothing is written) =====`);
+    const freshMap = new Map<number, PoolScore>(
+      scored.map((s) => [
+        s.listing_id,
+        {
+          breakdown: s.result,
+          score: s.result.deal_score,
+          market_stats_id: s.market_stats_id,
+          model_stats_id: s.model_stats_id,
+          pool_stats_id: s.pool_stats_id,
+        },
+      ]),
+    );
+    const storedEngineOf = new Map(scored.map((s) => [s.listing_id, s.stored.engine_version]));
+    const plateOf = new Map(scored.map((s) => [s.listing_id, s.plate]));
+    const P = (id: number) => plateOf.get(id) ?? "?";
+    const dealOf = (res: Invoice | undefined) => (res === undefined ? null : res.deal_score);
+
+    for (const model of [...new Set(scored.map((s) => s.model).filter((m): m is string => m !== null))].sort()) {
+      log(`\n--- ${model} ---`);
+      const sides: { name: "stored" | "fresh"; pool: Awaited<ReturnType<typeof assemblePoolPreview>> }[] = [];
+      for (const [name, scores] of [["stored", "stored"], ["fresh", freshMap]] as const) {
+        sides.push({ name, pool: await assemblePoolPreview(model, { now, scores }) });
+      }
+      const [storedSide, freshSide] = sides;
+      const engines = [...new Set(storedSide.pool.items.map((p) => storedEngineOf.get(p.listing_id) ?? null))]
+        .sort((a, b) => (a ?? -1) - (b ?? -1))
+        .map((v) => (v === null ? "null" : String(v)));
+      log(
+        `pool: ${storedSide.pool.items.length} listings · stored side: engine ${engines.join(", ") || "-"} · fresh side: engine ${ENGINE_VERSION} · ` +
+        `without a score: stored [${storedSide.pool.without_score.join(", ")}] · fresh [${freshSide.pool.without_score.join(", ")}]`,
+      );
+      if (storedSide.pool.items.length === 0 || freshSide.pool.items.length === 0) {
+        log(`  a side has no visible listing — skipped`);
+        continue;
+      }
+      const before = selectThree({ listings: storedSide.pool.items.map((p) => p.candidate) });
+      const after = selectThree({ listings: freshSide.pool.items.map((p) => p.candidate) });
+      const cmp = compareSelections(before, after);
+
+      // the invoice each side carried, for the per-pick facts
+      const bdOf = (pool: typeof storedSide.pool, id: number) => pool.items.find((p) => p.listing_id === id)?.candidate.breakdown;
+      const pickText = (pool: typeof storedSide.pool, id: number | null, missing: string | null) => {
+        if (id === null) return `missing (${missing ?? "-"})`;
+        const item = pool.items.find((p) => p.listing_id === id);
+        const bd = item?.candidate.breakdown;
+        const conf = bd !== undefined && !isCancelled(bd) ? bd.confidence.level : "-";
+        const cbr = bd === undefined ? null : bd.condition_by_reality;
+        return `${P(id)} (${id}) ${item?.price ?? "-"} · ${fmt(dealOf(bd))} · ${fmt(cbr)} · ${conf}`;
+      };
+      for (const p of cmp.picks) {
+        log(
+          `${p.category} | stored: ${pickText(storedSide.pool, p.before, p.before_missing)}` +
+          ` | fresh: ${pickText(freshSide.pool, p.after, p.after_missing)} | ${p.changed ? "CHANGED" : "same"}`,
+        );
+      }
+      const ruText = (r: typeof cmp.runner_up.before) =>
+        r.state === "no_pick" ? `no cheapest pick (${r.reason ?? "-"})`
+        : r.state === "not_evaluated" ? `not evaluated (${r.reason ?? "-"})`
+        : `${P(r.listing_id)} (listing ${r.listing_id}), gap ${fmt(r.gap)}, triggered ${r.triggered ? "YES" : "no"}`;
+      log(`runner-up | stored: ${ruText(cmp.runner_up.before)} | fresh: ${ruText(cmp.runner_up.after)} | ${cmp.runner_up.changed ? "CHANGED" : "same"}`);
+      log(`finish test: stored ${cmp.finish.before.pass ? "PASS" : "FAIL"} · fresh ${cmp.finish.after.pass ? "PASS" : "FAIL"}`);
+      if (!cmp.finish.after.pass) {
+        log(`  *** FINISH TEST FAILED ON THE FRESH SIDE ***`);
+        for (const c of cmp.finish.after.checks.filter((x) => !x.ok)) log(`  FAIL: ${c.claim}${c.detail ? ` — ${c.detail}` : ""}`);
+      }
+      const lg = cmp.ranks.largest;
+      log(`ranks: ${cmp.ranks.changed} of ${cmp.ranks.compared} shown listings changed rank; largest move: ${lg === null ? "none" : `${P(lg.listing_id)} ${lg.before} -> ${lg.after}`}`);
+      log(`rank | plate | listing | stored rank | deal stored -> fresh`);
+      for (const m of cmp.ranks.top) {
+        log(`${m.after} | ${P(m.listing_id)} | ${m.listing_id} | ${m.before} | ${fmt(dealOf(bdOf(storedSide.pool, m.listing_id)))} -> ${fmt(dealOf(bdOf(freshSide.pool, m.listing_id)))}`);
+      }
+      for (const m of cmp.ranks.left_top) log(`left the top ${TOP_N}: ${P(m.listing_id)} (${m.listing_id}) — stored rank ${m.before}, fresh rank ${m.after}`);
+      log(`status changes: ${cmp.statuses.length === 0 ? "none" : cmp.statuses.map((s) => `${P(s.listing_id)} (${s.listing_id}) ${s.before} -> ${s.after}`).join("; ")}`);
+      for (const e of cmp.eligibility) {
+        const parts = [
+          ...e.gained.map((id) => `+${P(id)} (${id})`),
+          ...e.lost.map((id) => `−${P(id)} (${id})`),
+        ];
+        log(`eligibility ${e.category}: ${parts.length === 0 ? "no change" : parts.join(", ")}`);
+      }
+      if (cmp.only_before.length || cmp.only_after.length) {
+        log(`only on one side: stored [${cmp.only_before.join(", ")}] · fresh [${cmp.only_after.join(", ")}]`);
+      }
+    }
+  }
 
   log(`\n===== REALITY DELTA (condition_by_reality !== condition_score) =====`);
   const historyOf = (s: Scored & { result: ScoreResult }) => s.result.rows.find((r) => r.row === "history")!;

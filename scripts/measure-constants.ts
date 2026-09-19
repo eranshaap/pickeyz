@@ -29,7 +29,7 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { db } from "@/lib/db";
-import { kmFacts } from "@/lib/scoring/checks";
+import { kmFacts, testReadingAt } from "@/lib/scoring/checks";
 import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
 import {
   ENGINE_VERSION,
@@ -625,13 +625,18 @@ async function main() {
 
   // ======================================================================== M2
   h2(`M2 — KM_BELOW_THRESHOLD (in use: ${KM_BELOW_THRESHOLD})`);
-  log("Population: listings with km_declared < km_at_last_test, both present. gap = official − declared.");
+  // Day 19 (Run 5c2, §2.4): the threshold is applied by kmCheck to the reading testReadingAt chooses — the last
+  // test dated on or before km_observed_at — not to the car's latest pair. The gap measured here is aligned with it.
+  log("Population: listings with km_declared < the km of the reading the check uses (testReadingAt: the last test");
+  log("dated on or before km_observed_at), both present. gap = that reading's km − declared.");
   log(`Floor: ${M2_FLOOR_CASES} cases. The widest empty interval is searched between 1,000 and 15,000.`);
   log("");
   type M2Row = { l: Loaded; gap: number };
-  const m2All: M2Row[] = pool
-    .filter((p) => p.km_declared !== null && p.km_at_last_test !== null && p.km_declared < p.km_at_last_test)
-    .map((p) => ({ l: p, gap: (p.km_at_last_test as number) - (p.km_declared as number) }));
+  const m2All: M2Row[] = pool.flatMap((p) => {
+    const r = testReadingAt(p.input);
+    if (r === null || p.km_declared === null || !(p.km_declared < r.km)) return [];
+    return [{ l: p, gap: r.km - p.km_declared }];
+  });
   const m2BySplit = new Map<string, M2Row[]>();
   for (const s of splits) m2BySplit.set(s.name, s.name === "both" ? m2All : m2All.filter((r) => r.l.model_label === s.name));
   const m2Of = (name: string) => m2BySplit.get(name) as M2Row[];
@@ -666,7 +671,7 @@ async function main() {
 
   // ======================================================================== M3
   h2(`M3 — KM_IMPLAUSIBLE_PER_MONTH (in use: ${KM_IMPLAUSIBLE_PER_MONTH})`);
-  log("Population: listings with km_declared > km_at_last_test and a test date.");
+  log("Population: listings with km_declared > the km of the reading the check uses (testReadingAt), and a test date.");
   log("Rate = the km per month the engine computes, read from checks.km.raw.km_per_month_since_test when the breakdown carries it; otherwise");
   log("kmFacts(input, first_seen_at).km_per_month_since_test — the engine's own function, never re-implemented.");
   log(`Floor: ${M3_FLOOR_CASES} cases.`);
@@ -675,8 +680,10 @@ async function main() {
   const m3All: M3Row[] = [];
   let m3NoRate = 0;
   for (const p of pool) {
-    if (p.km_declared === null || p.km_at_last_test === null || p.mivchan_acharon_dt === null) continue;
-    if (!(p.km_declared > p.km_at_last_test)) continue;
+    // Day 19 (Run 5c2, §2.4): the population follows the same reading kmFacts measures the rate from.
+    const reading = testReadingAt(p.input);
+    if (p.km_declared === null || reading === null || p.mivchan_acharon_dt === null) continue;
+    if (!(p.km_declared > reading.km)) continue;
     const stored = rawNum(checkOf(p.bd, "km")?.raw, "km_per_month_since_test");
     if (stored !== null) {
       m3All.push({ l: p, rate: stored, from: "breakdown" });

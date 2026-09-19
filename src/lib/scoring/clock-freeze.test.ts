@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { kmRow } from "./km";
 import { priceRow } from "./price";
 import { soldSignal } from "./sold";
-import { kmFacts } from "./checks";
+import { kmCheck, kmFacts, testReadingAt } from "./checks";
 import { YEAR_MS } from "./age";
 import { atRunClock } from "./regression";
 import { anchorPoint, cell, input, NOW, poolNorm, rows, scoreScored } from "./fixtures";
@@ -197,5 +197,43 @@ describe("Day 19 §12.6 — atRunClock()", () => {
     const clocked = scoreScored(atRunClock(base, CLOCK));
     const km = clocked.rows.find((r) => r.row === "km");
     assert.equal(km?.raw.km_observed_at, CLOCK.toISOString());
+  });
+});
+
+// Day 19 (Run 5c2, §8.2) — the clock and WHICH TEST READING is read. This is the second thing the three
+// observation dates decide: km_observed_at does not only date the km row's age, it also picks the test the
+// cross-check compares against. Moving it across a test date must move the choice.
+describe("Run 5c2 — km_observed_at picks the reading, and atRunClock moves the choice", () => {
+  const EARLY = new Date("2026-02-02T00:00:00.000Z");
+  const LATE = new Date("2026-08-30T00:00:00.000Z");
+  const readings = [
+    { test_date: EARLY, km: 60000 },
+    { test_date: LATE, km: 79000 },
+  ];
+  const at = (km_observed_at: Date) =>
+    input({
+      listing: { km_declared: 73000, km_observed_at },
+      car: { test_readings: readings, mivchan_acharon_dt: LATE, km_at_last_test: 79000 },
+    });
+
+  it("moving km_observed_at across a test date changes which reading is chosen", () => {
+    assert.deepEqual(testReadingAt(at(new Date("2026-08-29T00:00:00.000Z"))), { test_date: EARLY, km: 60000 });
+    assert.deepEqual(testReadingAt(at(new Date("2026-08-30T00:00:00.000Z"))), { test_date: LATE, km: 79000 });
+    assert.deepEqual(testReadingAt(at(new Date("2026-08-31T00:00:00.000Z"))), { test_date: LATE, km: 79000 });
+  });
+
+  it("the km check follows it: match before the later test, km_below on or after it", () => {
+    assert.equal(kmCheck(at(new Date("2026-08-29T00:00:00.000Z")), { strength: null, evidence: [] }).status, "match");
+    const after = kmCheck(at(new Date("2026-08-31T00:00:00.000Z")), { strength: null, evidence: [] });
+    assert.equal(after.status, "mismatch");
+    assert.equal(after.kind, "km_below");
+  });
+
+  it("atRunClock at a later clock chooses the later reading — how an engine <= 4 read the car", () => {
+    // The stored score's own clock is after both tests, so the replacement reproduces the latest pair, which
+    // is exactly what an engine that had one `now` compared against. This is what keeps the 4 -> 5 identity.
+    const clocked = atRunClock(at(new Date("2026-03-01T00:00:00.000Z")), new Date("2026-09-18T00:00:00.000Z"));
+    assert.deepEqual(testReadingAt(clocked), { test_date: LATE, km: 79000 });
+    assert.equal(testReadingAt(clocked)?.km, clocked.car.km_at_last_test);
   });
 });

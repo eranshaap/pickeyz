@@ -4,7 +4,7 @@
 // Fails loudly: a car without a year, or an ownership_history that is not an array of { ym, type },
 // stops the caller with the plate in the message. It never fills a value in.
 
-import type { OwnershipRow, OwnershipType, ScoringInput, SellerType } from "@/lib/scoring";
+import type { OwnershipRow, OwnershipType, ScoringInput, SellerType, TestReading } from "@/lib/scoring";
 import { OWNERSHIP_CODES } from "@/lib/mot/translator";
 
 // Day 19 (§1.2): the listing's price history, latest row first. REQUIRED, not optional — the engine pairs the
@@ -36,6 +36,27 @@ export function priceObservedAt(history: readonly PriceHistoryRowLike[], first_s
   return latest ?? first_seen_at;
 }
 
+/**
+ * Day 19 (Run 5c2, §2.1) — every test reading known for the car, oldest first: the car_test_readings rows PLUS
+ * the car's own latest pair when both of its fields are filled, one reading per test date.
+ *
+ * The table is meant to hold every pair ever read, so the union normally adds nothing; it only guarantees that
+ * the latest pair — the one cars itself carries — is never missing from the list. On a same-date conflict the
+ * car's own pair wins: cars is what the registry last told us about that date.
+ */
+export function knownTestReadings(
+  rows: readonly { test_date: Date; km: number }[],
+  latest_date: Date | null,
+  latest_km: number | null,
+): TestReading[] {
+  const byDate = new Map<string, TestReading>();
+  for (const r of rows) byDate.set(r.test_date.toISOString().slice(0, 10), { test_date: r.test_date, km: r.km });
+  if (latest_date !== null && latest_km !== null) {
+    byDate.set(latest_date.toISOString().slice(0, 10), { test_date: latest_date, km: latest_km });
+  }
+  return [...byDate.values()].sort((a, b) => a.test_date.getTime() - b.test_date.getTime());
+}
+
 export type CarRowLike = {
   license_plate: string | null;
   year: number | null;
@@ -43,6 +64,11 @@ export type CarRowLike = {
   ownership_history: unknown; // Prisma Json
   km_at_last_test: number | null;
   mivchan_acharon_dt: Date | null;
+  // Day 19 (Run 5c2, §2.1): the car's odometer readings over time — the Prisma relation cars.test_readings
+  // (car_test_readings). REQUIRED, not optional: the km cross-check now reads the last reading dated on or
+  // before the day the ad's km was observed, and a loader that does not include the relation must fail to
+  // compile rather than silently fall back to the car's latest pair.
+  test_readings: { test_date: Date; km: number }[];
   first_registration: Date | null;
   test_expiry: Date | null;
   // Day 18 (§3.4): the engine's new inputs. make / model come from the models row the car points at, exactly as
@@ -127,6 +153,7 @@ export function scoringSubject(
       ownership_history: parseOwnershipHistory(car.ownership_history, plate),
       km_at_last_test: car.km_at_last_test,
       mivchan_acharon_dt: car.mivchan_acharon_dt,
+      test_readings: knownTestReadings(car.test_readings, car.mivchan_acharon_dt, car.km_at_last_test),
       first_registration: car.first_registration,
       test_expiry: car.test_expiry,
       cancelled_at: car.cancelled_at,

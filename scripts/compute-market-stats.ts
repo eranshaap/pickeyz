@@ -313,7 +313,8 @@ async function main() {
   const liveRaw = await db.listings.findMany({
     where: { delisted_at: null },
     include: {
-      car: { include: { model: true } },
+      // Day 19 (Run 5c2, §2.3): scoringSubject() needs the car's test readings here too.
+      car: { include: { model: true, test_readings: { select: { test_date: true, km: true } } } },
       dealer: { select: { dealer_type: true } },
       // Day 19 (§1.3): scoringSubject() needs the latest price-history row here too.
       price_history: { orderBy: [{ observed_at: "desc" }, { id: "desc" }], take: 1, select: { observed_at: true, price: true } },

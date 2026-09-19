@@ -53,6 +53,10 @@ export type PoolNorm = {
   anchor_listings: number; // listings behind those points — coverage, not the fit's n
 };
 
+// Day 19 (Run 5c2, §1.1) — one odometer reading the tester recorded: the car's km on the day of that test.
+// car_test_readings holds every pair ever read; cars keeps only the latest one.
+export type TestReading = { test_date: Date; km: number };
+
 export type ScoringInput = {
   listing: {
     id: number;
@@ -77,6 +81,10 @@ export type ScoringInput = {
     ownership_history: OwnershipRow[] | null; // oldest first
     km_at_last_test: number | null;
     mivchan_acharon_dt: Date | null;
+    // Day 19 (Run 5c2, §1.1): every test reading known for the car, oldest first. OPTIONAL on purpose — when it
+    // is absent the engine reads the pair above as the one known reading, so a hand-built input keeps its meaning.
+    // Production never omits it: the mapper's row type requires the relation (scoring-input.ts, CarRowLike).
+    test_readings?: TestReading[];
     first_registration: Date | null;
     test_expiry: Date | null;
     cancelled_at: Date | null; // Day 18 (§8): filled -> the cancelled invoice, no rows and no sums
@@ -120,7 +128,7 @@ export type Check = {
   declared?: number;
   official?: number;
   diff?: number;
-  official_date?: string; // km: mivchan_acharon_dt
+  official_date?: string; // km: the test date of the reading the check used (Run 5c2 §1.4 — the chosen reading, not necessarily the latest test)
   raw?: Record<string, unknown>;
 };
 

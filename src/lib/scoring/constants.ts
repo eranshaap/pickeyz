@@ -15,7 +15,8 @@ export const ENGINE_VERSION = 5;
 //              listings.km_observed_at, price at its last price observation) in the km row, the anchor and both
 //              norm fits; the sold window is measured back from first_seen_at; km-per-month since the last test
 //              is measured to km_observed_at; the months-left fact left the invoice (test_expiry stays); the auditor's
-//              run-clock label retired.
+//              run-clock label retired; the km cross-check and the km-per-month rate read the last test reading dated
+//              on or before km_observed_at.
 export const MIN_SAMPLE = 5;              // source: Day 9 decision, guess; revisit with volume
 export const ANCHOR_POINT_MIN_SAMPLE = 10; // source: measurement — Day 18, M10: p90 line shift with a point of 5 → 3.6 pp, 10 → 2.4, 15 → 2.2; curve error 3.95
 export const ANCHOR_MIN_POINTS = 3;        // source: mechanism — a fitted line with a leave-one-out error needs at least 3 points
@@ -53,8 +54,8 @@ export const KM_CAP_PCT = 11;                        // source: LY — largest k
 export const AGE_FLOOR_YEARS = 0.5;                  // source: mechanism — avoid dividing by a few days
 
 // --- cross-checks -------------------------------------------------------------
-export const KM_BELOW_THRESHOLD = 5000;              // source: our data — gap between −3,900 and −6,900
-export const KM_IMPLAUSIBLE_PER_MONTH = 5000;        // source: our data — one case at 30,000/month, the rest ≤ 2,400. Day 19 (§4): the rate is measured from the last test to the day the ad's km was OBSERVED (listings.km_observed_at), not to the run clock — the value is unchanged.
+export const KM_BELOW_THRESHOLD = 5000;              // source: our data — gap between −3,900 and −6,900. Day 19 (Run 5c2 §1): the ad is measured against the last test reading dated ON OR BEFORE listings.km_observed_at; up to engine 4 it was the latest test we held, whenever that test happened. The value is unchanged.
+export const KM_IMPLAUSIBLE_PER_MONTH = 5000;        // source: our data — one case at 30,000/month, the rest ≤ 2,400. Day 19 (§4): the rate is measured from the last test to the day the ad's km was OBSERVED (listings.km_observed_at), not to the run clock — the value is unchanged. Run 5c2 (§1.3): the rate runs from THAT reading — the last one on or before km_observed_at — to km_observed_at.
 
 export const HAND_CHECK_KINDS = {                    // counts = enters the confidence count. source: Day 11 data pass, §7
   zero_km_undercount: { counts: true  },  // source: seller hides a registered leasing owner; no disclosure in the ad (verified on 4 live ads)
@@ -63,7 +64,7 @@ export const HAND_CHECK_KINDS = {                    // counts = enters the conf
   other:              { counts: true  },  // source: unexplained
 } as const;
 export const KM_CHECK_KINDS = {                      // source: Day 11 data pass, §7
-  km_below:               { counts: true  },  // source: a car cannot lose km
+  km_below:               { counts: true  },  // source: a car cannot lose km. Run 5c2 (§1.4): a test LATER than the day the km was observed is not counted — it cannot contradict a km that was seen before it happened.
   km_implausible_growth:  { counts: false },  // source: almost certainly an official typo; tracked only
 } as const;
 

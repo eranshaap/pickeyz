@@ -43,7 +43,7 @@ import { soldSignal } from "./sold";
 import type { CancelledResult, ColorMismatch, Invoice, Row, ScoreResult, ScoringInput } from "./types";
 import { dateToIso, round } from "./util";
 
-export type { AnchorPoint, CancelledResult, Check, ConfidenceItem, ConfidenceLevel, Deduction, Invoice, OwnershipRow, OwnershipType, Row, ScoreResult, ScoringInput, SellerType, SoldSignal } from "./types";
+export type { AnchorPoint, CancelledResult, Check, ConfidenceItem, ConfidenceLevel, Deduction, Invoice, OwnershipRow, OwnershipType, Row, ScoreResult, ScoringInput, SellerType, SoldSignal, TestReading } from "./types";
 export { isCancelled } from "./types";
 export { historyRow } from "./history";
 export { kmRow } from "./km";

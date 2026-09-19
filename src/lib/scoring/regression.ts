@@ -63,6 +63,7 @@
 // nothing.
 
 import { sameAnchorPoints } from "@/lib/norms/anchor-points";
+import { kmCheck } from "./checks";
 import { confidenceLevel } from "./confidence";
 import { KM_SLOPE_MIN_SAMPLE, MIN_SAMPLE } from "./constants";
 import type { AnchorPoint, CellNorm, Invoice, ModelNorm, PoolNorm, ScoringInput } from "./types";
@@ -221,7 +222,10 @@ export const DATA_COVERS = [
   "listing.km_observed_at (km row raw — v5 invoices only)",
   "listing.price_observed_at (anchor price row raw — v5 anchor rows only)",
   "listing.hand_declared (unless the hand check was skipped)",
-  "car.km_at_last_test, car.mivchan_acharon_dt (unless the km check was skipped or had no declaration)",
+  // Run 5c2 (§4.2): what the km check RECORDED as the official reading — up to engine 4 the car's latest pair,
+  // from engine 5 the last reading dated on or before listing.km_observed_at. Each stored invoice is compared
+  // against the same thing its own engine wrote.
+  "the km check's official / official_date (engine <= 4: car.km_at_last_test + car.mivchan_acharon_dt; engine >= 5: the chosen test reading) — unless the km check was skipped or had no declaration",
   "car.current_owner_type (facts.current_owner_registry — v4 invoices only)",
 ];
 export const DATA_MISSING = [
@@ -283,16 +287,38 @@ export function storedInputs(bd: StoredBreakdown): Map<string, unknown> {
   }
   return m;
 }
-export function currentInputs(input: ScoringInput): Map<string, unknown> {
+/**
+ * Day 19 (Run 5c2, §4.2) — the km check's official / official_date, on the current side, as the engine that
+ * WROTE the stored invoice recorded them:
+ *   engine >= FIRST_CLOCK_FREE_ENGINE — the reading testReadingAt chooses from the current input as loaded.
+ *     Read straight off the current km check (with no sold signal, so the branch order is the check's own):
+ *     that makes the two sides symmetric by construction, including "no chosen reading <-> no official".
+ *   an older engine — the car's latest pair, as today: those engines recorded the latest pair whatever its date.
+ * Both keys are always set; storedInputs decides which of them is compared (diffMaps walks the stored side).
+ */
+function currentKmOfficial(input: ScoringInput, storedEngine: number | null): { official: number | null; official_date: string | null } {
+  const { car } = input;
+  if (storedEngine === null || storedEngine < FIRST_CLOCK_FREE_ENGINE) {
+    return { official: car.km_at_last_test, official_date: car.mivchan_acharon_dt === null ? null : dateToIso(car.mivchan_acharon_dt) };
+  }
+  const kc = kmCheck(input, { strength: null, evidence: [] });
+  return {
+    official: kc.reason === "no_official_km" ? null : kc.official ?? null,
+    official_date: kc.official_date ?? null,
+  };
+}
+
+export function currentInputs(input: ScoringInput, storedEngine: number | null): Map<string, unknown> {
   const { listing, car } = input;
+  const km = currentKmOfficial(input, storedEngine);
   return new Map<string, unknown>([
     ["listing.price", listing.price],
     ["listing.km_declared", listing.km_declared],
     ["listing.hand_declared", listing.hand_declared],
     ["car.hand", car.hand],
     ["car.ownership_history", ownersKey(car.ownership_history)],
-    ["car.km_at_last_test", car.km_at_last_test],
-    ["car.mivchan_acharon_dt", car.mivchan_acharon_dt === null ? null : dateToIso(car.mivchan_acharon_dt)],
+    ["car.km_at_last_test", km.official],
+    ["car.mivchan_acharon_dt", km.official_date],
     ["car.test_expiry", car.test_expiry === null ? null : dateToIso(car.test_expiry)],
     ["car.current_owner_type", car.current_owner_type],
     // Day 19 (§5.5): compared as the invoice records them — ISO-8601 strings.
@@ -742,7 +768,7 @@ export function classify(x: RegressionInput): Classified | null {
     detail.push(`no stored score at all (scored_at null, engine_version ${x.stored.engine_version ?? "null"}): first scoring`);
     return { label: "NEW", head, detail };
   }
-  const dataDiffs = bd === null ? [] : diffMaps(storedInputs(bd), currentInputs(x.input));
+  const dataDiffs = bd === null ? [] : diffMaps(storedInputs(bd), currentInputs(x.input, x.stored.engine_version));
   if (x.stored.engine_version !== null && x.stored.engine_version !== x.engine_version) {
     // §13.2 (e): a listing whose inputs changed is DATA, version change or not — not put through the version rule.
     if (dataDiffs.length) {

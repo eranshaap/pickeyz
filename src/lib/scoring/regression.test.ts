@@ -600,3 +600,67 @@ const reproducesAtClockForData: ScoreWith = (_norms, clock) =>
   clock !== null && clock.getTime() === SCORED_AT.getTime()
     ? result({ deal_score: STORED_TRIPLE.score, price_advantage: 5.5 })
     : CURRENT;
+
+// Day 19 (Run 5c2, §8.2) — the DATA check reads each stored invoice against what ITS OWN engine recorded as
+// the km check's official reading. Up to engine 4 that was the car's latest pair, whatever its date; from
+// engine 5 it is the last reading dated on or before km_observed_at. A car whose latest test is NEWER than the
+// km observation is the case where the two answers differ, so that is the car these tests use.
+describe("the km check's official reading, per stored engine (Run 5c2 §4.2)", () => {
+  const d = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
+  const CHOSEN = { test_date: d("2026-02-02"), km: 60_000 }; // the last test before the km was seen
+  const LATEST = { test_date: d("2026-08-30"), km: 79_000 }; // the car's latest pair — AFTER the observation
+
+  const KM_INPUT = scoringInput({
+    listing: { price: 100_000, km_declared: 73_000, km_observed_at: d("2026-06-15") },
+    car: {
+      hand: 2,
+      ownership_history: rows("private 2021-01"),
+      test_readings: [CHOSEN, LATEST],
+      mivchan_acharon_dt: LATEST.test_date,
+      km_at_last_test: LATEST.km,
+    },
+    market: INPUT.market,
+    model_stats: INPUT.model_stats,
+    pool_stats: INPUT.pool_stats,
+  });
+
+  /** A stored invoice carrying this run's km_declared and the km check the given engine would have written. */
+  function kmStored(official: number, official_date: string): ScoreResult {
+    const r = storedBreakdown();
+    (r.rows[2].raw as Record<string, unknown>).km_declared = 73_000;
+    r.checks = [{ check: "km", status: "match", declared: 73_000, official, official_date }];
+    return r;
+  }
+
+  const classifyKm = (engine_version: number, breakdown: ScoreResult) =>
+    classify({
+      make: "יונדאי", model: "IONIQ HYBRID",
+      result: CURRENT, input: KM_INPUT, norms: CURRENT_NORMS,
+      stored: stored({ engine_version, breakdown }),
+      engine_version: ENGINE_VERSION,
+      scoreWith: NEVER,
+    });
+
+  it("a stored engine-5 invoice recording the CHOSEN reading is not DATA, though the latest pair is a newer test", () => {
+    const c = classifyKm(ENGINE_VERSION, kmStored(CHOSEN.km, "2026-02-02"));
+    assert.notEqual(c?.label, "DATA");
+    assert.equal(c?.label, "UNEXPLAINED"); // nothing else moved: the DATA check found no difference at all
+    assert.ok(!(c?.detail ?? []).some((l) => l.startsWith("input car.km_at_last_test") || l.startsWith("input car.mivchan_acharon_dt")));
+  });
+
+  it("a stored engine-4 invoice is compared with the car's LATEST pair, as today", () => {
+    const c = classifyKm(4, kmStored(LATEST.km, "2026-08-30"));
+    assert.notEqual(c?.label, "DATA");
+  });
+
+  it("an engine-4 invoice recording the chosen reading IS a data difference — that engine read the latest pair", () => {
+    const c = classifyKm(4, kmStored(CHOSEN.km, "2026-02-02"));
+    assert.equal(c?.label, "DATA");
+  });
+
+  it("an engine-5 invoice recording the latest pair IS a data difference — that engine read the chosen reading", () => {
+    const c = classifyKm(ENGINE_VERSION, kmStored(LATEST.km, "2026-08-30"));
+    assert.equal(c?.label, "DATA");
+    assert.ok((c?.detail ?? []).some((l) => l.includes("car.km_at_last_test: 79000 -> 60000")));
+  });
+});

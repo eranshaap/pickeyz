@@ -61,8 +61,11 @@ export function selectMarketListings<T extends MarketCandidate>(rows: T[], w: Ma
 // seller's dealer_type — and, Day 19 (§1.3, §6.1), the listing's latest price-history row, which is where the
 // day its CURRENT price was observed comes from. scoringSubject() requires the relation, so a market listing
 // loaded without it fails to compile rather than being scored at a date that is silently wrong.
+// Day 19 (Run 5c2, §A0.1): and the car's test readings (car_test_readings) — the km cross-check reads the last
+// reading dated on or before the day the ad's km was observed, not the car's latest pair. scoringSubject()
+// requires the relation, so a market listing loaded without it fails to compile too.
 const INCLUDE = {
-  car: { include: { model: true } },
+  car: { include: { model: true, test_readings: { select: { test_date: true, km: true } } } },
   dealer: { select: { dealer_type: true } },
   price_history: { orderBy: [{ observed_at: "desc" }, { id: "desc" }], take: 1, select: { observed_at: true, price: true } },
 } as const satisfies Prisma.listingsInclude;

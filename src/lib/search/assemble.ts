@@ -24,11 +24,27 @@
 //
 // The filters are NOT here. The assembly is the whole model pool; cutting it is the caller's job, and it
 // happens before selectThree() either way (the filters define the question, they never touch a score).
+//
+// Day 19 (Run 5c2, §5) — THE SECOND DOOR. `assemblePoolPreview()` exists so that the dry scoring run can show
+// what the picks WOULD become before any engine version is written: it assembles the same pool twice, once
+// from the stored scores and once from the scores the run has just computed, and nothing is written either way.
+// Only scripts/score-listings.ts may call it. The site and scripts/select-three.ts call assemblePool() and see
+// no difference at all — same signature, same load, same validations in the same order with the same messages,
+// same version check, same PoolItems. Both doors are thin wrappers over one internal function, and the preview
+// differs from assemblePool in exactly three things:
+//   1. no version check — the caller hands in the scores and knows which engine each side is;
+//   2. where a listing's five score fields come from (src/lib/search/pool-scores.ts);
+//   3. a live listing with no score on that side is left out of the pool and reported in `without_score`,
+//      instead of stopping the load — a never-scored listing is a legitimate state in a dry run.
+// Every other validation throws exactly as it does today.
 
 import { db } from "@/lib/db";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
-import { isCancelled, type Invoice, type Row } from "@/lib/scoring/types";
+import { isCancelled, type Row } from "@/lib/scoring/types";
 import type { CandidateListing } from "@/lib/selection";
+import { poolScoreOf, type PoolScoreSource } from "./pool-scores";
+
+export type { PoolScore, PoolScoreSource } from "./pool-scores";
 
 // Day 15 Run 2b (§4): the snapshot fields a `search_results` row needs and the two display facts the raw pick
 // card shows (§0.6) travel on the pool item too. They are ADDITIVE — nothing that existed changed shape, and
@@ -73,6 +89,10 @@ export type PoolItem = {
   sub_model: string | null; // models.sub_model (catalog ramat_gimur)
 };
 
+// Day 19 (Run 5c2, §5.2): the preview's extra field — the live listings of this model that have no score on
+// the side being assembled (stored: score_breakdown null; a map: no entry). assemblePool() stops on those.
+export type AssembledPoolPreview = AssembledPool & { without_score: number[] };
+
 export type AssembledPool = {
   now: Date;
   live_listings: number; // live listings in the database, ALL models — before the model cut
@@ -109,6 +129,35 @@ export function modelKey(s: string): string {
  *               live (the script's convenience when --model is omitted); with more than one it stops.
  */
 export async function assemblePool(model: string | null, opts: { now?: Date } = {}): Promise<AssembledPool> {
+  return assemble(model, { now: opts.now, checkVersion: true, scores: "stored", onMissingScore: "throw" });
+}
+
+/**
+ * Day 19 (Run 5c2, §5.2) — the second door: the same pool, assembled from scores the caller hands in.
+ *
+ * ONLY scripts/score-listings.ts may call this. It is not a search path: there is no version check, so the
+ * caller is the one that knows which engine each side is, and a listing with no score on that side is reported
+ * in `without_score` rather than stopping the load. The site and scripts/select-three.ts keep going through
+ * assemblePool(), whose version guard is unchanged.
+ *
+ * @param scores  "stored" — the listings' own columns, exactly as assemblePool reads them;
+ *                a map — one PoolScore per listing id, the scores a run has computed but not written.
+ */
+export async function assemblePoolPreview(
+  model: string | null,
+  opts: { now?: Date; scores: PoolScoreSource },
+): Promise<AssembledPoolPreview> {
+  return assemble(model, { now: opts.now, checkVersion: false, scores: opts.scores, onMissingScore: "collect" });
+}
+
+type AssembleOpts = {
+  now?: Date;
+  checkVersion: boolean; // switch 1
+  scores: PoolScoreSource; // switch 2
+  onMissingScore: "throw" | "collect"; // switch 3
+};
+
+async function assemble(model: string | null, opts: AssembleOpts): Promise<AssembledPoolPreview> {
   const now = opts.now ?? new Date();
   // §13.3: open = agreement_end is null or later than this run's now. agreement_status plays no part.
   const isOpen = (end: Date | null) => end === null || end > now;
@@ -123,8 +172,10 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
     orderBy: { id: "asc" },
   });
 
-  // version check over every live listing and every norm row it points at
-  const badVersion = rows.filter((l) => l.engine_version !== ENGINE_VERSION || (l.market_stats !== null && l.market_stats.engine_version !== ENGINE_VERSION));
+  // version check over every live listing and every norm row it points at (switch 1: the preview has none)
+  const badVersion = !opts.checkVersion
+    ? []
+    : rows.filter((l) => l.engine_version !== ENGINE_VERSION || (l.market_stats !== null && l.market_stats.engine_version !== ENGINE_VERSION));
   if (badVersion.length) {
     const lines = badVersion.map(
       (l) => `  listing ${l.id} (${l.car.license_plate ?? "?"}): engine_version ${l.engine_version ?? "null"}, norm row ${l.market_stats?.id ?? "none"} engine_version ${l.market_stats?.engine_version ?? "-"}`,
@@ -155,9 +206,23 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
   }
   const resolved = model === null ? models_present[0] : (models_present.find((e) => e.key === modelKey(model)) as ModelPresence);
 
+  // Switch 2, the norm side of it: with a map, median_price comes from the market_stats row the MAP's score
+  // points at, not from the listing's included relation. One query for every id the map carries.
+  const mapped = opts.scores === "stored" ? null : opts.scores;
+  const medians = new Map<number, number>();
+  if (mapped !== null) {
+    const ids = [...new Set([...mapped.values()].map((s) => s.market_stats_id).filter((id): id is number => id !== null))];
+    if (ids.length) {
+      for (const r of await db.market_stats.findMany({ where: { id: { in: ids } }, select: { id: true, median_price: true } })) {
+        medians.set(r.id, r.median_price);
+      }
+    }
+  }
+
   // the pool of the model — every validation runs over EVERY live listing, as it always has, and only then
   // does the model cut happen
   const items: PoolItem[] = [];
+  const without_score: number[] = [];
   for (const l of rows) {
     const plate = l.car.license_plate ?? "?";
     if (l.car.year === null) throw new Error(`listing ${l.id} (${plate}): cars.year is null`);
@@ -165,17 +230,35 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
     if (l.car.model.degem_code === null) throw new Error(`listing ${l.id} (${plate}): models.degem_code is null`);
     if (!/^\d+-\d+$/.test(l.car.model.degem_code)) throw new Error(`listing ${l.id} (${plate}): models.degem_code '${l.car.model.degem_code}' is not 'tozeret_cd-degem_cd'`);
     if (l.car.model.vehicle_class === null) throw new Error(`listing ${l.id} (${plate}): models.vehicle_class is null`);
-    if (l.score_breakdown === null) throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
+    // Switch 3: assemblePool stops here, as it always has. The preview defers the question until after the
+    // model cut, so `without_score` names the listings of THIS model and nothing else.
+    if (l.score_breakdown === null && opts.onMissingScore === "throw") throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
     if (l.car.model.model === null) throw new Error(`listing ${l.id} (${plate}): models.model is null`);
     if (modelKey(l.car.model.model) !== resolved.key) continue;
-    const breakdown = l.score_breakdown as unknown as Invoice;
+    // Switch 2: the five score fields — the listing's own columns, or the map's entry for it.
+    const scored = poolScoreOf(l, opts.scores);
+    if (scored === null) {
+      without_score.push(l.id);
+      continue;
+    }
+    const breakdown = scored.breakdown;
     // Day 18 (engine v4 §8): a cancelled car's invoice has no rows by definition — the candidate is built as always,
     // with no median price, and the "no price row" stop is skipped for that case only.
     const cancelled = isCancelled(breakdown);
     const priceRow = cancelled ? null : breakdown.rows.find((r: Row) => r.row === "price");
     if (!cancelled && !priceRow) throw new Error(`listing ${l.id} (${plate}): invoice has no price row`);
-    if (priceRow?.status === "scored" && l.market_stats === null) throw new Error(`listing ${l.id} (${plate}): price row scored but market_stats_id is null`);
-    const median_price = priceRow?.status === "scored" ? (l.market_stats?.median_price ?? null) : null;
+    // The same rule on both sides: median_price is the median_price of the market_stats row THIS score points
+    // at, null when the price row is not scored, and a scored price row with no such row is still a stop.
+    if (priceRow?.status === "scored" && scored.market_stats_id === null) throw new Error(`listing ${l.id} (${plate}): price row scored but market_stats_id is null`);
+    let normMedian: number | null;
+    if (mapped === null) {
+      normMedian = l.market_stats?.median_price ?? null;
+    } else {
+      const id = scored.market_stats_id;
+      if (id !== null && !medians.has(id)) throw new Error(`listing ${l.id} (${plate}): market_stats ${id} is not in market_stats`);
+      normMedian = id === null ? null : (medians.get(id) as number);
+    }
+    const median_price = priceRow?.status === "scored" ? normMedian : null;
     const seller_visible = l.dealer.commercial.some((c) => isOpen(c.agreement_end));
     items.push({
       candidate: {
@@ -204,10 +287,10 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
       vehicle_class: l.car.model.vehicle_class,
       key: { degem_code: l.car.model.degem_code, shnat_yitzur: l.car.year, sug_degem: l.car.model.vehicle_class },
       new_price_published_at: null, // filled below
-      score: l.score,
-      market_stats_id: l.market_stats_id,
-      model_stats_id: l.model_stats_id,
-      pool_stats_id: l.pool_stats_id,
+      score: scored.score,
+      market_stats_id: scored.market_stats_id,
+      model_stats_id: scored.model_stats_id,
+      pool_stats_id: scored.pool_stats_id,
       new_car_price_id: null, // filled below, beside the price itself
       dealer_type: l.dealer.dealer_type,
       sub_model: l.car.model.sub_model,
@@ -243,5 +326,6 @@ export async function assemblePool(model: string | null, opts: { now?: Date } = 
     model_display: resolved.display,
     model_listings: resolved.listings,
     items,
+    without_score,
   };
 }
