@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import { kmRow } from "./km";
 import { priceRow } from "./price";
 import { soldSignal } from "./sold";
-import { kmCheck, kmFacts, testReadingAt } from "./checks";
+import { DAYS_PER_MONTH, kmCheck, kmFacts, testReadingAt } from "./checks";
+import { KM_IMPLAUSIBLE_PER_MONTH } from "./constants";
 import { YEAR_MS } from "./age";
 import { atRunClock } from "./regression";
 import { anchorPoint, cell, input, NOW, poolNorm, rows, scoreScored } from "./fixtures";
@@ -222,11 +223,33 @@ describe("Run 5c2 — km_observed_at picks the reading, and atRunClock moves the
     assert.deepEqual(testReadingAt(at(new Date("2026-08-31T00:00:00.000Z"))), { test_date: LATE, km: 79000 });
   });
 
-  it("the km check follows it: match before the later test, km_below on or after it", () => {
-    assert.equal(kmCheck(at(new Date("2026-08-29T00:00:00.000Z")), { strength: null, evidence: [] }).status, "match");
+  it("the km check follows it: match seven weeks before the later test, km_below from the after reading one day before it, km_below from the before reading on or after it", () => {
+    // Seven weeks before the later test: the ad is 6,000 below it, and 49 days buy an allowance of
+    // 5,000 x 49/30 — a threshold of 13,166.67. No contradiction, and the before reading is what is recorded.
+    const weeks_before = kmCheck(at(new Date("2026-07-12T00:00:00.000Z")), { strength: null, evidence: [] });
+    assert.equal(weeks_before.status, "match");
+    assert.equal(weeks_before.official, 60000);
+    assert.equal(weeks_before.official_date, "2026-02-02");
+    assert.equal((weeks_before.raw as { reading: string }).reading, "before");
+
+    // One day before the later test: the allowance is 5,000 x 1/30, the threshold 5,166.67, and the same
+    // 6,000 below the reading IS a contradiction — carried by the after reading.
+    const day_before = kmCheck(at(new Date("2026-08-29T00:00:00.000Z")), { strength: null, evidence: [] });
+    assert.equal(day_before.status, "mismatch");
+    assert.equal(day_before.kind, "km_below");
+    assert.equal(day_before.official, 79000);
+    assert.equal(day_before.official_date, "2026-08-30");
+    assert.equal(day_before.diff, -6000);
+    const raw = day_before.raw as { reading: string; days_after: number; allowance_km: number };
+    assert.equal(raw.reading, "after");
+    assert.equal(raw.days_after, 1);
+    assert.equal(raw.allowance_km, (KM_IMPLAUSIBLE_PER_MONTH * 1) / DAYS_PER_MONTH);
+
+    // On or after the later test that same reading is the before one, judged at the plain threshold.
     const after = kmCheck(at(new Date("2026-08-31T00:00:00.000Z")), { strength: null, evidence: [] });
     assert.equal(after.status, "mismatch");
     assert.equal(after.kind, "km_below");
+    assert.equal((after.raw as { reading: string }).reading, "before");
   });
 
   it("atRunClock at a later clock chooses the later reading — how an engine <= 4 read the car", () => {

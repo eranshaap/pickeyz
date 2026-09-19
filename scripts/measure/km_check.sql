@@ -45,7 +45,7 @@ select license_plate, id, km_declared, km_at_last_test, last_test, first_reg, di
        when km_at_last_test is null and km_after is null then 'no_reading'
        when km_at_last_test > 0 and diff < -5000 then 'km_below'
        when km_after > 0 and diff_after < -after_threshold then 'km_below_after'
-       when coalesce(diff, diff_after) <= 0 then 'at_or_below_within_tolerance'
+       when (case when km_at_last_test > 0 then diff else diff_after end) <= 0 then 'at_or_below_within_tolerance'
        else 'declared_above_official' end as km_check,
   case when km_at_last_test > 0 and diff > 0 then round(diff::numeric / months_since_test) end as km_per_month_since_test
 from x
