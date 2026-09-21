@@ -92,6 +92,7 @@ model listings {
   dealer_id            Int // required: decides where the lead goes and who is billed
   source               String // code: yad2 | albar | ... Derived from the link at import.
   external_id          String // the listing's id in the source system, without the "?" tail
+  public_id            String    @unique // Day 19 (Run 6a): the listing's id in every address the site shows (/listing/<public_id>) — random, 10 chars of [a-z0-9], minted once at insert by newPublicId() (src/lib/public-id.ts); never changes, carries no meaning. The serial id and the licence plate never appear in an address.
   price                Int // required: asking price, NIS
   region               String?
   image_urls           String[] // addresses of images, not images. Empty in the manual phase.
@@ -112,7 +113,7 @@ model listings {
   model_stats_id       Int? // Day 14: which model_stats row (the km slope) the current score used
   pool_stats_id        Int? // Day 14: which pool_stats row (the anchor curve) the current score used
   created_at           DateTime  @default(now()) @db.Timestamptz(3)
-  updated_at           DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  updated_at           DateTime  @default(now()) @updatedAt @db.Timestamptz(3) // Day 19 (Run 6a): stamped by the DATABASE on every insert and update (trigger set_updated_at, clock_timestamp()) — whoever writes: Prisma, raw SQL or a hand edit. One of the "update" signals of the stored-search rule (findCar-now.md).
 
   car            cars                  @relation(fields: [car_id], references: [id])
   dealer         dealers                 @relation(fields: [dealer_id], references: [id])
@@ -163,6 +164,7 @@ model dealer_commercial {
   agreement_end      DateTime? @db.Date // null = open
   billing_contact    String?
   notes              String?
+  updated_at         DateTime  @default(now()) @updatedAt @db.Timestamptz(3) // Day 19 (Run 6a): when this agreement row last changed — stamped by the DATABASE on every insert and update (trigger set_updated_at), so a hand edit in the Supabase editor counts. One of the "update" signals of the stored-search rule. Rows that existed at the migration carry the migration's moment.
 
   dealer dealers @relation(fields: [dealer_id], references: [id])
 }
@@ -313,6 +315,7 @@ model new_car_prices {
 // cannot tell which of them moved a result when they change in the same week.
 model searches {
   id             Int      @id @default(autoincrement())
+  public_id      String   @unique // Day 19 (Run 6a): the id in the results address (/?s=<public_id>) — random, 10 chars of [a-z0-9], minted at insert by newPublicId(). Only a person's search (rerun_of null) ever appears in an address; a re-run row gets an id too (the column is required) but it is never shown.
   visitor_id     String? // anonymous visitor cookie, 1 year, httpOnly — the same browser and device ACROSS visits
   session_id     String? // one visit; resets between visits
   user_id        Int? // empty as long as there is no login
@@ -324,10 +327,15 @@ model searches {
   rules_version  Int // Stage B's version at that moment (RULES_VERSION)
   results_count  Int // how many listings entered the ranking
   pool_count     Int? // the cut pool — listings after the filters, before selectThree (the number on the "עדכן" button); results_count keeps its meaning: ranked + tail
+  rerun_of       Int? // Day 19 (Run 6a): null = a question a person asked (the search count counts only these). Set = the site re-ran a stored question after an update; it ALWAYS points at the person's search (a row whose own rerun_of is null), never at another re-run. Written from Run 6b on.
   created_at     DateTime @default(now()) @db.Timestamptz(3)
 
   family         model_families?  @relation(fields: [family_id], references: [id], onDelete: SetNull)
   search_results search_results[]
+  original       searches?        @relation("search_reruns", fields: [rerun_of], references: [id], onDelete: NoAction)
+  reruns         searches[]       @relation("search_reruns")
+
+  @@index([rerun_of])
 }
 
 // 12. search_results — the full ranking of one search: one row per listing of that search's cut pool

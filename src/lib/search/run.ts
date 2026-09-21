@@ -26,6 +26,7 @@
 // Nothing in src/lib/scoring/** or src/lib/selection/** is imported for anything but reading.
 
 import { db } from "@/lib/db";
+import { newPublicId } from "@/lib/public-id";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
 import type { ConfidenceLevel } from "@/lib/scoring/types";
 import {
@@ -245,6 +246,7 @@ export async function runSearch(input: {
   const row = await db.$transaction(async (tx) => {
     const created = await tx.searches.create({
       data: {
+        public_id: newPublicId(),
         visitor_id: identity.visitor_id,
         session_id: identity.session_id,
         user_id: null, // no login this month

@@ -36,6 +36,7 @@ import { db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { getVehicleData, type VehicleData } from "@/lib/mot/vehicle";
 import { normalizeName } from "@/lib/names";
+import { newPublicId } from "@/lib/public-id";
 import {
   absentFromSheet, apply as applyObservation, checkDelistedColumn, decide, DELISTED_HEADER,
   firstPriceObservedAt, lastVerifiedAtOnInsert, parseSeen,
@@ -438,6 +439,7 @@ async function main() {
         const created = await tx.listings.create({
           data: {
             car_id: car.id, dealer_id: dealer.id, source: row.source, external_id: row.external_id,
+            public_id: newPublicId(),
             price: row.price!, region: row.region, image_urls: [], km_declared: row.km, hand_declared: row.hand,
             km_observed_at: first_seen_at,
             first_seen_at,
