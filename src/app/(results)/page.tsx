@@ -7,6 +7,11 @@
 // not redirect and do not error. A name that does exist is loaded by the ONE loading rule — which may, when
 // something has changed since the stored run, re-run the question in place and show the new run (§3.2, §4).
 //
+// RUN 7 §1.1 — `open=` IS GONE. Run 6b's car page navigated here to change a filter, carrying the drawer it
+// wanted opened in the address; the car page now opens the same sheet over itself and never navigates to do
+// it. There is no redirect and no error for the old form: an address that still carries `open=` is read
+// exactly as one that does not, because the parameter is simply not read any more.
+//
 // WHAT IS RENDERED FROM WHAT (§9): the ranks, the categories, the price and the km come from the stored
 // `search_results` snapshots; the static card facts (year, sub-model, seller kind) come from the DB rows
 // those snapshots point at. The pick-cards look is otherwise untouched — the cards' redesign is Days 20–21.
@@ -15,7 +20,7 @@
 // request time, and the loading rule reads the clock.
 
 import { db } from "@/lib/db";
-import SearchScreen, { type OpenOnArrival } from "@/components/search/SearchScreen";
+import SearchScreen from "@/components/search/SearchScreen";
 import { reliefFor, type AskResult, type FilterName, type PickCard } from "@/app/actions/search";
 import { modelKey } from "@/lib/search/assemble";
 import { activeFilterNames } from "@/lib/search/filters";
@@ -26,16 +31,12 @@ import { CATEGORY_PRIORITY, type Category } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
 
-const OPEN_VALUES: readonly string[] = ["price", "years", "kmMax", "regions", "filters"];
-
 /** selectThree answers every category one way or the other, and `no_candidate` is its only missing reason. */
 const NO_CANDIDATE = "no_candidate";
 
 export default async function Home(props: PageProps<"/">) {
   const params = await props.searchParams;
   const s = typeof params.s === "string" ? params.s : null;
-  const rawOpen = typeof params.open === "string" ? params.open : null;
-  const open: OpenOnArrival | null = rawOpen !== null && OPEN_VALUES.includes(rawOpen) ? (rawOpen as OpenOnArrival) : null;
 
   const models = await liveModels();
 
@@ -116,5 +117,5 @@ export default async function Home(props: PageProps<"/">) {
 
   // The key is the address: the browser's back and forward land on a different question, and the screen
   // starts from that question's stored answer rather than from the one it happened to be holding.
-  return <SearchScreen key={question.public_id} models={models} initial={answer} openOnArrival={open} />;
+  return <SearchScreen key={question.public_id} models={models} initial={answer} />;
 }

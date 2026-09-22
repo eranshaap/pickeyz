@@ -61,45 +61,53 @@ describe('the ק"מ rubric (§7.5)', () => {
   });
 });
 
-describe("the יד rubric (§7.5)", () => {
-  it("declared = registry: big from the ad, small from the Ministry, grey", () => {
-    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: 2, has_registry_history: true }), { big: "יד 2", small: "2 בעלויות", dark: false });
+describe("the יד rubric (§7.5, Run 7 §6)", () => {
+  it("AGREEMENT -> NO SMALL LINE AT ALL: the \"N בעלויות\" caption is gone (§6)", () => {
+    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: 2, has_registry_history: true }), { big: "יד 2", small: null, dark: false });
   });
 
-  it("one owner has its own word", () => {
-    assert.deepEqual(handRubric({ hand_declared: 1, registry_hand: 1, has_registry_history: true }), { big: "יד 1", small: "בעלות אחת", dark: false });
+  it("one owner loses its caption too — agreement is agreement whatever the number (§6)", () => {
+    assert.deepEqual(handRubric({ hand_declared: 1, registry_hand: 1, has_registry_history: true }), { big: "יד 1", small: null, dark: false });
   });
 
-  it("declared ≠ registry -> dark, and the declaration is NOT overridden", () => {
+  it("MISMATCH -> the existing dark line, and the declaration is NOT overridden (§6)", () => {
     const r = handRubric({ hand_declared: 1, registry_hand: 3, has_registry_history: true });
     assert.deepEqual(r, { big: "יד 1", small: "במשרד התחבורה: יד 3", dark: true });
   });
 
-  it("THE NO-DECLARED-HAND CASE: the big value falls back to the registry's hand, and nothing is dark", () => {
-    assert.deepEqual(handRubric({ hand_declared: null, registry_hand: 3, has_registry_history: true }), { big: "יד 3", small: "3 בעלויות", dark: false });
+  it("THE NO-DECLARED-HAND CASE: the big value falls back to the registry's hand — nothing declared, so nothing contradicts, so no small line", () => {
+    assert.deepEqual(handRubric({ hand_declared: null, registry_hand: 3, has_registry_history: true }), { big: "יד 3", small: null, dark: false });
   });
 
-  it("a car with no registry history -> dark לפי המוכר, לא אומת", () => {
+  it("a car with no registry history keeps its dark לפי המוכר, לא אומת — neither agreement nor mismatch (§6, see REPORT.md)", () => {
     assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: null, has_registry_history: false }), { big: "יד 2", small: "לפי המוכר, לא אומת", dark: true });
+  });
+
+  it("history rows but no registry hand -> the same unverified line", () => {
+    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: null, has_registry_history: true }), { big: "יד 2", small: "לפי המוכר, לא אומת", dark: true });
   });
 
   it("no declaration and no registry history -> — and never dark", () => {
     assert.deepEqual(handRubric({ hand_declared: null, registry_hand: null, has_registry_history: false }), { big: "—", small: "לפי המוכר, לא אומת", dark: false });
   });
+
+  it("no declaration, history rows, no registry hand -> — and never dark", () => {
+    assert.deepEqual(handRubric({ hand_declared: null, registry_hand: null, has_registry_history: true }), { big: "—", small: "לפי המוכר, לא אומת", dark: false });
+  });
 });
 
-describe("the צבע rubric (§7.5)", () => {
+describe("the צבע rubric (§7.5, Run 7 §6)", () => {
   const mismatch = { ad: "לבן", registry: "כחול", ad_family: "white", registry_family: "blue" };
 
-  it("no fact -> the ad's colour over the plain word, grey", () => {
+  it("AGREEMENT -> NO SMALL LINE AT ALL: the \"צבע\" caption is gone (§6)", () => {
     assert.deepEqual(colorRubric({ color: "לבן", registry_color: "לבן", color_mismatch: undefined, color_changed_reported: false }), {
       big: "לבן",
-      small: "צבע",
+      small: null,
       dark: false,
     });
   });
 
-  it("a colour-family contradiction -> dark, with the registry's word", () => {
+  it("MISMATCH -> dark, with the registry's word (§6)", () => {
     assert.deepEqual(colorRubric({ color: "לבן", registry_color: "כחול", color_mismatch: mismatch, color_changed_reported: false }), {
       big: "לבן",
       small: "במשרד התחבורה: כחול",
@@ -107,7 +115,7 @@ describe("the צבע rubric (§7.5)", () => {
     });
   });
 
-  it("a reported colour change with NO contradiction -> dark דווח שינוי צבע", () => {
+  it("a reported colour change with NO contradiction keeps its dark line — neither agreement nor mismatch (§6, see REPORT.md)", () => {
     assert.deepEqual(colorRubric({ color: "לבן", registry_color: "לבן", color_mismatch: undefined, color_changed_reported: true }), {
       big: "לבן",
       small: "דווח שינוי צבע",
@@ -126,15 +134,15 @@ describe("the צבע rubric (§7.5)", () => {
   });
 });
 
-describe("the רישיון rubric (§7.5)", () => {
+describe("the רישיון rubric (§7.5, Run 7 §6)", () => {
   const now = new Date("2026-09-22T09:00:00Z");
 
-  it("valid -> the month over רישיון בתוקף עד, grey", () => {
-    assert.deepEqual(licenceRubric({ test_expiry: d(2027, 3, 1), now }), { big: "3.2027", small: "רישיון בתוקף עד", dark: false });
+  it("VALID -> the date alone, NO small line (§6 — the caption moved into the header)", () => {
+    assert.deepEqual(licenceRubric({ test_expiry: d(2027, 3, 1), now }), { big: "3.2027", small: null, dark: false });
   });
 
-  it("expired -> dark הרישיון פג", () => {
-    assert.deepEqual(licenceRubric({ test_expiry: d(2026, 8, 1), now }), { big: "8.2026", small: "הרישיון פג", dark: true });
+  it("EXPIRED -> dark פג תוקף (§6)", () => {
+    assert.deepEqual(licenceRubric({ test_expiry: d(2026, 8, 1), now }), { big: "8.2026", small: "פג תוקף", dark: true });
   });
 
   it("today itself is not expired", () => {
@@ -150,8 +158,8 @@ describe("the רישיון rubric (§7.5)", () => {
     assert.equal(licenceRubric({ test_expiry: d(2026, 12, 1), now: new Date("2026-12-01T22:30:00Z") }).dark, true);
   });
 
-  it("a null expiry renders — and can never be dark", () => {
-    assert.deepEqual(licenceRubric({ test_expiry: null, now }), { big: "—", small: "רישיון בתוקף עד", dark: false });
+  it("a null expiry renders — with no small line, and can never be dark", () => {
+    assert.deepEqual(licenceRubric({ test_expiry: null, now }), { big: "—", small: null, dark: false });
   });
 });
 
@@ -163,7 +171,9 @@ describe("the strip (§7.3, §7.4)", () => {
       color: { color: "לבן", registry_color: "לבן", color_mismatch: undefined, color_changed_reported: false },
       licence: { test_expiry: d(2027, 3, 1), now: new Date("2026-09-22T09:00:00Z") },
     });
-    assert.deepEqual(strip.map((s) => s.heading), ['ק"מ', "יד", "צבע", "רישיון"]);
+    assert.deepEqual(strip.map((s) => s.heading), ['ק"מ', "יד", "צבע", "רישיון בתוקף עד"]); // §6 — the רישיון header carries the words
     assert.equal(strip.every((s) => !s.rubric.dark), true);
+    // §6 — an all-agreement car says nothing under three of the four: only ק"מ always has its reading line.
+    assert.deepEqual(strip.map((s) => s.rubric.small), ["בטסט 20.6.2025: 112,000", null, null, null]);
   });
 });

@@ -17,22 +17,26 @@
 import type { Check, ColorMismatch } from "@/lib/scoring/types";
 import { israelDay, km as kmText, num } from "./texts";
 
-/** One rubric as the strip renders it: a big value over a small line, the small line grey or dark. */
-export type Rubric = { big: string; small: string; dark: boolean };
+/**
+ * One rubric as the strip renders it: a big value over a small line, the small line grey or dark.
+ *
+ * Run 7 §6 — `small: null` means THERE IS NO SMALL LINE AT ALL: not an empty string, not a blank row. The
+ * strip renders nothing in its place. A null small line is never dark; there is nothing there to darken.
+ */
+export type Rubric = { big: string; small: string | null; dark: boolean };
 
-export const RUBRIC_HEADINGS = { km: 'ק"מ', hand: "יד", color: "צבע", licence: "רישיון" } as const;
+// Run 7 §6 — the רישיון rubric's header now carries the words its small line used to ("רישיון בתוקף עד"),
+// so the big value reads as the date it is and the caption is not repeated under it.
+export const RUBRIC_HEADINGS = { km: 'ק"מ', hand: "יד", color: "צבע", licence: "רישיון בתוקף עד" } as const;
 
 const EMPTY = "—";
 const NO_TEST_YET = "עוד לא עבר טסט";
-const COLOR_SMALL = "צבע";
 const COLOR_CHANGE_REPORTED = "דווח שינוי צבע";
-const LICENCE_SMALL = "רישיון בתוקף עד";
-const LICENCE_EXPIRED = "הרישיון פג";
+const LICENCE_EXPIRED = "פג תוקף";
 const PER_MINISTRY = "במשרד התחבורה:";
 const UNVERIFIED_BY_SELLER = "לפי המוכר, לא אומת";
-const ONE_OWNER = "בעלות אחת";
 
-const blank = (small: string): Rubric => ({ big: EMPTY, small, dark: false });
+const blank = (small: string | null): Rubric => ({ big: EMPTY, small, dark: false });
 
 /** "{d}.{m}.{yyyy}" — the test-date form of the km rubric's small line. */
 export function testDate(d: Date): string {
@@ -98,9 +102,15 @@ export type HandInput = {
 };
 
 /**
- * §7.5 — big: "יד {hand_declared}"; an ad with no hand declaration shows the registry's hand instead.
- * Small: "בעלות אחת" / "{N} בעלויות" from `cars.hand`; declared ≠ registry → dark "במשרד התחבורה: יד {N}";
- * a car with no registry history at all → dark "לפי המוכר, לא אומת".
+ * §7.5 + Run 7 §6 — big: "יד {hand_declared}"; an ad with no hand declaration shows the registry's hand.
+ *
+ * Small, per §6's table: AGREEMENT → NO SMALL LINE AT ALL (the "{N} בעלויות" caption is gone — it only ever
+ * restated the big value); declared ≠ registry → the existing dark "במשרד התחבורה: יד {N}".
+ *
+ * A car with NO REGISTRY HISTORY is neither of those two rows: there is nothing to agree with and nothing to
+ * contradict. Its dark "לפי המוכר, לא אומת" is kept unchanged — §6's title is "only when there is something
+ * to say", and that line says the one thing there is to say about such a car. §6 names only the grey caption
+ * as gone. See REPORT.md, which flags this as the one reading §6's table does not spell out.
  */
 export function handRubric(input: HandInput): Rubric {
   const shown = input.hand_declared ?? input.registry_hand;
@@ -112,11 +122,15 @@ export function handRubric(input: HandInput): Rubric {
   }
 
   const registry = input.registry_hand;
-  const small = registry === null ? UNVERIFIED_BY_SELLER : registry === 1 ? ONE_OWNER : `${num(registry)} בעלויות`;
-  if (shown === null) return blank(small);
-  const mismatch = input.hand_declared !== null && registry !== null && input.hand_declared !== registry;
-  if (mismatch) return { big: `יד ${num(shown)}`, small: `${PER_MINISTRY} יד ${num(registry as number)}`, dark: true };
-  return { big: `יד ${num(shown)}`, small, dark: false };
+  if (registry === null) {
+    // History rows exist but the registry hand itself is unknown: nothing of the Ministry's to annotate with.
+    if (shown === null) return blank(UNVERIFIED_BY_SELLER);
+    return { big: `יד ${num(shown)}`, small: UNVERIFIED_BY_SELLER, dark: true };
+  }
+  if (shown === null) return blank(null);
+  const mismatch = input.hand_declared !== null && input.hand_declared !== registry;
+  if (mismatch) return { big: `יד ${num(shown)}`, small: `${PER_MINISTRY} יד ${num(registry)}`, dark: true };
+  return { big: `יד ${num(shown)}`, small: null, dark: false }; // agreement — nothing to say
 }
 
 // ---------------------------------------------------------------------------
@@ -131,14 +145,22 @@ export type ColorInput = {
 };
 
 /**
- * §7.5 — big: the ad's colour. Small: "צבע"; a colour-FAMILY contradiction (the invoice's fact) → dark
- * "במשרד התחבורה: {registry_color}"; a reported colour change with no contradiction → dark "דווח שינוי צבע".
+ * §7.5 + Run 7 §6 — big: the ad's colour.
+ *
+ * Small, per §6's table: AGREEMENT → NO SMALL LINE AT ALL (the "צבע" caption is gone — it only ever repeated
+ * the rubric's own heading); a colour-FAMILY contradiction (the invoice's fact) → dark
+ * "במשרד התחבורה: {registry_color}".
+ *
+ * A REPORTED COLOUR CHANGE with no contradiction is neither row of §6's table. Its dark "דווח שינוי צבע" is
+ * kept unchanged, for §6's own reason: it is a thing the Ministry says that the ad does not, so there IS
+ * something to say. §6 names only the grey caption as gone. Flagged in REPORT.md.
  */
 export function colorRubric(input: ColorInput): Rubric {
   const mismatch = input.color_mismatch !== undefined;
   const registry = input.color_mismatch?.registry ?? input.registry_color;
-  const small = mismatch && registry !== null ? `${PER_MINISTRY} ${registry}` : input.color_changed_reported ? COLOR_CHANGE_REPORTED : COLOR_SMALL;
-  const dark = (mismatch && registry !== null) || (!mismatch && input.color_changed_reported);
+  const contradiction = mismatch && registry !== null;
+  const small = contradiction ? `${PER_MINISTRY} ${registry}` : input.color_changed_reported ? COLOR_CHANGE_REPORTED : null;
+  const dark = contradiction || (!mismatch && input.color_changed_reported);
   if (input.color === null) return blank(small);
   return { big: input.color, small, dark };
 }
@@ -153,14 +175,15 @@ export type LicenceInput = {
 };
 
 /**
- * §7.5 — big: "{M.YYYY}" of `test_expiry`. Small: "רישיון בתוקף עד"; expired (before TODAY in Israel time,
- * computed at display per the invoice rule that the invoice stores the date and the page computes) → dark
- * "הרישיון פג".
+ * §7.5 + Run 7 §6 — the header now reads "רישיון בתוקף עד" and the big value is the date it names.
+ *
+ * Small, per §6's table: VALID → NO SMALL LINE; expired (before TODAY in Israel time, computed at display per
+ * the invoice rule that the invoice stores the date and the page computes) → dark "פג תוקף".
  */
 export function licenceRubric(input: LicenceInput): Rubric {
-  if (input.test_expiry === null) return blank(LICENCE_SMALL);
+  if (input.test_expiry === null) return blank(null);
   const expired = dayOf(input.test_expiry) < israelDay(input.now);
-  return { big: expiryMonth(input.test_expiry), small: expired ? LICENCE_EXPIRED : LICENCE_SMALL, dark: expired };
+  return { big: expiryMonth(input.test_expiry), small: expired ? LICENCE_EXPIRED : null, dark: expired };
 }
 
 // ---------------------------------------------------------------------------

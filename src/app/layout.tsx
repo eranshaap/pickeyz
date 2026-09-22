@@ -1,20 +1,32 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Assistant } from "next/font/google";
 import "./globals.css";
 import { BRAND } from "@/lib/brand";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
+// BRIEF Run 7 §4 — ONE FONT, LOADED, EVERYWHERE.
+//
+// The approved boards load Assistant (400/600/700/800) and use the stack `'Assistant', 'Segoe UI', Arial,
+// sans-serif` for everything; that is the spec, and this is the one place it is declared. next/font/google
+// self-hosts the files at build time, so the page makes no runtime request to Google and there is no
+// render-blocking stylesheet — the build-time fetch is the whole point of the API.
+//
+// WHY WINDOWS SPLIT THE FONTS (§4.2): nothing here loaded a Hebrew font at all. `globals.css` set
+// `body { font-family: Arial, Helvetica, sans-serif }` while Geist — a LATIN-ONLY subset — governed <html>
+// through Tailwind's `--font-sans`. Every Hebrew glyph therefore fell out of both and landed on whatever the
+// platform chose, and Windows answers a `font-weight: 800` request on the Arial family with a different face
+// than it answers 400 with. The headings and the body were genuinely two fonts. They are one now.
+//
+// The class carries the CSS variable rather than the font's own className, because the stack has to continue
+// past Assistant into 'Segoe UI' and Arial; globals.css composes it in exactly one declaration.
+const assistant = Assistant({
+  weight: ["400", "600", "700", "800"],
+  subsets: ["hebrew", "latin"],
+  display: "swap",
+  variable: "--font-assistant",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-// Metadata and viewport only (BRIEF Run 2b, ALLOWED). The fonts are Day 29's business and are untouched;
-// so are the element, the lang and the dir — `dir="rtl"` was already set and the screen relies on it.
+// Metadata and viewport only (BRIEF Run 2b, ALLOWED). The element, the lang and the dir are untouched —
+// `dir="rtl"` was already set and every screen relies on it.
 export const metadata: Metadata = {
   title: BRAND.name,
   description: "שלושה רכבים, לא מאה: המשתלם ביותר, ראש שקט, והכי חסכוני.",
@@ -29,11 +41,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="he"
-      dir="rtl"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
+    <html lang="he" dir="rtl" className={`${assistant.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

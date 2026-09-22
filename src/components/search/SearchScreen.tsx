@@ -35,7 +35,7 @@ import type { SearchFilters } from "@/lib/search/filters";
 import type { LiveModel } from "@/lib/search/models";
 import { ask, counts as loadCounts, shelf as loadShelf, type AskResult, type FilterName } from "@/app/actions/search";
 import { BRAND } from "@/lib/brand";
-import FilterPanel, { normalize } from "./FilterPanel";
+import FilterPanel, { normalize, Spinner } from "./FilterPanel";
 import ModelBar from "./ModelBar";
 import PickCards from "./PickCards";
 import QuestionRow from "./QuestionRow";
@@ -57,18 +57,13 @@ type AskedModel = { model: string; key: string; display: string };
 
 type Asked = { model: AskedModel; filters: SearchFilters };
 
-/** §6 — the chips of a stored question navigate here with the drawer open; "filters" = the whole drawer. */
-export type OpenOnArrival = FilterName | "filters";
-
 export default function SearchScreen({
   models,
   initial = null,
-  openOnArrival = null,
 }: {
   models: LiveModel[];
   /** The stored run of `/?s=<public_id>`, rendered on the server. null = the opening screen. */
   initial?: AskResult | null;
-  openOnArrival?: OpenOnArrival | null;
 }) {
   const router = useRouter();
 
@@ -88,11 +83,13 @@ export default function SearchScreen({
   const [asked, setAsked] = useState<Asked | null>(askedModel === null || initial === null ? null : { model: askedModel, filters: initial.question.filters });
   const [answer, setAnswer] = useState<AskResult | null>(initial);
   const [counts, setCounts] = useState<FilterCountsView | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(openOnArrival !== null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingModel, setEditingModel] = useState(false); // §6 — the question row's search bar is open
-  const [focus, setFocus] = useState<FilterName | null>(openOnArrival === "filters" ? null : openOnArrival);
+  const [focus, setFocus] = useState<FilterName | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resetToken, setResetToken] = useState(0);
+  // Run 7 §7.3 — a commit is in flight: the action buttons are disabled and carry a spinner until the push.
+  const [busy, setBusy] = useState(false);
 
   // Every counter call is answered out of order sooner or later; only the latest one may land. The last
   // numbers stay on screen until then, which is what §5 asks for instead of a spinner.
@@ -148,6 +145,7 @@ export default function SearchScreen({
   async function doAsk(filters: SearchFilters, model: string | null = activeModel) {
     if (model === null) return;
     setError(null);
+    setBusy(true);
     try {
       const r = await ask({ model, filters: isEmpty(filters) ? undefined : filters });
       // The answer lands first so nothing blinks (§5: no interim screen), and THEN the address pushes as a
@@ -166,7 +164,20 @@ export default function SearchScreen({
       history.popOverlay(() => router.push(`/?s=${r.public_id}`));
     } catch (e) {
       fail(e); // §6 — one plain line, nothing retried silently
+      setBusy(false); // the push never happened, so the controls come back
     }
+  }
+
+  /**
+   * Run 7 §1.3 — "עדכן" WITH NO EFFECTIVE CHANGE IS A CANCEL, on this screen as on the car page. The
+   * comparison is the canonical one (normalize(), the same shape the dim test uses) against the filters of
+   * the question the shown picks answer; the model cannot change from this sheet, so it is unchanged by
+   * construction. On a match nothing is asked: no ask() call, no new `searches` row, no navigation, and no
+   * re-render of the results — it goes down exactly the path the X and the backdrop go down.
+   */
+  function applyFilters(next: SearchFilters) {
+    if (asked !== null && same(next, asked.filters)) return closeDrawer();
+    void doAsk(next);
   }
 
   // Closing the drawer without "עדכן" is a CANCEL (§5): the draft goes back to the asked question and the
@@ -203,9 +214,10 @@ export default function SearchScreen({
         poolNow={poolNow}
         focus={focus}
         onDraftChange={setDraft}
-        onAsk={doAsk}
+        onAsk={applyFilters}
         onCancel={closeDrawer}
         persistentOnDesktop={answered}
+        busy={busy}
       />
     );
 
@@ -245,13 +257,16 @@ export default function SearchScreen({
               </button>
             )}
 
+            {/* Run 7 §7.3 — disabled with a spinner from the click until the push. */}
             <button
               type="button"
-              disabled={chosen === null}
+              disabled={chosen === null || busy}
+              aria-busy={busy}
               onClick={() => doAsk(draft)}
-              className="fixed inset-x-4 bottom-4 z-10 rounded-2xl bg-neutral-900 px-4 py-3.5 text-lg font-medium text-white disabled:bg-neutral-300 md:static md:inset-auto md:w-full md:max-w-md"
+              className="fixed inset-x-4 bottom-4 z-10 flex items-center justify-center gap-2 rounded-2xl bg-neutral-900 px-4 py-3.5 text-lg font-medium text-white disabled:bg-neutral-300 md:static md:inset-auto md:w-full md:max-w-md"
             >
-              {SEARCH}
+              {busy && <Spinner />}
+              <span>{SEARCH}</span>
             </button>
 
             {error !== null && <p className="w-full max-w-md text-sm text-neutral-600">{error}</p>}
@@ -268,11 +283,11 @@ export default function SearchScreen({
               </Link>
               <QuestionRow
                 models={models}
+                model={asked.model.model}
                 modelDisplay={asked.model.display}
                 modelKey={asked.model.key}
                 filters={asked.filters}
                 active={answer.question.active}
-                questionPublicId={answer.public_id}
                 onOpenFilters={openFilters}
                 onEditingChange={setEditingModel}
               />

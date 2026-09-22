@@ -410,6 +410,160 @@ export function legendTail(s: AxisSegment): string {
 
 export const ZERO_KM_MARKER = ZERO_KM_LABEL;
 
+// ---------------------------------------------------------------------------
+// Run 7 §2.3 — ONE tick layout, with the collision rule
+// ---------------------------------------------------------------------------
+
+/**
+ * §2.1 — the scale row's geometry is right-to-left and is expressed ONCE, here, as distances from the axis's
+ * RIGHT edge (the on-the-road end). The component turns a distance into `insetInlineEnd`; it decides nothing.
+ *
+ *   start  the rightmost label, "עלייה לכביש · {M.YYYY}" — pinned at 0 and extending LEFTWARD (no transform)
+ *   end    "היום" — pinned at the LEFT edge and extending rightward, so it cannot leave the card
+ *   year   a tick at its year's boundary with the label CENTRED on it (translateX(50%) in the component)
+ */
+export type ScaleLabelKind = "start" | "end" | "year";
+
+export type ScaleLabel = {
+  kind: ScaleLabelKind;
+  /** The tick's distance from the right edge, 0..1 of the axis width. `end` carries 1, `start` carries 0. */
+  share_from_start: number;
+  text: string;
+  /** Year labels only — the component keys and draws a tick for them. */
+  year: number | null;
+};
+
+/**
+ * §2.3 — the clearance every drawn label must keep from every label already drawn.
+ * Nothing in the scale row may overlap anything else, at any card width.
+ */
+export const SCALE_LABEL_GAP_PX = 12;
+
+/**
+ * The width of a 12px scale label, estimated rather than measured: this is a pure function and there is no
+ * DOM here. 0.6em per character is a DELIBERATE OVER-ESTIMATE for Assistant at 12px (its digits run ~0.55em
+ * and its Hebrew letters ~0.52em), because over-estimating can only drop a tick that would have fitted,
+ * while under-estimating would let two labels touch — and §2.3 forbids the second, not the first.
+ */
+export const SCALE_CHAR_EM = 0.6;
+const SCALE_FONT_PX = 12;
+
+export function scaleLabelWidth(text: string): number {
+  return text.length * SCALE_CHAR_EM * SCALE_FONT_PX;
+}
+
+/** A label's footprint on the axis, as [near, far] distances from the RIGHT edge, in px. */
+function span(label: ScaleLabel, width_px: number): [number, number] {
+  const w = scaleLabelWidth(label.text);
+  const x = label.share_from_start * width_px;
+  if (label.kind === "start") return [x, x + w]; // pinned right, grows leftward
+  if (label.kind === "end") return [x - w, x]; // pinned left, grows rightward
+  return [x - w / 2, x + w / 2]; // centred on the tick
+}
+
+const clears = (a: [number, number], b: [number, number]): boolean => a[0] - b[1] >= SCALE_LABEL_GAP_PX || b[0] - a[1] >= SCALE_LABEL_GAP_PX;
+
+/**
+ * §2.3 — all the scale labels in ONE pass, in priority order: the two end labels are always drawn, then each
+ * year in turn is drawn only if it clears every label already drawn by at least SCALE_LABEL_GAP_PX; a year
+ * that does not clear is skipped ENTIRELY — its tick goes with its label, never one without the other.
+ *
+ * `width_px` is the scale row's measured width. 0 (the server render, before anything has been measured)
+ * yields the two ends and no year at all, which is the correct answer for a row of unknown width.
+ */
+export function scaleLayout(axis: OwnershipAxis, width_px: number): ScaleLabel[] {
+  const start: ScaleLabel = { kind: "start", share_from_start: 0, text: axis.start_label, year: null };
+  const end: ScaleLabel = { kind: "end", share_from_start: 1, text: axis.end_label, year: null };
+  const drawn: ScaleLabel[] = [start, end];
+  if (width_px <= 0) return drawn;
+
+  const spans: [number, number][] = drawn.map((l) => span(l, width_px));
+  for (const t of axis.ticks) {
+    const label: ScaleLabel = { kind: "year", share_from_start: t.share_from_start, text: String(t.year), year: t.year };
+    const s = span(label, width_px);
+    if (s[0] < 0 || s[1] > width_px) continue; // a label that would leave the card is not drawn at all
+    if (!spans.every((other) => clears(s, other))) continue;
+    drawn.push(label);
+    spans.push(s);
+  }
+  return drawn;
+}
+
+// ---------------------------------------------------------------------------
+// §2.5 — the shade ramp
+// ---------------------------------------------------------------------------
+
+/** The ramp's guaranteed length: `shadeRamp(c, 15)` returns 15 visually distinct fills for every page colour. */
+export const RAMP_STEPS = 15;
+
+// The lightness bounds the ramp interpolates between, on the page colour's own hue. They are wide enough
+// that 15 steps are 0.0457 apart in L — roughly 12 of 255 per channel, which no screen renders as one shade.
+const RAMP_L_DARK = 0.2;
+const RAMP_L_LIGHT = 0.84;
+
+/** Half a step of the 15-stop ramp — the offset a cycle beyond 15 is shifted by, so neighbours still differ. */
+const RAMP_CYCLE_OFFSET = 1 / ((RAMP_STEPS - 1) * 2);
+
+export type Hsl = { h: number; s: number; l: number };
+
+/** "#rrggbb" → HSL. A string that is not a six-digit hex colour is a stop, never a silent grey. */
+export function hexToHsl(hex: string): Hsl {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  if (m === null) throw new Error(`shade ramp: ${JSON.stringify(hex)} is not a "#rrggbb" colour`);
+  const n = Number.parseInt(m[1], 16);
+  const r = ((n >> 16) & 0xff) / 255;
+  const g = ((n >> 8) & 0xff) / 255;
+  const b = (n & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: h * 60, s, l };
+}
+
+const channel = (p: number, q: number, t: number): number => {
+  const x = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
+  if (x < 1 / 6) return p + (q - p) * 6 * x;
+  if (x < 1 / 2) return q;
+  if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+  return p;
+};
+
+/** HSL → "#rrggbb". */
+export function hslToHex({ h, s, l }: Hsl): string {
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const t = h / 360;
+  const to = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0");
+  return s === 0 ? `#${to(l)}${to(l)}${to(l)}` : `#${to(channel(p, q, t + 1 / 3))}${to(channel(p, q, t))}${to(channel(p, q, t - 1 / 3))}`;
+}
+
+/**
+ * §2.5 — `n` fills on the PAGE COLOUR'S OWN HUE, lightness-interpolated between a dark and a light bound.
+ * This replaces the old two-shades-per-category palette, which repeated itself from the third owner on.
+ *
+ *   n <= RAMP_STEPS   the n fills are spread across the whole range, so no two are ever equal — a single
+ *                     owner takes the darkest end, which is the page colour's own depth.
+ *   n >  RAMP_STEPS   the 15 stops cycle, each cycle shifted by half a step, so NEIGHBOURS still differ.
+ *                     §2.5 asks for exactly that beyond 15, not for unlimited distinctness.
+ */
+export function shadeRamp(pageColorHex: string, n: number): string[] {
+  if (n <= 0) return [];
+  const { h, s } = hexToHsl(pageColorHex);
+  const out: string[] = [];
+  for (let i = 0; i < n; i += 1) {
+    let t: number;
+    if (n === 1) t = 0;
+    else if (n <= RAMP_STEPS) t = i / (n - 1);
+    else t = ((i % RAMP_STEPS) / (RAMP_STEPS - 1) + Math.floor(i / RAMP_STEPS) * RAMP_CYCLE_OFFSET) % 1;
+    out.push(hslToHex({ h, s, l: RAMP_L_DARK + (RAMP_L_LIGHT - RAMP_L_DARK) * t }));
+  }
+  return out;
+}
+
 /** §7.6 — the zero-km explanation, opened from the label. The duration is the invoice's own fact. */
 export function zeroKmExplanation(months_to_first_private: number): string {
   return `${ZERO_KM_LABEL} — הרכב נרשם תחילה על שם חברת ליסינג, ועבר לבעלות פרטית אחרי ${duration(months_to_first_private)}. חוזה ליסינג רגיל נמשך שלוש שנים ויותר.`;

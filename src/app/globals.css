@@ -1,15 +1,22 @@
 @import "tailwindcss";
 
+/* BRIEF Run 7 §4 — the board's font stack, composed ONCE and named once.
+   `--font-assistant` is what next/font/google defines in layout.tsx (it resolves to Assistant plus the
+   framework's metric-matched fallback face); everything after it is the board's own stack. No other
+   font-family declaration exists anywhere in src/ — that is the whole of §4.2. */
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --font-app: var(--font-assistant), "Segoe UI", Arial, sans-serif;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Both of Tailwind's family tokens point at the one stack, so no utility and no element default can
+     reintroduce a second font — `font-mono`, and the <code> in the empty-category card, included. */
+  --font-sans: var(--font-app);
+  --font-mono: var(--font-app);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,8 +26,12 @@
   }
 }
 
+/* §4.1 — the ONE declaration that governs the page. Everything else inherits it. */
+html {
+  font-family: var(--font-app);
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
 }

@@ -24,6 +24,7 @@ import type { LiveModel } from "@/lib/search/models";
 import type { Category } from "@/lib/selection";
 import type { FilterName } from "@/app/actions/search";
 import QuestionRow from "@/components/search/QuestionRow";
+import { LinkPending } from "@/components/search/PickCards";
 import OwnershipTimeline from "./OwnershipTimeline";
 import Rubrics from "./Rubrics";
 import WhySection from "./WhySection";
@@ -40,6 +41,8 @@ const PHOTO_PLACEHOLDER = "[תמונת הרכב]";
 /** The question behind the page, when there is one. Absent = a black page with no question row (§7.1). */
 export type PageQuestion = {
   models: LiveModel[];
+  /** Run 7 §1.1 — the model AS SEARCHED: the sheet's shelf, its counters and its ask() all take this. */
+  model: string;
   modelDisplay: string;
   modelKey: string;
   filters: SearchFilters;
@@ -139,8 +142,11 @@ function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "de
           </span>
         )}
       </div>
+      {/* Run 7 §3 — ONE wrapping baseline row (gap: 2px 12px) carrying BOTH the "{Y} ₪ מתחת/מעל…" line
+          (16px/700) and the grey "הושווה ל-…" line (13px). They share a row and wrap only when the width
+          truly runs out — never by default at desktop widths, which is what the 1280px container restores. */}
       {b !== null && "fair" in b && (
-        <div className="flex flex-wrap items-baseline gap-x-3">
+        <div className="flex flex-wrap items-baseline" style={{ gap: "2px 12px" }}>
           <span className={`font-bold tabular-nums ${size === "phone" ? "text-[15px]" : "text-[16px]"}`} style={{ color: DARK }}>
             {b.fair}
           </span>
@@ -161,9 +167,17 @@ function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "de
 // ---------------------------------------------------------------------------
 
 export default function CarPageView({ data }: { data: CarPageData }) {
+  // Run 7 §7.1 — the back link acknowledges its own click: from the click until the navigation commits it
+  // dims and carries a spinner, through the framework's link-status mechanism. On ITSELF — §7.4 forbids any
+  // streaming boundary on this route, so the feedback for leaving this page lives on the source element.
   const backLink = (
-    <Link href={data.backHref} className="shrink-0 whitespace-nowrap text-[15px] font-semibold underline underline-offset-4" style={{ color: DARK }}>
+    <Link
+      href={data.backHref}
+      className="relative shrink-0 whitespace-nowrap px-1 text-[15px] font-semibold underline underline-offset-4"
+      style={{ color: DARK }}
+    >
       {data.backWord}
+      <LinkPending compact />
     </Link>
   );
   const brandName = (
@@ -172,25 +186,26 @@ export default function CarPageView({ data }: { data: CarPageData }) {
     </Link>
   );
 
+  // Run 7 §1.1 — no `onOpenFilters` is passed, which is exactly what makes the row open the sheet ITSELF,
+  // in place over this page. The chips are no longer links and the address never moves.
   const questionRow = (q: PageQuestion) => (
-    <QuestionRow
-      models={q.models}
-      modelDisplay={q.modelDisplay}
-      modelKey={q.modelKey}
-      filters={q.filters}
-      active={q.active}
-      questionPublicId={q.publicId}
-    />
+    <QuestionRow models={q.models} model={q.model} modelDisplay={q.modelDisplay} modelKey={q.modelKey} filters={q.filters} active={q.active} />
   );
 
   return (
     <div className="min-h-screen" style={{ background: "#eeece8" }}>
       {/* ---------------------------------------------------------------- header */}
-      {/* DESKTOP (§7.3): one 64px white bar — brand · the question row · the back link. */}
-      <header className="hidden h-16 items-center gap-6 border-b border-[#d8d3cb] bg-white px-6 md:flex">
-        {brandName}
-        {data.question !== null ? questionRow(data.question) : <span className="flex-1" />}
-        {backLink}
+      {/* DESKTOP (§7.3, Run 7 §3): one 64px white bar — brand · the question row · the back link.
+          The white and its 1px bottom border run the full width of the window; the CONTENT inside it is the
+          page container — max-width 1280px, centred, padding 0 48px — so the header's items line up with the
+          main column at every width. The board is drawn at exactly 1280px and cannot say which of the two
+          the white stops at; a bar that stops mid-window is the one reading that would look broken. */}
+      <header className="hidden border-b border-[#d8d3cb] bg-white md:block">
+        <div className="mx-auto flex h-16 max-w-[1280px] items-center gap-6 px-12">
+          {brandName}
+          {data.question !== null ? questionRow(data.question) : <span className="flex-1" />}
+          {backLink}
+        </div>
       </header>
 
       {/* PHONE (§7.4): a 56px bar with the brand and the back link, then a 48px bar with the question row. */}
@@ -207,9 +222,15 @@ export default function CarPageView({ data }: { data: CarPageData }) {
       {/* ---------------------------------------------------------------- phone image */}
       <Photo src={data.imageSrc} className="block h-[200px] w-full md:hidden" />
 
-      <main className="mx-auto flex max-w-5xl flex-col gap-4 px-4 pt-4 pb-[88px] md:gap-7 md:px-12 md:pt-9 md:pb-10">
+      {/* Run 7 §3 — the page container: max-width 1280px, centred; main padding 36px 48px 40px; 28px between
+          sections. Below 1280px the paddings hold and the grid shrinks fluidly (the columns are minmax(0,1fr)
+          and a fixed 360px, so it is the flexible column that gives). The phone column is untouched by §3. */}
+      <main className="mx-auto flex max-w-[1280px] flex-col gap-4 px-4 pt-4 pb-[88px] md:gap-7 md:px-12 md:pt-9 md:pb-10">
         {/* ------------------------------------------------------------ top block */}
-        <section className="flex flex-col gap-4 md:grid md:grid-cols-[1fr_360px] md:items-start md:gap-8">
+        {/* §3 — grid minmax(0, 1fr) 360px, gap 32px: RTL puts the first column on the RIGHT, so the flexible
+            info column is on the right and the 360px photo column on the left, per the board. `items-start`
+            is what keeps the dead band from opening under the photo: neither column stretches. */}
+        <section className="flex flex-col gap-4 md:grid md:grid-cols-[minmax(0,1fr)_360px] md:items-start md:gap-8">
           <div className="flex flex-col gap-4">
             <div className="md:hidden">
               <VerdictLine data={data} size="phone" />
@@ -234,8 +255,10 @@ export default function CarPageView({ data }: { data: CarPageData }) {
                 <PriceBlockView data={data} size="desktop" />
               </div>
 
+              {/* §3 — the contact button: height 48px, padding 0 32px, radius 8, the page colour; at the
+                  row's far side with the seller line beneath it. */}
               <div className="hidden shrink-0 flex-col items-stretch gap-2 md:flex">
-                <button type="button" className="h-12 rounded-lg px-6 text-[16px] font-semibold text-white" style={{ background: data.color }}>
+                <button type="button" className="h-12 rounded-lg px-8 text-[16px] font-semibold text-white" style={{ background: data.color }}>
                   {CONTACT}
                 </button>
                 <span className="text-[13px]" style={{ color: GREY }}>
@@ -247,7 +270,8 @@ export default function CarPageView({ data }: { data: CarPageData }) {
             <Rubrics strip={data.strip} />
           </div>
 
-          <Photo src={data.imageSrc} className="hidden h-[236px] w-[360px] rounded-lg md:block" />
+          {/* §3 — the photo box: 236px tall, radius 8, object-cover, filling its 360px column. */}
+          <Photo src={data.imageSrc} className="hidden h-[236px] w-full rounded-lg md:block" />
         </section>
 
         {/* ------------------------------------------------- למה (between the rubrics and the history) */}
@@ -258,8 +282,11 @@ export default function CarPageView({ data }: { data: CarPageData }) {
           <h2 className="text-[17px] font-extrabold md:text-[18px]" style={{ color: data.color }}>
             {OWNERSHIP_HEADING}
           </h2>
+          {/* Run 7 §2.3 — ONE tick system now: the phone no longer drops every year tick by rule, it drops
+              whichever labels do not clear, by the same collision rule the desktop uses. The axis is still
+              rendered twice only because each copy measures its own card. */}
           <div className="md:hidden">
-            <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} phone />
+            <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
           </div>
           <div className="hidden md:block">
             <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
@@ -267,17 +294,12 @@ export default function CarPageView({ data }: { data: CarPageData }) {
         </section>
       </main>
 
-      {/* ------------------------------------------------------------ phone bottom bar (§7.4) */}
-      <div className="fixed inset-x-0 bottom-0 z-20 flex h-[72px] items-center justify-between gap-4 border-t border-[#d8d3cb] bg-white px-4 md:hidden">
-        <div className="flex min-w-0 flex-col">
-          <span className="text-[18px] font-extrabold tabular-nums" style={{ color: DARK }}>
-            {shekel(data.price)}
-          </span>
-          <span className="truncate text-[12px]" style={{ color: GREY }}>
-            {data.sellerLine}
-          </span>
-        </div>
-        <button type="button" className="h-[46px] shrink-0 rounded-lg px-5 text-[15px] font-semibold text-white" style={{ background: data.color }}>
+      {/* ------------------------------------------------------------ phone bottom bar (§7.4, Run 7 §5) */}
+      {/* §5 — the price element is GONE from this bar (the price is already on the page, a few centimetres
+          above it). The contact button is the bar's only content, horizontally centred. The bar's height and
+          background are unchanged, and it has no scroll-aware behaviour of any kind. */}
+      <div className="fixed inset-x-0 bottom-0 z-20 flex h-[72px] items-center justify-center border-t border-[#d8d3cb] bg-white px-4 md:hidden">
+        <button type="button" className="h-[46px] shrink-0 rounded-lg px-7 text-[15px] font-semibold text-white" style={{ background: data.color }}>
           {CONTACT_SHORT}
         </button>
       </div>

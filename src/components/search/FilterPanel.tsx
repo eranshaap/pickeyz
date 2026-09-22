@@ -115,6 +115,16 @@ function Block({ name, children }: { name: FilterName; children: React.ReactNode
   );
 }
 
+/** Run 7 §7.3 — the busy mark on an action button: disabled, plus this, from the click until the push. */
+export function Spinner({ className = "" }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 16 16" className={`h-[1em] w-[1em] shrink-0 animate-spin motion-reduce:animate-none ${className}`} fill="none">
+      <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
+      <path d="M8 1.5a6.5 6.5 0 0 1 6.5 6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function FilterPanel({
   shelf,
   draft,
@@ -125,6 +135,7 @@ export default function FilterPanel({
   onAsk,
   onCancel,
   persistentOnDesktop,
+  busy = false,
 }: {
   shelf: ShelfView;
   draft: SearchFilters; // the committed draft: the price in it is the SETTLED price
@@ -136,6 +147,8 @@ export default function FilterPanel({
   onCancel: (() => void) | null;
   /** true once this is the desktop panel (§5): it never closes there, so it carries no close control at md. */
   persistentOnDesktop: boolean;
+  /** Run 7 §7.3 — a commit is in flight: "עדכן" is disabled and carries a spinner until the push. */
+  busy?: boolean;
 }) {
   const [priceText, setPriceText] = useState<PriceText>(() => priceTextOf(draft));
   const [focused, setFocused] = useState<PriceField | null>(null);
@@ -318,15 +331,23 @@ export default function FilterPanel({
         {poolNow === 0 && <p className="px-4 py-4 text-neutral-600">{NOTHING_LEFT}</p>}
       </div>
 
-      {/* "עדכן · N" — always pressable, 0 included (§0.10 of Run 2b); held at "—" while a price is edited (§0.3) */}
+      {/* "עדכן · N" — always pressable, 0 included (§0.10 of Run 2b); held at "—" while a price is edited (§0.3).
+          Run 7 §7.3: from the click until the push it is disabled and carries a spinner, so the click is
+          acknowledged on the control that was clicked. An unchanged "עדכן" never gets here busy: §1.3 turns
+          it into a cancel before anything is asked. */}
       <div className="border-t border-neutral-200 p-4">
         <button
           type="button"
+          disabled={busy}
+          aria-busy={busy}
           onClick={() => onAsk(current)}
-          className="w-full rounded-2xl bg-neutral-900 px-4 py-3.5 text-lg font-medium text-white hover:bg-neutral-800"
+          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-neutral-900 px-4 py-3.5 text-lg font-medium text-white hover:bg-neutral-800 disabled:bg-neutral-500"
         >
-          {UPDATE}
-          {editing ? ` · ${HELD}` : poolNow !== null ? ` · ${num(poolNow)}` : ""}
+          {busy && <Spinner />}
+          <span>
+            {UPDATE}
+            {editing ? ` · ${HELD}` : poolNow !== null ? ` · ${num(poolNow)}` : ""}
+          </span>
         </button>
       </div>
     </>

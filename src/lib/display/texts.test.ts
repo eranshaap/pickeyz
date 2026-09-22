@@ -5,10 +5,15 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   backLinkWord,
+  BLACK,
+  BRONZE,
+  CATEGORY_COLOR,
   comparedToLine,
   duration,
   fairAmount,
   fairLine,
+  hexToHsl,
+  hslToHex,
   legendLine,
   months,
   noHistoryView,
@@ -19,7 +24,13 @@ import {
   percentOfNewLine,
   placeWord,
   priceBlock,
+  RAMP_STEPS,
+  scaleLabelWidth,
+  scaleLayout,
+  type ScaleLabel,
+  SCALE_LABEL_GAP_PX,
   sellerLine,
+  shadeRamp,
   thinCellLine,
   whyHeading,
   years,
@@ -349,5 +360,180 @@ describe("no registry history (§7.6)", () => {
 
   it("no declared hand omits the declared line", () => {
     assert.equal(noHistoryView({ first_registration: null, current_owner_type: null, hand_declared: null }).declared, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run 7 §2.3 — one tick layout, with the collision rule
+// ---------------------------------------------------------------------------
+
+describe("the scale layout (Run 7 §2.3)", () => {
+  const now = new Date(Date.UTC(2026, 8, 22)); // 2026-09
+  const axis = ownershipAxis({
+    history: [{ ym: "2021-01", type: "private" }],
+    first_registration: new Date(Date.UTC(2021, 0, 15)),
+    now,
+    zero_km_deal: false,
+  });
+
+  /** The footprint of a drawn label as [near, far] distances from the RIGHT edge — the geometry §2.1 fixes. */
+  const span = (l: ReturnType<typeof scaleLayout>[number], w: number): [number, number] => {
+    const width = scaleLabelWidth(l.text);
+    const x = l.share_from_start * w;
+    if (l.kind === "start") return [x, x + width];
+    if (l.kind === "end") return [x - width, x];
+    return [x - width / 2, x + width / 2];
+  };
+
+  /**
+   * Every YEAR label must clear every other drawn label by SCALE_LABEL_GAP_PX. The two end labels are the
+   * rule's fixed points — §2.3 draws them always — so the pair (start, end) is not a collision the layout is
+   * allowed to resolve; it is checked separately, at the widths a real card actually has.
+   */
+  const overlapFreeAt = (w: number) => {
+    const drawn = scaleLayout(axis, w);
+    for (let i = 0; i < drawn.length; i += 1) {
+      for (let j = i + 1; j < drawn.length; j += 1) {
+        if (drawn[i].kind !== "year" && drawn[j].kind !== "year") continue;
+        const a = span(drawn[i], w);
+        const b = span(drawn[j], w);
+        const gap = Math.max(a[0] - b[1], b[0] - a[1]);
+        assert.ok(gap >= SCALE_LABEL_GAP_PX, `${drawn[i].text} and ${drawn[j].text} are ${gap.toFixed(1)}px apart at width ${w}`);
+      }
+      const s = span(drawn[i], w);
+      if (drawn[i].kind === "year") assert.ok(s[0] >= 0 && s[1] <= w, `${drawn[i].text} leaves the card at width ${w}`);
+    }
+    return drawn;
+  };
+
+  it("the two end labels are ALWAYS drawn, whatever the width", () => {
+    for (const w of [0, 40, 120, 320, 1136]) {
+      const kinds = scaleLayout(axis, w).map((l) => l.kind);
+      assert.ok(kinds.includes("start"), `no start label at ${w}px`);
+      assert.ok(kinds.includes("end"), `no end label at ${w}px`);
+    }
+  });
+
+  it("the ends carry the axis's own words, at the two edges of the RTL geometry", () => {
+    const drawn = scaleLayout(axis, 1136);
+    const start = drawn.find((l) => l.kind === "start");
+    const end = drawn.find((l) => l.kind === "end");
+    assert.equal(start?.text, "עלייה לכביש · 1.2021");
+    assert.equal(start?.share_from_start, 0); // the RIGHT edge
+    assert.equal(end?.text, "היום");
+    assert.equal(end?.share_from_start, 1); // the LEFT edge
+  });
+
+  it("an unmeasured row (width 0) draws the two ends and no year at all", () => {
+    assert.deepEqual(scaleLayout(axis, 0).map((l) => l.kind), ["start", "end"]);
+  });
+
+  it("a wide desktop card draws every year tick", () => {
+    const drawn = overlapFreeAt(1136);
+    assert.deepEqual(drawn.filter((l) => l.kind === "year").map((l) => l.year), [2022, 2023, 2024, 2025, 2026]);
+  });
+
+  it("a narrow phone card skips the years that do not clear — and never overlaps", () => {
+    const phone = overlapFreeAt(326);
+    const desktop = overlapFreeAt(1136);
+    assert.ok(phone.length < desktop.length, "the phone must drop labels the desktop keeps");
+  });
+
+  it("NOTHING overlaps at any width, from 0 to 1600px", () => {
+    for (let w = 0; w <= 1600; w += 8) overlapFreeAt(w);
+  });
+
+  it("the two end labels themselves clear each other at every real card width", () => {
+    // The narrowest card this page ever renders in: a 320px phone, less the main's 16px gutters and the
+    // ownership card's 24px padding -> 240px of scale row. Both ends are drawn there, and they clear.
+    for (let w = 240; w <= 1600; w += 8) {
+      const drawn = scaleLayout(axis, w);
+      const s = span(drawn.find((l) => l.kind === "start") as ScaleLabel, w);
+      const e = span(drawn.find((l) => l.kind === "end") as ScaleLabel, w);
+      assert.ok(Math.max(s[0] - e[1], e[0] - s[1]) >= SCALE_LABEL_GAP_PX, `the two ends collide at width ${w}`);
+    }
+  });
+
+  it("a skipped year loses its tick AND its label together — a year is never half-drawn", () => {
+    const drawn = scaleLayout(axis, 326);
+    const drawnYears = drawn.filter((l) => l.kind === "year");
+    // every year entry carries both its year number (the tick) and its text (the label)
+    for (const l of drawnYears) {
+      assert.equal(typeof l.year, "number");
+      assert.equal(l.text, String(l.year));
+    }
+    assert.ok(drawnYears.length < axis.ticks.length, "some year must have been skipped at phone width");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run 7 §2.5 — the shade ramp
+// ---------------------------------------------------------------------------
+
+describe("the shade ramp (Run 7 §2.5)", () => {
+  // §2.5 — "works for all four page colours (the three categories, bronze) and black"
+  const PAGE_COLORS = [CATEGORY_COLOR.best_value, CATEGORY_COLOR.peace_of_mind, CATEGORY_COLOR.cheapest, BRONZE, BLACK];
+
+  it("15 requested -> 15 distinct hex values, for every page colour", () => {
+    for (const c of PAGE_COLORS) {
+      const ramp = shadeRamp(c, RAMP_STEPS);
+      assert.equal(ramp.length, RAMP_STEPS);
+      assert.equal(new Set(ramp).size, RAMP_STEPS, `${c} repeated a fill inside 15 steps`);
+      assert.ok(ramp.every((v) => /^#[0-9a-f]{6}$/.test(v)), `${c} produced something that is not a hex colour`);
+    }
+  });
+
+  it("no two ADJACENT segments are ever equal, up to 40 owners", () => {
+    for (const c of PAGE_COLORS) {
+      for (let n = 2; n <= 40; n += 1) {
+        const ramp = shadeRamp(c, n);
+        assert.equal(ramp.length, n);
+        for (let i = 1; i < n; i += 1) assert.notEqual(ramp[i], ramp[i - 1], `${c}: fills ${i - 1} and ${i} are equal at n=${n}`);
+      }
+    }
+  });
+
+  it("no two segments of one axis share a fill, up to the 15 the ramp guarantees", () => {
+    for (const c of PAGE_COLORS) {
+      for (let n = 1; n <= RAMP_STEPS; n += 1) assert.equal(new Set(shadeRamp(c, n)).size, n, `${c} repeated a fill at n=${n}`);
+    }
+  });
+
+  it("the fills sit on the PAGE COLOUR'S hue and climb in lightness", () => {
+    for (const c of PAGE_COLORS) {
+      const hue = hexToHsl(c).h;
+      const ramp = shadeRamp(c, RAMP_STEPS);
+      let last = -1;
+      for (const fill of ramp) {
+        const { h, l } = hexToHsl(fill);
+        if (hexToHsl(c).s > 0.02) assert.ok(Math.abs(h - hue) <= 4, `${fill} left ${c}'s hue (${h.toFixed(1)} vs ${hue.toFixed(1)})`);
+        assert.ok(l > last, `${fill} did not climb in lightness`);
+        last = l;
+      }
+    }
+  });
+
+  it("a single owner takes the darkest end — the page colour's own depth", () => {
+    for (const c of PAGE_COLORS) assert.equal(shadeRamp(c, 1)[0], shadeRamp(c, RAMP_STEPS)[0]);
+  });
+
+  it("beyond 15 the ramp cycles WITH AN OFFSET — the 16th is not the 1st again", () => {
+    for (const c of PAGE_COLORS) {
+      const ramp = shadeRamp(c, 16);
+      assert.notEqual(ramp[15], ramp[0], `${c} cycled without an offset`);
+    }
+  });
+
+  it("nothing requested -> nothing returned", () => {
+    assert.deepEqual(shadeRamp(BLACK, 0), []);
+  });
+
+  it("a colour that is not #rrggbb is a stop, never a silent grey", () => {
+    assert.throws(() => shadeRamp("wine", 3), /not a "#rrggbb" colour/);
+    assert.throws(() => shadeRamp("#abc", 3), /not a "#rrggbb" colour/);
+  });
+
+  it("hex -> hsl -> hex round-trips every page colour", () => {
+    for (const c of PAGE_COLORS) assert.equal(hslToHex(hexToHsl(c)), c.toLowerCase());
   });
 });
