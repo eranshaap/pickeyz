@@ -9,15 +9,13 @@
 // it comes (the wording is Days 20–23), and a translation table for it would be exactly the product decision
 // this run is told not to take.
 
-import type { Category } from "@/lib/selection";
 import type { FilterName } from "@/app/actions/search";
 
-// listing_scores / search_results recommendation_categories (§5)
-export const CATEGORY_LABEL: Readonly<Record<Category, string>> = {
-  best_value: "המשתלם ביותר",
-  peace_of_mind: "ראש שקט",
-  cheapest: "הכי חסכוני",
-};
+// Run 6b §8: the category labels and the number formats moved into the display library, where every wording
+// and display decision of §6–§7 lives and is tested. They are re-exported from here so that everything that
+// already reads them keeps reading them from one place — there is ONE implementation, not two, and the
+// server render and the client render cannot disagree about a separator.
+export { CATEGORY_LABEL, km, num, shekel } from "@/lib/display/texts";
 
 // dealers.dealer_type (§0.6): private is a person, anything else is a lot.
 export function sellerKind(dealer_type: string): string {
@@ -32,11 +30,3 @@ export const FILTER_LABEL: Readonly<Record<FilterName, string>> = {
   regions: "אזור",
 };
 
-// Thousands separators, done here rather than through Intl: the same string has to come out of the server
-// render and the client render, and a locale lookup is the classic way for those two to disagree.
-export function num(n: number): string {
-  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-export const shekel = (n: number): string => `${num(n)} ₪`;
-export const km = (n: number): string => `${num(n)} ק״מ`;

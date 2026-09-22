@@ -24,8 +24,103 @@ import type { LiveModel } from "@/lib/search/models";
 
 const PLACEHOLDER = "איזה רכב מעניין אותך?";
 const NOT_HERE_YET = "הדגם עוד לא אצלנו; כרגע:";
+const CURRENT_MODEL = "הדגם הנוכחי"; // Run 6b §6 — the marker the question row puts on the asked model
 
 const norm = (s: string): string => s.trim().toLowerCase();
+
+// ---------------------------------------------------------------------------
+// The completion, exported for Run 6b §6 (ALLOWED: "reuse/export of the completion for §6 only").
+//
+// The question row opens this same two-level autocomplete in place of the results header, so the resolution
+// order — an opened manufacturer, then a model prefix, then a manufacturer prefix, then nothing found — is
+// decided in ONE function and rendered by ONE component. Nothing about the behaviour changed when it moved
+// out of the component body: the bar below calls exactly what it used to compute inline.
+// ---------------------------------------------------------------------------
+
+export type Panel = { kind: "makes"; makes: string[] } | { kind: "models"; models: LiveModel[]; heading: string | null } | { kind: "none" };
+
+/** Every manufacturer among the live models, by listing count then name. */
+export function makesOf(models: LiveModel[]): string[] {
+  const seen = new Map<string, number>();
+  for (const m of models) seen.set(m.make, (seen.get(m.make) ?? 0) + m.listings);
+  return [...seen.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([make]) => make);
+}
+
+export type Completion = { panel: Panel; makeHits: string[]; modelHits: LiveModel[]; isChosenText: boolean };
+
+/** What the open list shows, and the two hit lists Enter resolves against. Pure. */
+export function completion(models: LiveModel[], text: string, chosenDisplay: string | null, openMake: string | null): Completion {
+  const makes = makesOf(models);
+  const q = norm(text);
+  const isChosenText = chosenDisplay !== null && text === chosenDisplay;
+  const makeHits = q === "" ? [] : makes.filter((m) => norm(m).startsWith(q));
+  const modelHits = q === "" || isChosenText ? [] : models.filter((m) => norm(m.model).startsWith(q));
+
+  let panel: Panel;
+  if (openMake !== null) panel = { kind: "models", models: models.filter((m) => m.make === openMake), heading: openMake };
+  else if (q === "" || isChosenText) panel = { kind: "makes", makes };
+  else if (modelHits.length > 0) panel = { kind: "models", models: modelHits, heading: null };
+  else if (makeHits.length === 1) panel = { kind: "models", models: models.filter((m) => m.make === makeHits[0]), heading: makeHits[0] };
+  else if (makeHits.length > 1) panel = { kind: "makes", makes: makeHits };
+  else panel = { kind: "none" };
+
+  return { panel, makeHits, modelHits, isChosenText };
+}
+
+/**
+ * The list itself. `currentKey` marks the asked model with "הדגם הנוכחי" (§6); the bar passes null and the
+ * list looks exactly as it always did.
+ */
+export function CompletionList({
+  panel,
+  models,
+  currentKey = null,
+  onChoose,
+  onOpenMake,
+}: {
+  panel: Panel;
+  models: LiveModel[];
+  currentKey?: string | null;
+  onChoose: (m: LiveModel) => void;
+  onOpenMake: (make: string) => void;
+}) {
+  const row = (m: LiveModel) => (
+    <button
+      key={m.key}
+      type="button"
+      className="flex w-full items-baseline gap-2 px-4 py-2.5 text-start text-neutral-900 hover:bg-neutral-100"
+      onClick={() => onChoose(m)}
+    >
+      <span>{m.display}</span>
+      {m.key === currentKey && <span className="text-sm text-neutral-500">{CURRENT_MODEL}</span>}
+    </button>
+  );
+
+  return (
+    <>
+      {panel.kind === "makes" &&
+        panel.makes.map((make) => (
+          <button key={make} type="button" className="block w-full px-4 py-2.5 text-start text-neutral-900 hover:bg-neutral-100" onClick={() => onOpenMake(make)}>
+            {make}
+          </button>
+        ))}
+
+      {panel.kind === "models" && (
+        <>
+          {panel.heading !== null && <div className="px-4 py-1.5 text-sm text-neutral-500">{panel.heading}</div>}
+          {panel.models.map(row)}
+        </>
+      )}
+
+      {panel.kind === "none" && (
+        <>
+          <div className="px-4 py-2 text-sm text-neutral-500">{NOT_HERE_YET}</div>
+          {models.map(row)}
+        </>
+      )}
+    </>
+  );
+}
 
 export default function ModelBar({
   models,
@@ -56,28 +151,7 @@ export default function ModelBar({
     input.current?.select();
   }, [editing]);
 
-  const makes = useMemo(() => {
-    const seen = new Map<string, number>();
-    for (const m of models) seen.set(m.make, (seen.get(m.make) ?? 0) + m.listings);
-    return [...seen.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([make]) => make);
-  }, [models]);
-
-  const q = norm(text);
-  const isChosenText = chosen !== null && text === chosen.display;
-  const makeHits = useMemo(() => (q === "" ? [] : makes.filter((m) => norm(m).startsWith(q))), [makes, q]);
-  const modelHits = useMemo(() => (q === "" || isChosenText ? [] : models.filter((m) => norm(m.model).startsWith(q))), [models, q, isChosenText]);
-
-  // What the open list shows. The order is the resolution order: an opened manufacturer wins, then a model
-  // prefix, then a manufacturer prefix (one manufacturer opens straight into its models), then nothing found.
-  type Panel = { kind: "makes"; makes: string[] } | { kind: "models"; models: LiveModel[]; heading: string | null } | { kind: "none" };
-  const panel: Panel = useMemo(() => {
-    if (openMake !== null) return { kind: "models", models: models.filter((m) => m.make === openMake), heading: openMake };
-    if (q === "" || isChosenText) return { kind: "makes", makes };
-    if (modelHits.length > 0) return { kind: "models", models: modelHits, heading: null };
-    if (makeHits.length === 1) return { kind: "models", models: models.filter((m) => m.make === makeHits[0]), heading: makeHits[0] };
-    if (makeHits.length > 1) return { kind: "makes", makes: makeHits };
-    return { kind: "none" };
-  }, [openMake, q, isChosenText, makes, makeHits, modelHits, models]);
+  const { panel, makeHits, modelHits, isChosenText } = useMemo(() => completion(models, text, chosen?.display ?? null, openMake), [models, text, chosen, openMake]);
 
   function choose(m: LiveModel) {
     onChoose(m);
@@ -139,42 +213,15 @@ export default function ModelBar({
           otherwise be painted over by it. */}
       {open && (
         <div className="absolute inset-x-0 top-full z-30 mt-2 max-h-80 overflow-y-auto rounded-2xl border border-neutral-200 bg-white py-1 shadow-lg">
-          {panel.kind === "makes" &&
-            panel.makes.map((make) => (
-              <button
-                key={make}
-                type="button"
-                className="block w-full px-4 py-2.5 text-start text-neutral-900 hover:bg-neutral-100"
-                onClick={() => {
-                  setOpenMake(make);
-                  setOpen(true);
-                }}
-              >
-                {make}
-              </button>
-            ))}
-
-          {panel.kind === "models" && (
-            <>
-              {panel.heading !== null && <div className="px-4 py-1.5 text-sm text-neutral-500">{panel.heading}</div>}
-              {panel.models.map((m) => (
-                <button key={m.key} type="button" className="block w-full px-4 py-2.5 text-start text-neutral-900 hover:bg-neutral-100" onClick={() => choose(m)}>
-                  {m.display}
-                </button>
-              ))}
-            </>
-          )}
-
-          {panel.kind === "none" && (
-            <>
-              <div className="px-4 py-2 text-sm text-neutral-500">{NOT_HERE_YET}</div>
-              {models.map((m) => (
-                <button key={m.key} type="button" className="block w-full px-4 py-2.5 text-start text-neutral-900 hover:bg-neutral-100" onClick={() => choose(m)}>
-                  {m.display}
-                </button>
-              ))}
-            </>
-          )}
+          <CompletionList
+            panel={panel}
+            models={models}
+            onChoose={choose}
+            onOpenMake={(make) => {
+              setOpenMake(make);
+              setOpen(true);
+            }}
+          />
         </div>
       )}
 

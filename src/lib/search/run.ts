@@ -25,6 +25,7 @@
 //
 // Nothing in src/lib/scoring/** or src/lib/selection/** is imported for anything but reading.
 
+import type { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { newPublicId } from "@/lib/public-id";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
@@ -92,8 +93,29 @@ export type BlockedFirstView = {
   history_source: string | null;
 };
 
+// Day 19 (Run 6b §4) — THE RE-RUN. When loadForAddress() finds an update it re-runs the SAME question in
+// place, and it does that through this very function: the pipeline, the validations and the single
+// transaction are the ones a person's search goes through, with nothing duplicated. Only the row's own
+// columns differ, and every one of them is copied from the question exactly as stored.
+//
+// `rerun_of` ALWAYS points at the person's question — a row whose own `rerun_of` is null — never at another
+// re-run. The caller is the one holding the question row, so it is the caller that passes the id.
+export type RerunOf = {
+  question_id: number; // searches.id of the person's question
+  model_searched: string; // copied exactly as stored, not re-derived from the pool
+  family_id: number | null;
+  filters: Prisma.InputJsonValue | undefined; // the question's `filters` column, as stored
+  priority: string | null;
+};
+
+// The two anonymous ids a row records. A search through the action always has both (the cookie helper mints
+// them); a re-run triggered by a page render records the viewer's as they are, and either may be absent —
+// `searches.visitor_id` and `searches.session_id` are nullable for exactly that case (§4).
+export type RecordedIdentity = { visitor_id: string | null; session_id: string | null };
+
 export type SearchView = {
   search_id: number;
+  public_id: string; // Run 6b §5: the address this run is displayed at (a re-run's is never shown)
   model: string; // the display spelling, as models.model holds it
   model_key: string;
   filters: SearchFilters;
@@ -119,7 +141,13 @@ export async function runSearch(input: {
    * with no request (scripts/oneoff/verify-search-layer.ts) passes its own, which is why this exists: reading
    * cookies outside a request scope throws, and that throw must never be swallowed.
    */
-  identity?: SearchIdentity;
+  identity?: SearchIdentity | RecordedIdentity;
+  /**
+   * Run 6b §4 — set only when this invocation IS a re-run of a stored question. It changes nothing about
+   * the pipeline: the same pool, the same cut, the same selectThree(), the same transaction. It only says
+   * which columns of the new row are copied from the question instead of derived from this invocation.
+   */
+  rerun?: RerunOf;
 }): Promise<SearchView> {
   const filters = input.filters ?? {};
   const assembled = await assemblePool(input.model);
@@ -244,21 +272,28 @@ export async function runSearch(input: {
   }));
 
   const row = await db.$transaction(async (tx) => {
+    // Run 6b §4 — a re-run copies `model_searched`, `family_id`, `filters` and `priority` from the question
+    // EXACTLY AS STORED and sets `rerun_of`; everything else is computed as in any search, and `created_at`
+    // comes from the column default (§3.1: this create has never sent it, so the DB clock stamps both the
+    // search and the `updated_at` values the update signals compare against).
+    const rerun = input.rerun;
     const created = await tx.searches.create({
       data: {
-        public_id: newPublicId(),
+        public_id: newPublicId(), // minted like any row; a re-run's is never shown and never appears in an address
         visitor_id: identity.visitor_id,
         session_id: identity.session_id,
         user_id: null, // no login this month
-        model_searched: assembled.model_display,
-        filters: input.filters === undefined ? undefined : (filters as object), // as received
-        priority: null, // no screen writes it yet
+        model_searched: rerun === undefined ? assembled.model_display : rerun.model_searched,
+        family_id: rerun === undefined ? undefined : (rerun.family_id ?? undefined),
+        filters: rerun === undefined ? (input.filters === undefined ? undefined : (filters as object)) : rerun.filters, // as received / as stored
+        priority: rerun === undefined ? null : rerun.priority, // no screen writes it yet
+        rerun_of: rerun === undefined ? undefined : rerun.question_id,
         engine_version: ENGINE_VERSION,
         rules_version: RULES_VERSION,
         results_count: shown.length,
         pool_count: cut.length, // the cut pool, before selectThree — the same number filterCounts() puts on "עדכן"
       },
-      select: { id: true },
+      select: { id: true, public_id: true },
     });
     const rows = toSearchResultRows(created.id, snapshots, res);
     if (rows.length !== cut.length) throw new Error(`runSearch: ${rows.length} result row(s) for a cut pool of ${cut.length} — the two must be equal`);
@@ -273,6 +308,7 @@ export async function runSearch(input: {
 
   return {
     search_id: row.id,
+    public_id: row.public_id,
     model: assembled.model_display,
     model_key: assembled.model_key,
     filters,

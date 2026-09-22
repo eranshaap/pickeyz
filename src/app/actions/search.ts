@@ -19,6 +19,7 @@
 // FAILURE IS LOUD (§6): nothing here is retried and nothing is swallowed. An action that throws surfaces as
 // one plain line under the bar.
 
+import { db } from "@/lib/db";
 import { filterCounts, filterShelf, type FilterCountsView, type ShelfView } from "@/lib/search/counts";
 import { activeFilterNames, type SearchFilters } from "@/lib/search/filters";
 import { liveModels as loadLiveModels, type LiveModel } from "@/lib/search/models";
@@ -29,6 +30,7 @@ import { CATEGORY_PRIORITY, type Category } from "@/lib/selection";
 // One raw pick, §0.6. A car that won two categories is ONE card carrying both codes.
 export type PickCard = {
   listing_id: number;
+  public_id: string; // Run 6b §9: the card links to /listing/<public_id>?s=<question public_id>
   categories: Category[]; // codes; the Hebrew labels live in the component
   year: number;
   sub_model: string | null;
@@ -52,6 +54,11 @@ export type Question = { model: string; model_key: string; filters: SearchFilter
 
 export type AskResult = {
   search_id: number;
+  /**
+   * Run 6b §5 — the address this question is displayed at. The client pushes `/?s=<public_id>` as a NEW
+   * history entry after every question, which is what gives the browser's own back the decided rule.
+   */
+  public_id: string;
   question: Question;
   picks: PickCard[]; // distinct listings, in category order; empty when the pool answered nothing
   empties: EmptyCategory[]; // one per category with no pick
@@ -72,6 +79,13 @@ export async function ask(input: { model: string; filters?: SearchFilters }): Pr
   const identity = await searchIdentity();
   const search = await runSearch({ model: input.model, filters, identity });
 
+  // Run 6b §9 — the card's link needs the listing's public id. It is not on the pool item (the assembly is
+  // not this run's to change), so it is read here for the picked listings and for nothing else.
+  const pickedIds = CATEGORY_PRIORITY.map((c) => search.picks[c]?.listing_id).filter((id): id is number => id !== undefined);
+  const publicIds = new Map(
+    (pickedIds.length === 0 ? [] : await db.listings.findMany({ where: { id: { in: pickedIds } }, select: { id: true, public_id: true } })).map((l) => [l.id, l.public_id]),
+  );
+
   // one card per DISTINCT picked listing, in category order: a double winner appears once, under the first
   // category it won
   const cards = new Map<number, PickCard>();
@@ -83,8 +97,11 @@ export async function ask(input: { model: string; filters?: SearchFilters }): Pr
       continue;
     }
     if (cards.has(p.listing_id)) continue;
+    const public_id = publicIds.get(p.listing_id);
+    if (public_id === undefined) throw new Error(`ask: picked listing ${p.listing_id} has no public_id — every listing row has one`);
     cards.set(p.listing_id, {
       listing_id: p.listing_id,
+      public_id,
       categories: p.categories,
       year: p.year,
       sub_model: p.sub_model,
@@ -96,12 +113,13 @@ export async function ask(input: { model: string; filters?: SearchFilters }): Pr
 
   return {
     search_id: search.search_id,
+    public_id: search.public_id,
     question: { model: search.model, model_key: search.model_key, filters: search.filters, active: activeFilterNames(search.filters) as FilterName[] },
     picks: [...cards.values()],
     empties,
     pool_count: search.pool_cut,
     results_count: search.results_count,
-    relief: search.pool_cut === 0 ? await relief(input.model, search.filters) : null,
+    relief: search.pool_cut === 0 ? await reliefFor(input.model, search.filters) : null,
   };
 }
 
@@ -113,9 +131,10 @@ export async function ask(input: { model: string; filters?: SearchFilters }): Pr
  * display order (מחיר, שנתון, ק"מ, אזור). If no single removal returns more than 0 the answer is null and the
  * screen shows the diagnostic line alone.
  *
- * Not exported: it is part of one ask, never a question of its own.
+ * Run 6b §9: exported so that the stored-run render of `/?s=` can offer the same suggestion the search
+ * itself offered. It is a read-only measurement — it writes nothing and runs no search.
  */
-async function relief(model: string, filters: SearchFilters): Promise<Relief | null> {
+export async function reliefFor(model: string, filters: SearchFilters): Promise<Relief | null> {
   const active = activeFilterNames(filters) as FilterName[];
   let best: Relief | null = null;
   for (const name of FILTER_DISPLAY_ORDER) {

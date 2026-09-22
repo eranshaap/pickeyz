@@ -14,6 +14,7 @@
 // The whole area swaps as one unit on every answer, and dims as one unit while the draft differs from the
 // question (§5) — the dimming is applied by the screen, on the wrapper, not per card.
 
+import Link from "next/link";
 import type { AskResult } from "@/app/actions/search";
 import { CATEGORY_LABEL, km, sellerKind, shekel } from "./labels";
 
@@ -26,7 +27,13 @@ export default function PickCards({ answer }: { answer: AskResult }) {
   return (
     <div className="flex flex-col gap-4 px-4 py-4">
       {answer.picks.map((p) => (
-        <article key={p.listing_id} className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+        // Run 6b §9: the whole card is the link to its car page — a real anchor, so it is a NEW history
+        // entry and the browser's back returns to these results. The card's LOOK is untouched.
+        <Link
+          key={p.listing_id}
+          href={`/listing/${p.public_id}?s=${answer.public_id}`}
+          className="block rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm hover:border-neutral-300"
+        >
           <div className="flex flex-wrap gap-2">
             {p.categories.map((c) => (
               <span key={c} className="rounded-full bg-neutral-900 px-3 py-1 text-sm font-medium text-white">
@@ -41,7 +48,7 @@ export default function PickCards({ answer }: { answer: AskResult }) {
             {p.km_declared !== null && ` · ${km(p.km_declared)}`}
             {` · ${sellerKind(p.dealer_type)}`}
           </p>
-        </article>
+        </Link>
       ))}
 
       {answer.empties.map((e) => (

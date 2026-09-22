@@ -1,43 +1,44 @@
 "use client";
 
-// The search screen (BRIEF Days 15–16, Run 2b §5; Run 2c §6 and §8) — one route, two states, client state only.
+// The search screen (BRIEF Days 15–16, Run 2b §5, Run 2c §6 and §8; re-addressed by Run 6b §5 and §9).
 //
-// §0.4: the opening screen and the results live on the same page and the URL carries no question — no query
-// string, no hash. A refresh returns to the opening screen. What the URL does NOT do, the history stack does
-// (§8): the first search pushes one `results` entry, every later question replaces it, and an open drawer or
-// model editor adds one `overlay` entry that is popped whenever it is closed by something other than back.
-// The whole of that lives in ./useHistory.ts; this file only says what each move means on screen.
+// TWO STATES, NOW ON TWO ADDRESSES (Run 6b §5):
+//   /                      the opening screen — the bar centred, nothing asked
+//   /?s=<public_id>        the results of that question, rendered SERVER-SIDE from the stored run and handed
+//                          to this component as `initial`
+// The URL is no longer a stand-in: every question is a real history entry, so the browser's own back moves
+// from a question to the one asked before it, from the first question to the opening screen, and from a car
+// page back to the results it was opened from. Day 15's in-page stack (useHistory.ts) keeps ONLY its drawer
+// job (§5), and this file no longer pushes "results" entries of its own.
 //
-// THE TWO STATES THE WHOLE SCREEN TURNS ON (§5):
-//   asked   the question the three shown picks answer. The question line shows THIS, always.
+// THE TWO STATES THE SCREEN STILL TURNS ON (§5):
+//   asked   the question the shown picks answer. The question row shows THIS, always.
 //   draft   what the filter controls currently say.
-// Dim ⇔ normalize(draft) ≠ normalize(asked), OR the model editor is open (§6). The entire results area at low
-// opacity, non-interactive and not selectable — present, not readable. It is derived from state alone; there
-// is no hover behaviour, and nothing updates the picks live. Pressing "עדכן" is the only commit, and it is one
-// server call: a new `searches` row, the three swap as one unit, the question line updates, the dim goes off.
+// Dim ⇔ normalize(draft) ≠ normalize(asked), or the question row's search bar is open (§6). The results area
+// at low opacity, non-interactive and not selectable — present, not readable. Pressing "עדכן" is the only
+// commit: one server call, a new `searches` row, and then the address pushes to the new question (§5).
 //
-// THE MODEL IS A RUBRIC (§6). Tapping the model name in the question line opens the bar IN PLACE in the
-// header, over the dimmed results. A DIFFERENT model is a new question from zero — ask() at once, filters
-// undefined, the draft reset and the shelf reloaded for the new model. The SAME model is a cancel (§0.1), and
-// so are Esc, a click outside and browser back.
+// THE MODEL IS A CONTROL, and it is no longer this file's business: QuestionRow owns the in-place search bar
+// and the "another model = a new question from zero" flow on BOTH screens (§6). This screen only dims while
+// it is open.
 //
-// NO SPINNER AND NO INTERIM SCREEN (§5): the current screen stays until the action returns, then swaps. On
-// the first search only, one ~200 ms merge: the bar collapses upward and the question line takes its place,
-// and `motion-reduce` turns that off for anyone who asked the system for less motion.
+// NO SPINNER AND NO INTERIM SCREEN (§5): the current screen stays until the action returns, then swaps.
 //
 // MOBILE FIRST. Desktop is the widening: the drawer becomes a panel that never closes (and therefore has no
-// history entry of its own), and the fixed search button moves under the bar. `dir="rtl"` is set in
-// layout.tsx, so every inset here is logical (ps/pe, start/end) and nothing is hard-coded to left or right.
+// history entry of its own). `dir="rtl"` is set in layout.tsx, so every inset here is logical.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { FilterCountsView, ShelfView } from "@/lib/search/counts";
 import type { SearchFilters } from "@/lib/search/filters";
 import type { LiveModel } from "@/lib/search/models";
 import { ask, counts as loadCounts, shelf as loadShelf, type AskResult, type FilterName } from "@/app/actions/search";
+import { BRAND } from "@/lib/brand";
 import FilterPanel, { normalize } from "./FilterPanel";
 import ModelBar from "./ModelBar";
 import PickCards from "./PickCards";
-import QuestionLine from "./QuestionLine";
+import QuestionRow from "./QuestionRow";
 import { useScreenHistory } from "./useHistory";
 import { FILTER_LABEL, num } from "./labels";
 
@@ -51,22 +52,47 @@ const isEmpty = (f: SearchFilters): boolean => Object.keys(normalize(f)).length 
 // §8 — the desktop panel never closes, so it never gets a history entry. Everything else that opens does.
 const isDesktop = (): boolean => typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
 
-type Asked = { model: LiveModel; filters: SearchFilters };
+/** The asked question's model, as the screen needs it: the search string, its key and its display name. */
+type AskedModel = { model: string; key: string; display: string };
 
-export default function SearchScreen({ models }: { models: LiveModel[] }) {
-  const [chosen, setChosen] = useState<LiveModel | null>(null);
+type Asked = { model: AskedModel; filters: SearchFilters };
+
+/** §6 — the chips of a stored question navigate here with the drawer open; "filters" = the whole drawer. */
+export type OpenOnArrival = FilterName | "filters";
+
+export default function SearchScreen({
+  models,
+  initial = null,
+  openOnArrival = null,
+}: {
+  models: LiveModel[];
+  /** The stored run of `/?s=<public_id>`, rendered on the server. null = the opening screen. */
+  initial?: AskResult | null;
+  openOnArrival?: OpenOnArrival | null;
+}) {
+  const router = useRouter();
+
+  // The asked model as the LIVE list spells it, when it is still live; a question whose model has since left
+  // the pool keeps its own stored spelling rather than losing its name.
+  const askedModel: AskedModel | null =
+    initial === null
+      ? null
+      : (() => {
+          const live = models.find((m) => m.key === initial.question.model_key);
+          return { model: initial.question.model, key: initial.question.model_key, display: live?.display ?? initial.question.model };
+        })();
+
+  const [chosen, setChosen] = useState<LiveModel | null>(initial === null ? null : (models.find((m) => m.key === initial.question.model_key) ?? null));
   const [shelf, setShelf] = useState<ShelfView | null>(null);
-  const [draft, setDraft] = useState<SearchFilters>({});
-  const [asked, setAsked] = useState<Asked | null>(null);
-  const [answer, setAnswer] = useState<AskResult | null>(null);
+  const [draft, setDraft] = useState<SearchFilters>(initial?.question.filters ?? {});
+  const [asked, setAsked] = useState<Asked | null>(askedModel === null || initial === null ? null : { model: askedModel, filters: initial.question.filters });
+  const [answer, setAnswer] = useState<AskResult | null>(initial);
   const [counts, setCounts] = useState<FilterCountsView | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [editing, setEditing] = useState(false); // §6 — the model editor is open in the header
-  const [focus, setFocus] = useState<FilterName | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(openOnArrival !== null);
+  const [editingModel, setEditingModel] = useState(false); // §6 — the question row's search bar is open
+  const [focus, setFocus] = useState<FilterName | null>(openOnArrival === "filters" ? null : openOnArrival);
   const [error, setError] = useState<string | null>(null);
   const [resetToken, setResetToken] = useState(0);
-  const [openingToken, setOpeningToken] = useState(0); // §8 — a back to the opening screen empties the bar
-  const [merged, setMerged] = useState(false); // the ~200 ms transition runs once, on the first answer
 
   // Every counter call is answered out of order sooner or later; only the latest one may land. The last
   // numbers stay on screen until then, which is what §5 asks for instead of a spinner.
@@ -79,18 +105,14 @@ export default function SearchScreen({ models }: { models: LiveModel[] }) {
 
   const answered = answer !== null && asked !== null;
 
-  // §8 — back, in one place. An open overlay closes AS CANCEL; nothing open on the results goes back to a
-  // FRESH opening screen, never to a stale one (§0.6).
-  const history = useScreenHistory({
-    onCancelOverlay: () => {
-      if (editing) setEditing(false); // §6 cancel: the asked model's name is restored, the dim lifts
-      else revertDraft(); // exactly the X behaviour: values back to the asked question, results live
-    },
-    onBackToOpening: () => toOpening(),
-  });
+  // §5 — the drawer, and only the drawer: an open one closes AS CANCEL on back and the address does not move.
+  const history = useScreenHistory({ onCancelOverlay: () => revertDraft() });
 
-  // Choosing a model (or un-choosing it by typing over the name) resets everything that is per model: the
-  // shelf, the draft and the counters all belong to the model that was chosen, not to the next one.
+  // The model whose shelf and counters are in force: the asked question's, or the one being chosen on the
+  // opening screen.
+  const activeModel = asked?.model.model ?? chosen?.model ?? null;
+
+  // Choosing a model (or un-choosing it by typing over the name) resets everything that is per model.
   function chooseModel(m: LiveModel | null) {
     setChosen(m);
     setShelf(null);
@@ -100,9 +122,9 @@ export default function SearchScreen({ models }: { models: LiveModel[] }) {
 
   // §5 — the shelf is per model and does not change with the draft, so it is fetched once per model.
   useEffect(() => {
-    if (chosen === null) return;
+    if (activeModel === null) return;
     let live = true;
-    loadShelf(chosen.model)
+    loadShelf(activeModel)
       .then((s) => {
         if (live) setShelf(s);
       })
@@ -110,36 +132,38 @@ export default function SearchScreen({ models }: { models: LiveModel[] }) {
     return () => {
       live = false;
     };
-  }, [chosen, fail]);
+  }, [activeModel, fail]);
 
   // §0.8 — every draft change calls the server. No filter logic runs in the client.
   useEffect(() => {
-    if (chosen === null) return;
+    if (activeModel === null) return;
     const seq = ++countsSeq.current;
-    loadCounts({ model: chosen.model, filters: isEmpty(draft) ? undefined : draft })
+    loadCounts({ model: activeModel, filters: isEmpty(draft) ? undefined : draft })
       .then((c) => {
         if (seq === countsSeq.current) setCounts(c);
       })
       .catch(fail);
-  }, [chosen, draft, fail]);
+  }, [activeModel, draft, fail]);
 
-  async function doAsk(filters: SearchFilters, model: LiveModel | null = chosen) {
+  async function doAsk(filters: SearchFilters, model: string | null = activeModel) {
     if (model === null) return;
     setError(null);
-    const first = asked === null;
     try {
-      const r = await ask({ model: model.model, filters: isEmpty(filters) ? undefined : filters });
+      const r = await ask({ model, filters: isEmpty(filters) ? undefined : filters });
+      // The answer lands first so nothing blinks (§5: no interim screen), and THEN the address pushes as a
+      // NEW history entry — never a replace, because every question is one entry of its own (§5). The
+      // pushed route renders through loadForAddress(): the run has just written and nothing has changed
+      // since, so its stored rows are what comes back and nothing extra is written.
       setAnswer(r);
-      setAsked({ model, filters });
-      setDraft(filters); // the draft IS the question again; the dim goes off because the two are equal
+      // The question row must show the question the shown picks answer, from the same instant they appear —
+      // it may not keep the previous question until the navigation lands.
+      const live = models.find((m) => m.key === r.question.model_key);
+      setAsked({ model: { model: r.question.model, key: r.question.model_key, display: live?.display ?? r.question.model }, filters });
+      setDraft(filters);
       setDrawerOpen(false);
-      setEditing(false);
       setFocus(null);
       setResetToken((n) => n + 1);
-      setMerged(true);
-      // §0.4 — one `results` entry, pushed once and replaced ever after. When an overlay entry is on the
-      // stack it goes first, and the push lands on the entry below it rather than on top of it.
-      history.popOverlay(() => (first ? history.pushResults() : history.replaceResults()));
+      history.popOverlay(() => router.push(`/?s=${r.public_id}`));
     } catch (e) {
       fail(e); // §6 — one plain line, nothing retried silently
     }
@@ -163,62 +187,27 @@ export default function SearchScreen({ models }: { models: LiveModel[] }) {
   function openFilters(on: FilterName | null) {
     setFocus(on);
     setDrawerOpen(true);
-    if (!(answered && isDesktop())) history.pushOverlay(answered ? "results" : "opening");
+    if (!(answered && isDesktop())) history.pushOverlay();
   }
 
-  // §6 — the model editor. It is an overlay like the drawer, on every viewport.
-  function openEditor() {
-    setEditing(true);
-    history.pushOverlay("results");
-  }
-  function cancelEditor() {
-    setEditing(false);
-    history.popOverlay();
-  }
-  function chooseFromEditor(m: LiveModel | null) {
-    if (m === null) return; // the editor never un-chooses: the asked question stands until it is replaced
-    if (asked !== null && m.key === asked.model.key) return cancelEditor(); // §0.1
-    // A different model is a new question from zero: no filters, a fresh shelf, the three picks swapping as a
-    // unit. The editor stays in the header until the answer lands (§5: no interim screen), and doAsk closes it.
-    chooseModel(m);
-    doAsk({}, m);
-  }
-
-  // §8 — back from the results with nothing open: the opening screen, FRESH. Empty bar, no filters, nothing
-  // asked. Forward from here shows this same screen and never the stale results (§0.6).
-  function toOpening() {
-    setChosen(null);
-    setShelf(null);
-    setCounts(null);
-    setDraft({});
-    setAsked(null);
-    setAnswer(null);
-    setDrawerOpen(false);
-    setEditing(false);
-    setFocus(null);
-    setError(null);
-    setMerged(false);
-    setResetToken((n) => n + 1);
-    setOpeningToken((n) => n + 1);
-  }
-
-  const dim = answered && (editing || !same(draft, asked.filters));
+  const dim = answered && (editingModel || !same(draft, asked.filters));
   const poolNow = counts?.pool_now ?? answer?.pool_count ?? shelf?.pool_total ?? null;
 
-  const panel = shelf === null ? null : (
-    <FilterPanel
-      key={`${shelf.model_key}-${resetToken}`}
-      shelf={shelf}
-      draft={draft}
-      counts={counts}
-      poolNow={poolNow}
-      focus={focus}
-      onDraftChange={setDraft}
-      onAsk={doAsk}
-      onCancel={closeDrawer}
-      persistentOnDesktop={answered}
-    />
-  );
+  const panel =
+    shelf === null ? null : (
+      <FilterPanel
+        key={`${shelf.model_key}-${resetToken}`}
+        shelf={shelf}
+        draft={draft}
+        counts={counts}
+        poolNow={poolNow}
+        focus={focus}
+        onDraftChange={setDraft}
+        onAsk={doAsk}
+        onCancel={closeDrawer}
+        persistentOnDesktop={answered}
+      />
+    );
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
@@ -229,7 +218,7 @@ export default function SearchScreen({ models }: { models: LiveModel[] }) {
         className={[
           drawerOpen ? "fixed inset-0 z-50 flex" : "hidden",
           "flex-col bg-white",
-          answered ? "md:sticky md:inset-auto md:top-0 md:z-auto md:flex md:h-screen md:w-80 md:shrink-0 md:border-e md:border-neutral-200" : "",
+          answered ? "md:sticky md:inset-auto md:top-0 md:z-auto md:flex md:h-screen md:w-80 md:shrink-0 md:border-e md:border-[#d8d3cb]" : "",
         ].join(" ")}
       >
         {panel}
@@ -237,15 +226,16 @@ export default function SearchScreen({ models }: { models: LiveModel[] }) {
 
       <main className="flex min-h-screen flex-1 flex-col">
         {/* The opening screen: the bar centred, the collapsed cluster once a model is chosen, "חפש" below.
-            Overflow is hidden only while collapsing — the model bar's dropdown hangs out of this box, and a
-            permanent overflow-hidden would clip the list instead of the merge. */}
+            The ~200 ms merge of Run 2b is kept: the bar collapses upward and the question row takes its
+            place, and `motion-reduce` turns that off for anyone who asked the system for less motion.
+            Overflow is hidden only while collapsing — the model bar's dropdown hangs out of this box. */}
         <div
-          className={`transition-all duration-200 ease-out motion-reduce:transition-none ${merged ? "max-h-0 overflow-hidden opacity-0" : "max-h-[80vh] overflow-visible opacity-100"}`}
-          aria-hidden={merged}
+          className={`transition-all duration-200 ease-out motion-reduce:transition-none ${answered ? "max-h-0 overflow-hidden opacity-0" : "max-h-[80vh] overflow-visible opacity-100"}`}
+          aria-hidden={answered}
         >
           <div className="flex flex-col items-center gap-4 px-4 pt-[20vh] pb-6">
             <div className="w-full max-w-md">
-              <ModelBar key={`bar-${openingToken}`} models={models} chosen={chosen} onChoose={chooseModel} onSubmit={() => doAsk(draft)} />
+              <ModelBar models={models} chosen={chosen} onChoose={chooseModel} onSubmit={() => doAsk(draft)} />
             </div>
 
             {/* §0.7 — before a model is chosen the cluster is not shown at all: its shelf is per model */}
@@ -270,15 +260,23 @@ export default function SearchScreen({ models }: { models: LiveModel[] }) {
 
         {answered && (
           <>
-            {/* §6 — the editor takes the header's place while it is open; the question line comes back on
-                cancel, still showing the question the three cars on screen answer. */}
-            {editing ? (
-              <div className="sticky top-0 z-30 border-b border-neutral-200 bg-white px-4 py-3">
-                <ModelBar models={models} chosen={asked.model} onChoose={chooseFromEditor} onSubmit={() => undefined} edit={{ onCancel: cancelEditor }} />
-              </div>
-            ) : (
-              <QuestionLine modelDisplay={asked.model.display} filters={asked.filters} active={answer.question.active} onOpen={openFilters} onEditModel={openEditor} />
-            )}
+            {/* §6 — the question row, inside the white top bar beside the brand name. */}
+            <div className="sticky top-0 z-30 flex items-center gap-4 border-b border-[#d8d3cb] bg-white px-4 py-3">
+              {/* §6 — the brand name never moves and never wraps; the row scrolls sideways beside it. */}
+              <Link href="/" className="shrink-0 whitespace-nowrap text-[17px] font-extrabold text-[#221f1c]">
+                {BRAND.name}
+              </Link>
+              <QuestionRow
+                models={models}
+                modelDisplay={asked.model.display}
+                modelKey={asked.model.key}
+                filters={asked.filters}
+                active={answer.question.active}
+                questionPublicId={answer.public_id}
+                onOpenFilters={openFilters}
+                onEditingChange={setEditingModel}
+              />
+            </div>
             {error !== null && <p className="px-4 py-2 text-sm text-neutral-600">{error}</p>}
 
             <div className={`transition-opacity duration-200 ease-out motion-reduce:transition-none ${dim ? "pointer-events-none select-none opacity-25" : "opacity-100"}`} aria-hidden={dim}>
