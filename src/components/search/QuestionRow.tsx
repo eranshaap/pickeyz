@@ -6,7 +6,23 @@
 // it shows THE QUESTION THAT WAS ASKED, never a draft: while the drawer is open and the draft has moved,
 // this row does not move with it.
 //
-// The model is a control (§6): tapping it opens the search bar IN PLACE.
+// TWO MODES, AND THE SCREEN PICKS ONE (Run 7c §11.2):
+//
+//   the results screen   THE ROW IS A CONTROL. The model opens the search bar in place; a chip opens the
+//                        screen's own drawer. Everything below about the editor is this mode's.
+//   the car page         THE ROW IS TEXT, and nothing in it reacts to a click: no search bar, no sheet, no
+//                        "+ פילטרים" chip, no hover underline, no handler of any kind. "חזרה" is the only
+//                        way to change the question, and it changes it on the results screen. Same layout,
+//                        same sizes, same weights; the colour one step down — the model's and the chips'
+//                        text #665f58, the chips' border #c9c3b9.
+//
+// That reverses Run 7 §1's car-page half, and with it Run 6b's "from the car page a chip → results with the
+// drawer open". On the car page there is no reason to change the question, so it cannot be changed there:
+// the page no longer mounts FilterPanel or the search bar, and the open / apply / cancel plumbing that
+// served it is gone. THE TWO MODES ARE TWO COMPONENTS so that the read-only one mounts none of it — no
+// state, no history listener, no server action. Nothing on the results screen changed.
+//
+// THE MODEL IS A CONTROL (§6), on the results screen:
 //   desktop  the bar takes the whole row beside the brand name; the filter chips and the back link LEAVE the
 //            row until it closes (they are not squeezed), the two-level autocomplete opens below the bar with
 //            the current model marked "הדגם הנוכחי", and the rest of the page is dimmed.
@@ -18,31 +34,15 @@
 //
 // The completion is ModelBar's own (§6: "reuse ModelBar.tsx's completion") — imported, not copied.
 //
-// THE CAR PAGE NO LONGER NAVIGATES TO CHANGE A FILTER (Run 7 §1.1). Touching a filter chip or "+ פילטרים"
-// opens the SAME sheet the results screen uses — the same FilterPanel, the same look, full-screen on the
-// phone — IN PLACE, over the car page. The address does not change and nothing is written. Run 6b's `open=`
-// parameter and its `openOnArrival` plumbing are gone; an old address carrying `open=` simply ignores it.
-//
-// The car page has no SearchScreen above it to own that sheet, so this row owns it there: it loads the
-// shelf and the counters through the same server actions, and commits through the same ask(). On the results
-// screen nothing changed — `onOpenFilters` is passed and the screen's own drawer opens as before.
-//
-// §1.3, ON BOTH SCREENS: "עדכן" with nothing effectively changed IS A CANCEL. The comparison is the
-// canonical one (normalize()), against the filters of the question this row shows — no ask(), no `searches`
-// row, no navigation. It is the rule the model already had ("the same model is a cancel"), given to filters.
-//
-// §1.2 — every cancel path (X, "ביטול", Esc, a click outside, the browser's back) leaves the page exactly as
-// it was, through the Day-15 mechanism (useHistory.ts). ONE instance of that hook serves both overlays this
-// row can open, because they are mutually exclusive: the chips are not on screen while the search bar is.
+// §11.3 — THE PUSH IS NOT THIS ROW'S. A model pick is one of the navigations the results screen starts from
+// its own controls, so it runs through the screen's shared pending state (`nav`): the screen's cards area
+// shows its placeholders and its controls stay busy from the click until the new screen commits.
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import type { FilterName } from "@/app/actions/search";
-import { ask, counts as loadCounts, shelf as loadShelf } from "@/app/actions/search";
-import type { FilterCountsView, ShelfView } from "@/lib/search/counts";
+import { ask } from "@/app/actions/search";
 import type { SearchFilters } from "@/lib/search/filters";
 import type { LiveModel } from "@/lib/search/models";
-import FilterPanel, { normalize } from "./FilterPanel";
 import { FILTER_LABEL, km, num, shekel } from "./labels";
 import { completion, CompletionList } from "./ModelBar";
 import { useScreenHistory } from "./useHistory";
@@ -52,7 +52,6 @@ const PHONE_TITLE = "איזה דגם?";
 const CANCEL = "ביטול";
 const PHONE_HELPER = "בחירת דגם אחר מתחילה חיפוש חדש, בלי הפילטרים הנוכחיים.";
 const FAILED = "משהו נפל בדרך. נסו שוב.";
-const LOADING = "רגע…"; // §1.1 — the sheet's shelf is fetched on the first open; one line, no spinner, no skeleton
 
 /**
  * §5's rubric formats, one per filter — moved here whole from QuestionLine.tsx, unchanged. §6: the chips use
@@ -72,70 +71,137 @@ export function rubric(name: FilterName, f: SearchFilters): string | null {
   return f.regions !== undefined && f.regions.length > 0 ? f.regions.join(", ") : null;
 }
 
+// ONE look for both modes (§11.2: same layout, same sizes, same weights). Only the colours step down.
+const ROW = "flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap md:overflow-visible";
+const MODEL = "shrink-0 text-[15px] font-extrabold md:text-[17px]";
 const CHIP = "shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-[13px] md:text-[14px]";
 const FILTER_CHIP = `${CHIP} border-[#d8d3cb] bg-[#eeece8] text-[#221f1c]`;
 const ADD_CHIP = `${CHIP} border-dashed border-[#c9c3b9] bg-white font-semibold text-[#221f1c]`;
+// §11.2 — one step down, in two colours the page already has: the scale labels' grey and the ticks' grey.
+const READ_ONLY_MODEL = "text-[#665f58]";
+const READ_ONLY_CHIP = `${CHIP} border-[#c9c3b9] bg-[#eeece8] text-[#665f58]`;
 
-const same = (a: SearchFilters, b: SearchFilters): boolean => JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
-const isEmpty = (f: SearchFilters): boolean => Object.keys(normalize(f)).length === 0;
+/** The thin vertical hairline that separates the model from the filters — the same in both modes. */
+function Hairline() {
+  return <span aria-hidden className="h-5 w-px shrink-0 bg-[#d8d3cb]" />;
+}
 
-export default function QuestionRow({
+/** What both modes show: the asked question, as the row spells it. */
+type RowQuestion = {
+  modelDisplay: string;
+  filters: SearchFilters;
+  active: FilterName[];
+};
+
+/**
+ * §11.3 — the results screen's shared pending state, handed to the row so that EVERY navigation the screen
+ * starts from its own controls is one unbroken busy state: the cards area's placeholders and the busy
+ * controls go on at the click and come off when the new screen is on.
+ */
+export type ScreenNav = {
+  /** The click: the screen goes pending. */
+  begin: () => void;
+  /** The navigation, run inside the screen's transition so the pending state lasts until it commits. */
+  push: (href: string) => void;
+  /** Nothing was navigated after all (the call failed): the screen comes back. */
+  end: () => void;
+};
+
+type Props =
+  | ({ readOnly: true } & RowQuestion)
+  | ({
+      readOnly?: false;
+      models: LiveModel[];
+      /** The asked question's model key — what makes "the same model" a cancel. */
+      modelKey: string;
+      nav: ScreenNav;
+      /** The results screen's own drawer opener: the drawer is part of that screen's layout. */
+      onOpenFilters: (focus: FilterName | null) => void;
+      /** §6 — while the editor is open the host dims the page and drops the back link from the row. */
+      onEditingChange: (editing: boolean) => void;
+    } & RowQuestion);
+
+export default function QuestionRow(props: Props) {
+  if (props.readOnly === true) return <ReadOnlyRow modelDisplay={props.modelDisplay} filters={props.filters} active={props.active} />;
+  return (
+    <EditableRow
+      models={props.models}
+      modelDisplay={props.modelDisplay}
+      modelKey={props.modelKey}
+      filters={props.filters}
+      active={props.active}
+      nav={props.nav}
+      onOpenFilters={props.onOpenFilters}
+      onEditingChange={props.onEditingChange}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// §11.2 — the car page's row: the question behind the verdict, as text
+// ---------------------------------------------------------------------------
+
+/**
+ * No button, no anchor, no handler — spans, which is also what gives the whole row the default cursor
+ * without asking for it. There is no "+ פילטרים" chip: there is nothing to add a filter to from here.
+ */
+function ReadOnlyRow({ modelDisplay, filters, active }: RowQuestion) {
+  return (
+    <div className={ROW}>
+      <span className={`${MODEL} ${READ_ONLY_MODEL}`}>{modelDisplay}</span>
+
+      <Hairline />
+
+      {active.map((name) => {
+        const value = rubric(name, filters);
+        if (value === null) return null;
+        return (
+          <span key={name} className={READ_ONLY_CHIP}>
+            {FILTER_LABEL[name]} {value}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// the results screen's row: the model opens the search bar, a chip opens the drawer
+// ---------------------------------------------------------------------------
+
+function EditableRow({
   models,
-  model,
   modelDisplay,
   modelKey,
   filters,
   active,
-  onOpenFilters = null,
+  nav,
+  onOpenFilters,
   onEditingChange,
 }: {
   models: LiveModel[];
-  /** The asked question's model AS SEARCHED — what the shelf, the counters and ask() all take. */
-  model: string;
-  modelDisplay: string;
   modelKey: string;
-  filters: SearchFilters;
-  active: FilterName[];
-  /**
-   * The results screen passes its own drawer opener, because the drawer is part of that screen's layout.
-   * The car page passes null and this row opens the SAME sheet itself, over the page (§1.1).
-   */
-  onOpenFilters?: ((focus: FilterName | null) => void) | null;
-  /** §6 — while the editor is open the host dims the page and drops the back link from the row. */
-  onEditingChange?: (editing: boolean) => void;
-}) {
-  const router = useRouter();
+  nav: ScreenNav;
+  onOpenFilters: (focus: FilterName | null) => void;
+  onEditingChange: (editing: boolean) => void;
+} & RowQuestion) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(modelDisplay);
   const [openMake, setOpenMake] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ---- the car page's own filters sheet (§1.1); untouched and unused on the results screen ----
-  const ownsSheet = onOpenFilters === null;
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [sheetFocus, setSheetFocus] = useState<FilterName | null>(null);
-  const [sheetDraft, setSheetDraft] = useState<SearchFilters>(filters);
-  const [shelf, setShelf] = useState<ShelfView | null>(null);
-  const [counts, setCounts] = useState<FilterCountsView | null>(null);
-  const countsSeq = useRef(0);
   // Two inputs are rendered, one per viewport, and exactly one of them is displayed. focus() on a
   // display:none element does nothing, so both are asked and only the visible one answers.
   const input = useRef<HTMLInputElement>(null);
   const phoneInput = useRef<HTMLInputElement>(null);
 
-  // §6 / §1.2 — the cancel goes through the Day-15 mechanism: an open overlay is one history entry on the
-  // SAME address, and the browser's back closes it as cancel and stays where it is. One instance serves both
-  // overlays: the sheet's chips are not on screen while the model editor is open, so only one can be out.
-  const history = useScreenHistory({
-    onCancelOverlay: () => {
-      if (sheetOpen) return closeSheet(false);
-      close(false);
-    },
-  });
+  // §6 — the cancel goes through the Day-15 mechanism: an open overlay is one history entry on the SAME
+  // address, and the browser's back closes it as cancel and stays where it is.
+  const history = useScreenHistory({ onCancelOverlay: () => close(false) });
 
   useEffect(() => {
-    onEditingChange?.(editing);
+    onEditingChange(editing);
   }, [editing, onEditingChange]);
 
   useEffect(() => {
@@ -166,91 +232,20 @@ export default function QuestionRow({
   async function choose(m: LiveModel) {
     if (m.key === modelKey) return close(); // §6 / §0.1 — the same model is a cancel, not a search
     setBusy(true);
+    nav.begin(); // §11.3 — the screen goes pending on the click, not on the push
     setError(null);
     try {
       // A new question from ZERO: no filters at all (§6). The address then pushes to the new question as a
       // NEW history entry, which is what makes back return to the question asked before it (§5).
       const answer = await ask({ model: m.model });
-      history.popOverlay(() => router.push(`/?s=${answer.public_id}`));
+      history.popOverlay(() => nav.push(`/?s=${answer.public_id}`));
     } catch (e) {
       console.error("[question row]", e);
       setError(e instanceof Error ? e.message : FAILED);
       setBusy(false);
+      nav.end();
     }
   }
-
-  // -------------------------------------------------------------------------
-  // §1.1–§1.4 — the sheet, when this row owns it (the car page)
-  // -------------------------------------------------------------------------
-
-  function openSheet(on: FilterName | null) {
-    setSheetDraft(filters); // the sheet always opens on the QUESTION, never on a leftover draft
-    setSheetFocus(on);
-    setError(null);
-    setSheetOpen(true);
-    history.pushOverlay();
-  }
-
-  /**
-   * §1.2 — every cancel path lands here and the car page is left exactly as it was.
-   * `popEntry` is false only when the browser's own back is what closed it — its entry is already gone.
-   */
-  function closeSheet(popEntry = true) {
-    setSheetOpen(false);
-    setSheetFocus(null);
-    setSheetDraft(filters);
-    if (popEntry) history.popOverlay();
-  }
-
-  /** §1.3 / §1.4 — an unchanged "עדכן" is a cancel; a real change is a new question, as on the results screen. */
-  async function applyFilters(next: SearchFilters) {
-    if (same(next, filters)) return closeSheet(); // §1.3 — no ask(), no row, no navigation, no re-render
-    setBusy(true);
-    setError(null);
-    try {
-      const answer = await ask({ model, filters: isEmpty(next) ? undefined : next });
-      // §1.4 — exactly today's flow: the client pushes the new question as a NEW history entry, which from
-      // the car page means leaving to that question's results screen.
-      history.popOverlay(() => router.push(`/?s=${answer.public_id}`));
-    } catch (e) {
-      console.error("[question row]", e);
-      setError(e instanceof Error ? e.message : FAILED);
-      setBusy(false);
-    }
-  }
-
-  // The shelf is per model and does not change with the draft (§5), so it is fetched once, and only once the
-  // sheet has actually been opened — a car page that is never filtered makes no call at all.
-  useEffect(() => {
-    if (!ownsSheet || !sheetOpen || shelf !== null) return;
-    let live = true;
-    loadShelf(model)
-      .then((s) => {
-        if (live) setShelf(s);
-      })
-      .catch((e) => {
-        console.error("[question row]", e);
-        setError(e instanceof Error ? e.message : FAILED);
-      });
-    return () => {
-      live = false;
-    };
-  }, [ownsSheet, sheetOpen, shelf, model]);
-
-  // §0.8 — every draft change calls the server; no filter logic runs in the client. Only the latest answer
-  // may land, exactly as on the results screen.
-  useEffect(() => {
-    if (!ownsSheet || !sheetOpen) return;
-    const seq = ++countsSeq.current;
-    loadCounts({ model, filters: isEmpty(sheetDraft) ? undefined : sheetDraft })
-      .then((c) => {
-        if (seq === countsSeq.current) setCounts(c);
-      })
-      .catch((e) => {
-        console.error("[question row]", e);
-        setError(e instanceof Error ? e.message : FAILED);
-      });
-  }, [ownsSheet, sheetOpen, model, sheetDraft]);
 
   const { panel, makeHits, modelHits, isChosenText } = completion(models, text, modelDisplay, openMake);
 
@@ -276,72 +271,29 @@ export default function QuestionRow({
     />
   );
 
-  // -------------------------------------------------------------------------
-  // the row itself
-  // -------------------------------------------------------------------------
-
-  // §1.1 — ONE opener, whoever owns the sheet. On the results screen it is the screen's drawer; on the car
-  // page it is this row's own sheet, opened IN PLACE. Neither of them is a link and neither moves the address.
-  const openOn = onOpenFilters ?? openSheet;
-
-  // §1.1 — the sheet itself: the SAME FilterPanel, full-screen on the phone, a side panel on the desktop,
-  // over the car page. It closes on every cancel path, so unlike the results screen's desktop panel it is
-  // never persistent — `persistentOnDesktop` is false and the X is there at every width.
-  const sheet = ownsSheet && sheetOpen && (
-    <>
-      <button type="button" aria-label={CANCEL} tabIndex={-1} className="fixed inset-0 z-40 cursor-default bg-black/40" onClick={() => closeSheet()} />
-      <aside className="fixed inset-y-0 start-0 z-50 flex w-full flex-col bg-white md:w-80 md:border-e md:border-[#d8d3cb]">
-        {shelf === null ? (
-          <p className="p-4 text-[15px] text-[#665f58]">{error ?? LOADING}</p>
-        ) : (
-          <FilterPanel
-            shelf={shelf}
-            draft={sheetDraft}
-            counts={counts}
-            poolNow={counts?.pool_now ?? shelf.pool_total ?? null}
-            focus={sheetFocus}
-            onDraftChange={setSheetDraft}
-            onAsk={(f) => void applyFilters(f)}
-            onCancel={() => closeSheet()}
-            persistentOnDesktop={false}
-            busy={busy}
-          />
-        )}
-        {error !== null && shelf !== null && <p className="px-4 pb-4 text-[13px] text-[#665f58]">{error}</p>}
-      </aside>
-    </>
-  );
-
   if (!editing) {
     return (
-      <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap md:overflow-visible">
-        <button
-          type="button"
-          onClick={open}
-          className="shrink-0 text-[15px] font-extrabold text-[#221f1c] underline decoration-1 underline-offset-4 md:text-[17px] md:no-underline md:hover:underline"
-        >
+      <div className={ROW}>
+        <button type="button" onClick={open} className={`${MODEL} text-[#221f1c] underline decoration-1 underline-offset-4 md:no-underline md:hover:underline`}>
           {modelDisplay}
         </button>
 
-        {/* the thin vertical hairline that separates the model from the filters */}
-        <span aria-hidden className="h-5 w-px shrink-0 bg-[#d8d3cb]" />
+        <Hairline />
 
         {active.map((name) => {
           const value = rubric(name, filters);
           if (value === null) return null;
           return (
-            <button key={name} type="button" className={FILTER_CHIP} onClick={() => openOn(name)}>
+            <button key={name} type="button" className={FILTER_CHIP} onClick={() => onOpenFilters(name)}>
               <span className="text-[#665f58]">{FILTER_LABEL[name]} </span>
               {value}
             </button>
           );
         })}
 
-        <button type="button" className={ADD_CHIP} onClick={() => openOn(null)}>
+        <button type="button" className={ADD_CHIP} onClick={() => onOpenFilters(null)}>
           {ADD_FILTERS}
         </button>
-
-        {sheet}
       </div>
     );
   }

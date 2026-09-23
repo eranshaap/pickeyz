@@ -14,9 +14,17 @@
 // — the correct answer for a row whose width is not yet known — so the first client render matches the
 // server's and the ticks appear on the same frame as hydration.
 //
-// ONE RIGHT-TO-LEFT GEOMETRY (§2.1). On-the-road is the RIGHT edge, today is the LEFT edge, and every
-// position on this page is a distance from the RIGHT edge expressed as `insetInlineEnd`. The bar, the 0-km
-// row and the scale row are three rows of ONE column template, so they cannot drift apart.
+// ONE RIGHT-TO-LEFT GEOMETRY (§2.1). On-the-road is the RIGHT edge, today is the LEFT edge. The bar, the
+// 0-km row and the scale row are three rows of ONE column template, so they cannot drift apart.
+//
+// THE RULE FOR THE SCALE ROW (Run 7c §11.1): PHYSICAL INSETS — `right` and `left` — NEVER `insetInline*`.
+// The axis is a right-to-left drawing regardless of writing direction. layout.tsx sets `dir="rtl"` on
+// <html>, and under `direction: rtl` the logical insets MEAN THE OPPOSITE of what this row wants:
+// `insetInlineEnd` resolves to `left` and `insetInlineStart` to `right`. That is why the scale came out
+// mirrored against its own bar on the deployed build — "עלייה לכביש" at the left, "היום" at the right —
+// while the bar, a CSS grid whose first column is the right one under RTL, was correct all along.
+// The 0-km row is the one place logical properties are right and they stay: its inline start IS the right
+// side, which is the side its marker line belongs on.
 //
 //   private / institutional   a fill from the page colour's ramp, in ownership order (§2.5)
 //   dealer                    hollow — white with a 1px dashed border, NO hand number, and (§2.2) NO label
@@ -178,31 +186,34 @@ export default function OwnershipTimeline({
       {/* ------------------------------------------------------------ the scale (§2.1, §2.3) */}
       <div ref={scaleRef} className="relative text-[12px]" style={{ color: GREY, height: SCALE_HEIGHT }}>
         {labels.map((l) => {
-          // "היום" — the LAST cell's left edge, pinned there so it can never leave the card. Run 7b §10.2:
-          // the board gives this end a tick as well, the same 1px × 8px mark the year ticks carry. It is
-          // drawn on the label's OWN pinned edge — a plain `block` child sits at its box's inline start,
-          // which is the edge `insetInlineStart: 0` pins — and it replaces the padding that used to stand in
-          // for the missing tick, so the word still lands on the labels' baseline.
+          // "היום" — the LAST cell's PHYSICAL LEFT edge (§11.1), pinned there so it can never leave the card.
+          // Run 7b §10.2: the board gives this end a tick as well, the same 1px × 8px mark the year ticks
+          // carry, and it belongs under the LEFT end of the word — the very edge `left: 0` pins. `block`
+          // alone would put it at the box's inline start, which under RTL is the word's RIGHT end, so the
+          // tick is pushed left by a physical `marginRight: auto`. It also replaces the padding that used to
+          // stand in for the missing tick, so the word still lands on the labels' baseline.
           if (l.kind === "end") {
             return (
-              <span key="end" className="absolute top-0 whitespace-nowrap" style={{ insetInlineStart: 0 }}>
+              <span key="end" className="absolute top-0 whitespace-nowrap" style={{ left: 0 }}>
                 <span
                   aria-hidden
                   className="block"
-                  style={{ width: TICK_WIDTH, height: TICK_HEIGHT, background: TICK_COLOR }}
+                  style={{ width: TICK_WIDTH, height: TICK_HEIGHT, background: TICK_COLOR, marginRight: "auto" }}
                 />
                 {l.text}
               </span>
             );
           }
           // The first (rightmost) tick carries "עלייה לכביש · {M.YYYY}" extending LEFTWARD with no transform;
-          // every year tick is anchored at its cell's right edge with its label CENTRED on it.
+          // every year tick is anchored at its cell's right edge with its label CENTRED on it. §11.1: the
+          // anchor is the PHYSICAL right edge — `right`, not `insetInlineEnd`. `translateX(50%)` is unchanged:
+          // it was written for right-edge anchoring and is correct now that the anchoring is physical.
           const isStart = l.kind === "start";
           return (
             <span
               key={isStart ? "start" : `y${l.year}`}
               className="absolute top-0 whitespace-nowrap text-center"
-              style={{ insetInlineEnd: `${l.share_from_start * 100}%`, transform: isStart ? undefined : "translateX(50%)" }}
+              style={{ right: `${l.share_from_start * 100}%`, transform: isStart ? undefined : "translateX(50%)" }}
             >
               <span
                 aria-hidden

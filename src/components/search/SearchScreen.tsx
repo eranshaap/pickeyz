@@ -24,10 +24,23 @@
 //
 // NO SPINNER AND NO INTERIM SCREEN (§5): the current screen stays until the action returns, then swaps.
 //
+// THE PENDING STATE IS THE SCREEN'S OWN, IN THE BROWSER (Run 7c §11.3). Run 7 §7.2 gave the route a
+// `loading.tsx`; that boundary wrapped the WHOLE results segment, so every navigation into the route —
+// "עדכן" included — replaced the entire screen with a skeleton and rebuilt it. It is gone, and the results
+// route has no streaming boundary of any kind. Instead: from the click on one of THIS screen's own controls
+// ("עדכן", or a model picked from the question row's search bar) until the new screen is on, the white bar,
+// the question row and the drawer stay exactly where they are and ONLY the cards area shows the three grey
+// placeholders. The span is one unbroken state — `submitting` from the click through the server call, then
+// `useTransition` around the `router.push`, which stays pending until the navigation commits — and the two
+// change over in one batch, so it never blinks off between them.
+//
+// A COLD ARRIVAL (a link, a refresh) GETS NO PLACEHOLDER: the browser's own loading indication, as before
+// Run 7. That is the ruled behaviour, not a gap.
+//
 // MOBILE FIRST. Desktop is the widening: the drawer becomes a panel that never closes (and therefore has no
 // history entry of its own). `dir="rtl"` is set in layout.tsx, so every inset here is logical.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { FilterCountsView, ShelfView } from "@/lib/search/counts";
@@ -38,7 +51,8 @@ import { BRAND } from "@/lib/brand";
 import FilterPanel, { normalize, Spinner } from "./FilterPanel";
 import ModelBar from "./ModelBar";
 import PickCards from "./PickCards";
-import QuestionRow from "./QuestionRow";
+import PickCardsSkeleton from "./PickCardsSkeleton";
+import QuestionRow, { type ScreenNav } from "./QuestionRow";
 import { useScreenHistory } from "./useHistory";
 import { FILTER_LABEL, num } from "./labels";
 
@@ -88,8 +102,15 @@ export default function SearchScreen({
   const [focus, setFocus] = useState<FilterName | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resetToken, setResetToken] = useState(0);
-  // Run 7 §7.3 — a commit is in flight: the action buttons are disabled and carry a spinner until the push.
-  const [busy, setBusy] = useState(false);
+
+  // Run 7 §7.3, as Run 7c §11.3 re-cut it — A COMMIT IS IN FLIGHT, from the click until the NEW SCREEN IS
+  // ON (not merely until the push). Two halves of one state, because the two halves are measured by
+  // different things: `submitting` covers the click and the server call, and the transition covers the
+  // navigation the push starts — `navPending` is true exactly until the router commits the new screen.
+  // `navPush` swaps one for the other in a single batch, so `pending` never flickers off between them.
+  const [submitting, setSubmitting] = useState(false);
+  const [navPending, startNav] = useTransition();
+  const pending = submitting || navPending;
 
   // Every counter call is answered out of order sooner or later; only the latest one may land. The last
   // numbers stay on screen until then, which is what §5 asks for instead of a spinner.
@@ -142,10 +163,23 @@ export default function SearchScreen({
       .catch(fail);
   }, [activeModel, draft, fail]);
 
+  /**
+   * §11.3 — the push, and the only one this screen makes. It runs inside a transition, so React holds the
+   * pending state until the navigation has actually committed; `submitting` is dropped in the SAME batch,
+   * which is what makes the click → action → push → new screen span one unbroken busy state.
+   */
+  function navPush(href: string) {
+    setSubmitting(false);
+    startNav(() => router.push(href));
+  }
+
+  /** §11.3 — what the question row's model pick drives, so both of this screen's controls share one state. */
+  const nav: ScreenNav = { begin: () => setSubmitting(true), push: navPush, end: () => setSubmitting(false) };
+
   async function doAsk(filters: SearchFilters, model: string | null = activeModel) {
     if (model === null) return;
     setError(null);
-    setBusy(true);
+    setSubmitting(true); // §11.3 — the cards area goes to placeholders on the click itself
     try {
       const r = await ask({ model, filters: isEmpty(filters) ? undefined : filters });
       // The answer lands first so nothing blinks (§5: no interim screen), and THEN the address pushes as a
@@ -161,10 +195,10 @@ export default function SearchScreen({
       setDrawerOpen(false);
       setFocus(null);
       setResetToken((n) => n + 1);
-      history.popOverlay(() => router.push(`/?s=${r.public_id}`));
+      history.popOverlay(() => navPush(`/?s=${r.public_id}`));
     } catch (e) {
       fail(e); // §6 — one plain line, nothing retried silently
-      setBusy(false); // the push never happened, so the controls come back
+      setSubmitting(false); // the push never happened, so the controls come back
     }
   }
 
@@ -217,7 +251,7 @@ export default function SearchScreen({
         onAsk={applyFilters}
         onCancel={closeDrawer}
         persistentOnDesktop={answered}
-        busy={busy}
+        busy={pending}
       />
     );
 
@@ -260,12 +294,12 @@ export default function SearchScreen({
             {/* Run 7 §7.3 — disabled with a spinner from the click until the push. */}
             <button
               type="button"
-              disabled={chosen === null || busy}
-              aria-busy={busy}
+              disabled={chosen === null || pending}
+              aria-busy={pending}
               onClick={() => doAsk(draft)}
               className="fixed inset-x-4 bottom-4 z-10 flex items-center justify-center gap-2 rounded-2xl bg-neutral-900 px-4 py-3.5 text-lg font-medium text-white disabled:bg-neutral-300 md:static md:inset-auto md:w-full md:max-w-md"
             >
-              {busy && <Spinner />}
+              {pending && <Spinner />}
               <span>{SEARCH}</span>
             </button>
 
@@ -283,11 +317,11 @@ export default function SearchScreen({
               </Link>
               <QuestionRow
                 models={models}
-                model={asked.model.model}
                 modelDisplay={asked.model.display}
                 modelKey={asked.model.key}
                 filters={asked.filters}
                 active={answer.question.active}
+                nav={nav}
                 onOpenFilters={openFilters}
                 onEditingChange={setEditingModel}
               />
@@ -295,29 +329,38 @@ export default function SearchScreen({
             {error !== null && <p className="px-4 py-2 text-sm text-neutral-600">{error}</p>}
 
             <div className={`transition-opacity duration-200 ease-out motion-reduce:transition-none ${dim ? "pointer-events-none select-none opacity-25" : "opacity-100"}`} aria-hidden={dim}>
-              <PickCards answer={answer} />
+              {/* §11.3 — the recommendations area, and ONLY it, goes to the placeholders while a navigation
+                  this screen started is in flight. The relief button goes with the cards: it belongs to the
+                  answer being replaced, and it is a second navigation waiting to be clicked. */}
+              {pending ? (
+                <PickCardsSkeleton />
+              ) : (
+                <>
+                  <PickCards answer={answer} />
 
-              {/* §0.5 — one relief suggestion, and only when the pool came back empty */}
-              {answer.relief !== null && (
-                <div className="px-4 pb-8">
-                  <button
-                    type="button"
-                    className="w-full rounded-2xl border border-neutral-900 px-4 py-3 text-neutral-900 hover:bg-neutral-100"
-                    onClick={() => {
-                      const next: SearchFilters = { ...asked.filters };
-                      const name = answer.relief?.filter;
-                      if (name === "price") {
-                        delete next.priceMin;
-                        delete next.priceMax;
-                      } else if (name === "years") delete next.years;
-                      else if (name === "kmMax") delete next.kmMax;
-                      else if (name === "regions") delete next.regions;
-                      doAsk(next);
-                    }}
-                  >
-                    {`הסרת ${FILTER_LABEL[answer.relief.filter]} תחזיר ${num(answer.relief.count)} רכבים`}
-                  </button>
-                </div>
+                  {/* §0.5 — one relief suggestion, and only when the pool came back empty */}
+                  {answer.relief !== null && (
+                    <div className="px-4 pb-8">
+                      <button
+                        type="button"
+                        className="w-full rounded-2xl border border-neutral-900 px-4 py-3 text-neutral-900 hover:bg-neutral-100"
+                        onClick={() => {
+                          const next: SearchFilters = { ...asked.filters };
+                          const name = answer.relief?.filter;
+                          if (name === "price") {
+                            delete next.priceMin;
+                            delete next.priceMax;
+                          } else if (name === "years") delete next.years;
+                          else if (name === "kmMax") delete next.kmMax;
+                          else if (name === "regions") delete next.regions;
+                          doAsk(next);
+                        }}
+                      >
+                        {`הסרת ${FILTER_LABEL[answer.relief.filter]} תחזיר ${num(answer.relief.count)} רכבים`}
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </>

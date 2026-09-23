@@ -137,15 +137,13 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
         rank = row.rank;
       }
       const filters = storedFilters(loaded.question.filters);
+      // Run 7c §11.2 — the row is TEXT here, so the live list is read for ONE thing: the model's display
+      // spelling, which is the live list's when the model is still live and the stored string otherwise.
+      // The model as searched and its key went with the sheet Run 7 §1 opened over this page.
       const models = await liveModels();
       const key = modelKey(loaded.run.model_searched);
       question = {
-        models,
-        // Run 7 §1.1 — the sheet this page now opens in place needs the model AS SEARCHED, not its display
-        // spelling: the shelf, the counters and ask() all take the stored string.
-        model: loaded.run.model_searched,
         modelDisplay: models.find((m) => m.key === key)?.display ?? loaded.run.model_searched,
-        modelKey: key,
         filters,
         active: activeFilterNames(filters) as FilterName[],
         publicId: loaded.question.public_id,

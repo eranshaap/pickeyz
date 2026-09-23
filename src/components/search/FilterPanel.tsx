@@ -115,7 +115,10 @@ function Block({ name, children }: { name: FilterName; children: React.ReactNode
   );
 }
 
-/** Run 7 §7.3 — the busy mark on an action button: disabled, plus this, from the click until the push. */
+/**
+ * Run 7 §7.3, re-cut by Run 7c §11.3 — the busy mark on an action button: disabled, plus this, for the
+ * whole of the screen's pending state, which is the click, the server call, the push AND the navigation.
+ */
 export function Spinner({ className = "" }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 16 16" className={`h-[1em] w-[1em] shrink-0 animate-spin motion-reduce:animate-none ${className}`} fill="none">
@@ -147,7 +150,11 @@ export default function FilterPanel({
   onCancel: (() => void) | null;
   /** true once this is the desktop panel (§5): it never closes there, so it carries no close control at md. */
   persistentOnDesktop: boolean;
-  /** Run 7 §7.3 — a commit is in flight: "עדכן" is disabled and carries a spinner until the push. */
+  /**
+   * Run 7 §7.3 / Run 7c §11.3 — a commit is in flight: "עדכן" is disabled and carries a spinner from the
+   * click until the NEW SCREEN IS ON. It is the screen's own pending state, the same one that puts the
+   * placeholders in the cards area, so the button and the cards can never disagree about what is happening.
+   */
   busy?: boolean;
 }) {
   const [priceText, setPriceText] = useState<PriceText>(() => priceTextOf(draft));
@@ -332,9 +339,10 @@ export default function FilterPanel({
       </div>
 
       {/* "עדכן · N" — always pressable, 0 included (§0.10 of Run 2b); held at "—" while a price is edited (§0.3).
-          Run 7 §7.3: from the click until the push it is disabled and carries a spinner, so the click is
-          acknowledged on the control that was clicked. An unchanged "עדכן" never gets here busy: §1.3 turns
-          it into a cancel before anything is asked. */}
+          Run 7 §7.3, as Run 7c §11.3 re-cut it: from the click until the new screen is on it is disabled and
+          carries a spinner, so the click is acknowledged on the control that was clicked and stays
+          acknowledged for as long as anything is happening. An unchanged "עדכן" never gets here busy: §1.3
+          turns it into a cancel before anything is asked. */}
       <div className="border-t border-neutral-200 p-4">
         <button
           type="button"

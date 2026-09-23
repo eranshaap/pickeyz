@@ -20,7 +20,6 @@ import type { RubricStrip } from "@/lib/display/rubrics";
 import type { NoHistoryView, OwnershipAxis, PriceBlock } from "@/lib/display/texts";
 import { shekel } from "@/lib/display/texts";
 import type { SearchFilters } from "@/lib/search/filters";
-import type { LiveModel } from "@/lib/search/models";
 import type { Category } from "@/lib/selection";
 import type { FilterName } from "@/app/actions/search";
 import QuestionRow from "@/components/search/QuestionRow";
@@ -38,13 +37,15 @@ const CONTACT_SHORT = "צור קשר";
 const OWNERSHIP_HEADING = "היסטוריית בעלויות";
 const PHOTO_PLACEHOLDER = "[תמונת הרכב]";
 
-/** The question behind the page, when there is one. Absent = a black page with no question row (§7.1). */
+/**
+ * The question behind the page, when there is one. Absent = a black page with no question row (§7.1).
+ *
+ * Run 7c §11.2 — IT IS TEXT NOW, so this is all of it: what the row spells, plus the address "חזרה" goes
+ * back to. The live model list, the model as searched and its key were here for the sheet Run 7 §1 opened
+ * over this page; that sheet is gone and so are they.
+ */
 export type PageQuestion = {
-  models: LiveModel[];
-  /** Run 7 §1.1 — the model AS SEARCHED: the sheet's shelf, its counters and its ask() all take this. */
-  model: string;
   modelDisplay: string;
-  modelKey: string;
   filters: SearchFilters;
   active: FilterName[];
   publicId: string;
@@ -186,11 +187,10 @@ export default function CarPageView({ data }: { data: CarPageData }) {
     </Link>
   );
 
-  // Run 7 §1.1 — no `onOpenFilters` is passed, which is exactly what makes the row open the sheet ITSELF,
-  // in place over this page. The chips are no longer links and the address never moves.
-  const questionRow = (q: PageQuestion) => (
-    <QuestionRow models={q.models} model={q.model} modelDisplay={q.modelDisplay} modelKey={q.modelKey} filters={q.filters} active={q.active} />
-  );
+  // Run 7c §11.2 — READ-ONLY. The row still shows the question behind the verdict, but as text: no click on
+  // the model, no click on a chip, no "+ פילטרים", default cursor throughout. This page mounts no
+  // FilterPanel and no search bar; "חזרה" is the only way to change the question, on the results screen.
+  const questionRow = (q: PageQuestion) => <QuestionRow readOnly modelDisplay={q.modelDisplay} filters={q.filters} active={q.active} />;
 
   return (
     <div className="min-h-screen" style={{ background: "#eeece8" }}>
