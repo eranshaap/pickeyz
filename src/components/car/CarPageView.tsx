@@ -21,13 +21,20 @@
 //   §4.1  the comparison sentence ("הושווה ל-…") is GONE — deleted here and in texts.ts, not hidden.
 //   §4.3  a region line is the LAST line of the price block: the pin and listings.region, in the page colour.
 //   §4.4  the seller line is GONE from both screens, with its business name, its "מגרש" and its region.
-//   §5.1  the photo is 536×357 and the text column ends level with it: 12px between its rows, a 357px
+//   §5.1  the photo and the text column end on the same line: 12px between the column's rows, a 357px
 //         minimum height, and the contact button pushed to the bottom by `margin-top: auto`.
 //   §5.2  the gap under the top block is gapAfterTopBlock(S) — one and a half section gaps, rounded up to a
 //         multiple of 4 — laid on as EXTRA bottom margin, so the section-to-section gap itself never moves.
 //
-// The contact button is WIRED TO NOTHING — it does nothing until the contact-window run. Nothing after the
-// ownership history exists in this run: "מפרט ואבזור" and the contact window each come in their own round.
+// RUN 9c, WHAT THE DEPLOYED CHECK MOVED (§11.2, §11.3). Nothing else on the page moves:
+//   §11.2 the top block is a VERTICAL STACK of two parts, 16px apart: (a) the two-column grid, text column
+//         and photo, and (b) the rubric strip, which has LEFT the text column for a full-width row of its
+//         own under both columns. §5.2's extra bottom margin stays on the wrapper that holds both parts, so
+//         the gap it opens is now measured from the STRIP's bottom to the first section heading.
+//   §11.3 the photo is a FRAME the image fills — 536 wide, at least 357 tall, given the text column's
+//         height by the grid's `align-items: stretch`, and cropped by `object-cover`. It replaces §5.1's
+//         fixed 536×357 box; on the cars seen the column is shorter than 357, so the photo still renders
+//         536×357 and the contact button still ends on its bottom line.
 
 import Link from "next/link";
 import type { RubricStrip } from "@/lib/display/rubrics";
@@ -52,10 +59,11 @@ const CONTACT_SHORT = "צור קשר";
 const OWNERSHIP_HEADING = "היסטוריית בעלויות";
 const PHOTO_PLACEHOLDER = "[תמונת הרכב]";
 
-// §5.1 — the photo is 536×357 off the board «עמוד הרכב המלא — פריסה ב» (it was 360×236), and the text
-// column's minimum height is that same 357, which is what makes the two columns end on the same line. Both
-// numbers are written as literal Tailwind classes below (`w-[536px] h-[357px]`, `md:min-h-[357px]`) and not
-// as constants: a class name assembled at runtime is a class Tailwind never sees and never emits.
+// §5.1 / §11.3 — the photo column is 536 wide off the board «עמוד הרכב המלא — פריסה ב» (it was 360×236),
+// and 357 is a MINIMUM on both the photo frame and the text column rather than a fixed height: the grid
+// stretches the two to one height, so the photo is never shorter than 357 and never shorter than the text
+// beside it. Both numbers are written as literal Tailwind classes below (`w-[536px]`, `md:min-h-[357px]`)
+// and not as constants: a class name assembled at runtime is a class Tailwind never sees and never emits.
 
 // §5.2 — S, the page's OWN section gap, as <main> below spells it: `gap-4` (16px) on the phone and
 // `md:gap-7` (28px) from `md` up. S itself does not change; the top block simply carries the DIFFERENCE
@@ -308,46 +316,67 @@ export default function CarPageView({ data }: { data: CarPageData }) {
           BETWEEN sections, is this element's own `gap-4` / `md:gap-7` and Run 9 §5.2 does not touch it. */}
       <main className="mx-auto flex max-w-[1280px] flex-col gap-4 px-4 pt-4 pb-[88px] md:gap-7 md:px-12 md:pt-9 md:pb-10">
         {/* ------------------------------------------------------------ top block */}
-        {/* §5.1 — grid minmax(0, 1fr) 536px, gap 32px: RTL puts the first column on the RIGHT, so the
-            flexible text column is on the right and the 536px photo column on the left, per the board.
-            `items-start` is what keeps the dead band from opening under the photo: neither column stretches.
-            §5.2 — the extra bottom margin is gapAfterTopBlock(S) − S, from the one function that decides it. */}
+        {/* §11.2 — the top block is a VERTICAL STACK of two parts, 16px apart: (a) the two-column grid and
+            (b) the rubric strip at the full content width (1184px in the 1280 container), under BOTH
+            columns. This <section> is the wrapper that holds them, so §5.2's extra bottom margin stays
+            exactly where it was and the gap it opens is now measured from the strip's bottom edge.
+            THE PHONE IS UNTOUCHED BY THE MOVE: there is no responsive re-ordering here and none is needed —
+            the strip that was the text column's last row is now the section's second child, one flex row
+            down in the very same document order, with the same 16px above it (the section's `gap-4` is the
+            column's own phone `gap-4`). The phone therefore still reads photo (above <main>) → label →
+            title → version line → price block with the region line → the rubrics two by two → the
+            sections, and the fixed bar still holds the button alone. */}
         <section
-          className="mb-[var(--top-extra-phone)] flex flex-col gap-4 md:mb-[var(--top-extra-desktop)] md:grid md:grid-cols-[minmax(0,1fr)_536px] md:items-start md:gap-8"
+          className="mb-[var(--top-extra-phone)] flex flex-col gap-4 md:mb-[var(--top-extra-desktop)]"
           style={topBlockGap}
         >
-          {/* §5.1 — the text column: 12px between its rows (it was 16) and at least as tall as the photo, so
-              the contact button pushed down by `mt-auto` lands on the photo's bottom line. */}
-          <div className="flex flex-col gap-4 md:min-h-[357px] md:gap-3">
-            <div className="md:hidden">
-              <VerdictLine data={data} size="phone" />
-            </div>
-            <div className="hidden md:block">
-              <VerdictLine data={data} size="desktop" />
+          {/* (a) §5.1, §11.3 — grid minmax(0, 1fr) 536px, gap 32px: RTL puts the first column on the RIGHT,
+              so the flexible text column is on the right and the 536px photo column on the left, per the
+              board. `items-stretch` (it was `items-start`, against a dead band under a fixed-height photo)
+              is what now gives the photo the text column's height. */}
+          <div className="md:grid md:grid-cols-[minmax(0,1fr)_536px] md:items-stretch md:gap-8">
+            {/* §5.1 — the text column: 12px between its rows (it was 16) and at least as tall as the photo,
+                so the contact button pushed down by `mt-auto` lands on the photo's bottom line. §11.2 — its
+                rows are now the label, the title group, the price block and the button, and no more. */}
+            <div className="flex flex-col gap-4 md:min-h-[357px] md:gap-3">
+              <div className="md:hidden">
+                <VerdictLine data={data} size="phone" />
+              </div>
+              <div className="hidden md:block">
+                <VerdictLine data={data} size="desktop" />
+              </div>
+
+              {titleGroup}
+
+              <div className="md:hidden">
+                <PriceBlockView data={data} size="phone" />
+              </div>
+              <div className="hidden md:block">
+                <PriceBlockView data={data} size="desktop" />
+              </div>
+
+              {/* §5.1 — the contact button: height 48px, padding 0 32px, radius 8, the page colour, at the
+                  BOTTOM of the text column. The phone does not show it here — the fixed bar holds it. */}
+              <div className="mt-auto hidden md:block">
+                <button type="button" className="h-12 rounded-lg px-8 text-[16px] font-semibold text-white" style={{ background: data.color }}>
+                  {CONTACT}
+                </button>
+              </div>
             </div>
 
-            {titleGroup}
-
-            <div className="md:hidden">
-              <PriceBlockView data={data} size="phone" />
-            </div>
-            <div className="hidden md:block">
-              <PriceBlockView data={data} size="desktop" />
-            </div>
-
-            <Rubrics strip={data.strip} />
-
-            {/* §5.1 — the contact button: height 48px, padding 0 32px, radius 8, the page colour, at the
-                BOTTOM of the text column. The phone does not show it here — the fixed bar holds it. */}
-            <div className="mt-auto hidden md:block">
-              <button type="button" className="h-12 rounded-lg px-8 text-[16px] font-semibold text-white" style={{ background: data.color }}>
-                {CONTACT}
-              </button>
+            {/* §11.3 — the photo FRAME: 536 wide, at least 357 tall, stretched by the grid to the text
+                column's height. The image — or, with no photo, the placeholder box, which takes the same
+                frame — is laid over it edge to edge and cropped by `object-cover`, so it fills whatever
+                height the row ends up with and is never distorted. */}
+            <div className="relative hidden w-[536px] md:block md:min-h-[357px]">
+              <Photo src={data.imageSrc} className="absolute inset-0 h-full w-full rounded-lg" />
             </div>
           </div>
 
-          {/* §5.1 — the photo box: 536×357, radius 8, object-cover. */}
-          <Photo src={data.imageSrc} className="hidden h-[357px] w-[536px] rounded-lg md:block" />
+          {/* (b) §11.2 — the rubric strip, the full content width, under both columns. Nothing inside it
+              changes: it is the same <Rubrics> the text column used to hold, and its own outer wrapper
+              already spans whatever box it is given. */}
+          <Rubrics strip={data.strip} />
         </section>
 
         {/* ------------------------------------------------- למה (between the rubrics and the history) */}
