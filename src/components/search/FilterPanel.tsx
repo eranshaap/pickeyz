@@ -14,21 +14,22 @@
 // digits, no animation. The numbers arrive with the drawer; the last ones stay on screen until the new ones
 // come, and there is no spinner.
 //
-// RUN 8 §2 — THREE CHIP STATES, AND THIS FILE DECIDES NONE OF THEM. Every chip arrives carrying its state
+// RUN 8b §1.1 — THREE CHIP STATES, AND THIS FILE DECIDES NONE OF THEM. Every chip arrives carrying its state
 // and its count from src/lib/search/chip-state.ts; a click is forwarded to toggleChip() and the draft that
 // comes back is handed up. What is drawn:
 //
-//   off, count > 0     today's look and behaviour
-//   off, count 0       a REAL `disabled` button — no handler fires, `cursor: default` — in the board's
-//                      greys (§2.1). The "0" is still shown. This is the ruling that cancels "מונה 0 אינו נועל".
-//   awake              today's chosen look
-//   dormant            option ב of 23/09 (§2.2): the chosen chip's filled-pill silhouette, kept, in grey.
-//                      It STAYS CLICKABLE — a click switches it off; "not selectable" is about switching a 0
-//                      chip ON. Its look sits in ONE named place (DORMANT below) so that a later ruling to
-//                      make it look like a plain 0 chip is a one-line change.
+//   chosen   today's chosen look, whatever the count is
+//   off      today's plain look — count > 0, a click switches it on
+//   off-0    a REAL `disabled` button — no handler fires, `cursor: default` — in the board's greys
+//            (UNSELECTABLE below). The "0" is still shown.
 //
-// The "עדכן · N" button is `disabled` while isUnchanged() is true (§2.3) — the SAME predicate the screen's
-// "apply with no change = cancel" runs on.
+// RUN 8's "DORMANT" CHIP IS CANCELLED (§1.1, ruled 24/09), and with it the greyed pill of option ב and the
+// DORMANT style object that held it: a chosen chip an edit takes to 0 simply LEAVES the selection and is
+// drawn as any other 0 chip. That release is the library's, not this file's — it comes back inside the draft
+// that toggleChip() and the price settle return.
+//
+// The "עדכן · N" button is `disabled` while isUnchanged() is true — the SAME predicate the screen's "apply
+// with no change = cancel" runs on.
 //
 // THE PRICE SETTLES, AND THERE IS NO TIMER (§7). EDITING = a price field has focus and its text differs from
 // its last settled value; while editing the button is HELD at "עדכן · —" (§0.3) and no counter call is made.
@@ -37,11 +38,11 @@
 // numbers meanwhile (§0.8), and the price block has no number of its own (§12).
 //
 // NO FILTER LOGIC IS HERE. This component produces a SearchFilters and nothing else; what one means is
-// src/lib/search/filters.ts's business, on the server, for the search and the counters alike.
+// src/lib/search/filters.ts's business, for the search and the counters alike.
 
 import { useEffect, useMemo, useState } from "react";
-import { isUnchanged, toggleChip, type ChipState, type ChipView, type ResolvedDrawer } from "@/lib/search/chip-state";
-import { sameFilters, type SearchFilters } from "@/lib/search/filters";
+import { isUnchanged, release, toggleChip, type ChipState, type ChipView, type ResolvedDrawer } from "@/lib/search/chip-state";
+import { sameFilters, type Filterable, type SearchFilters } from "@/lib/search/filters";
 import type { FilterName } from "@/app/actions/search";
 import { FILTER_LABEL, num } from "./labels";
 
@@ -97,17 +98,7 @@ function withPrice(f: SearchFilters, t: PriceText): SearchFilters {
 // comparison in the app — this file, the screen's dim test, isUnchanged() — now runs through that one copy.
 const same = sameFilters;
 
-/**
- * §2.2 — THE DORMANT LOOK, IN EXACTLY ONE NAMED PLACE. Option ב of the canvas board ״צ'יפ רדום — המראה״,
- * ruled 23/09: the chosen chip's filled-pill silhouette kept, in grey. A later ruling to make a dormant chip
- * look like a plain 0 chip is a change to this one object and nothing else.
- */
-const DORMANT: { pill: React.CSSProperties; count: React.CSSProperties } = {
-  pill: { background: "#d8d3cb", border: "1px solid #d8d3cb", color: "#665f58" },
-  count: { color: "#665f58" },
-};
-
-/** §2.1 — an off chip with count 0: the board's greys, on a real disabled button. */
+/** §1.1 — an off chip with count 0 (off-0): the board's greys, on a real disabled button. */
 const UNSELECTABLE: { pill: React.CSSProperties; count: React.CSSProperties } = {
   pill: { background: "#f4f2ee", border: "1px solid #e4e0d9", color: "#a39d95", cursor: "default" },
   count: { color: "#a39d95" },
@@ -118,29 +109,24 @@ const BUTTON_DISABLED: React.CSSProperties = { background: "#d8d3cb", color: "#6
 
 // §0.10 — one template for every chip. Two lines, centred; the width comes from the label and the min-width
 // is a safety net for a long count, not the normal case; every chip carries the count line so the heights
-// match whatever the numbers are. The count is never absent now: the drawer arrives resolved (§3.1), so
+// match whatever the numbers are. The count is never absent: the drawer is resolved in render (§2.2), so
 // there is no render in which a chip exists without its number.
 //
-// §2.1/§2.2 — THE THREE STATES, drawn and not decided. `awake` keeps today's chosen look and a selectable
-// `off` keeps today's plain one, both as the Tailwind classes they always were; the two new states are the
-// two named style objects above. An off chip with count 0 is a REAL disabled button — its handler cannot
-// fire at all, which is what "אינו ניתן לבחירה" means — while a dormant chip stays clickable, because
-// "not selectable" is about switching a 0 chip ON.
-function Chip({ state, count, selectable, onClick, children }: { state: ChipState; count: number; selectable: boolean; onClick: () => void; children: React.ReactNode }) {
-  const disabled = state === "off" && !selectable;
+// §1.1 — THE THREE STATES, drawn and not decided. `chosen` keeps today's chosen look and `off` keeps today's
+// plain one, both as the Tailwind classes they always were; `off-0` is the one named style object above, on a
+// REAL disabled button — its handler cannot fire at all, which is what "אינו ניתן לבחירה" means.
+function Chip({ state, count, onClick, children }: { state: ChipState; count: number; onClick: () => void; children: React.ReactNode }) {
   const look =
-    state === "dormant"
-      ? { style: DORMANT.pill, className: "", countStyle: DORMANT.count, countClass: "" }
-      : disabled
-        ? { style: UNSELECTABLE.pill, className: "", countStyle: UNSELECTABLE.count, countClass: "" }
-        : state === "awake"
-          ? { style: undefined, className: "border-neutral-900 bg-neutral-900 text-white", countStyle: undefined, countClass: "text-neutral-300" }
-          : { style: undefined, className: "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-400", countStyle: undefined, countClass: "text-neutral-400" };
+    state === "off-0"
+      ? { style: UNSELECTABLE.pill, className: "", countStyle: UNSELECTABLE.count, countClass: "" }
+      : state === "chosen"
+        ? { style: undefined, className: "border-neutral-900 bg-neutral-900 text-white", countStyle: undefined, countClass: "text-neutral-300" }
+        : { style: undefined, className: "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-400", countStyle: undefined, countClass: "text-neutral-400" };
   return (
     <button
       type="button"
-      aria-pressed={state !== "off"}
-      disabled={disabled}
+      aria-pressed={state === "chosen"}
+      disabled={state === "off-0"}
       onClick={onClick}
       style={look.style}
       className={`flex min-w-[4.5rem] flex-col items-center justify-center rounded-2xl border px-3 py-1.5 text-sm leading-tight ${look.className}`}
@@ -175,6 +161,7 @@ export function Spinner({ className = "" }: { className?: string }) {
 }
 
 export default function FilterPanel({
+  pool,
   resolved,
   draft,
   poolNow,
@@ -187,8 +174,14 @@ export default function FilterPanel({
   busy = false,
 }: {
   /**
-   * §1.2 — every chip with its state and its count, as the library resolved them. Nothing here recomputes,
-   * and the shelf is not a prop of its own any more: which chips exist is already in these three lists.
+   * §1.2 — the active model's filter rows, as the page carried them in. They are here for ONE reason: the
+   * release at 0 is part of what the library returns from an edit, and the library counts over these rows.
+   * Nothing in this file reads a row.
+   */
+  pool: Filterable[];
+  /**
+   * §1.1 — every chip with its state and its count, as the library resolved them. Nothing here recomputes,
+   * and the shelf is not a prop of its own: which chips exist is already in these three lists.
    */
   resolved: ResolvedDrawer;
   draft: SearchFilters; // the committed draft: the price in it is the SETTLED price
@@ -242,9 +235,14 @@ export default function FilterPanel({
 
   // §7 — SETTLE. Blur covers the phone keyboard's done key, a tap on a chip, and a tap on "עדכן" alike;
   // Enter settles by blurring, so there is one path and not two.
+  //
+  // §1.2 — A SETTLED PRICE IS AN EDIT, so what is committed is the draft AFTER the release: any chosen chip
+  // the new price takes to 0 leaves the selection here, in the library, and this file commits what it gets.
+  // A price DELETED settles the same way, and releases nothing that is not at 0 — a chip released earlier
+  // does not come back.
   function settle() {
     setFocused(null);
-    commit(current);
+    commit(release(pool, current));
   }
 
   // §5 — opened on a rubric, the drawer arrives already at that filter.
@@ -253,11 +251,12 @@ export default function FilterPanel({
     document.getElementById(`filter-${focus}`)?.scrollIntoView({ block: "start", behavior: "auto" });
   }, [focus]);
 
-  // §2.4 — every click goes through toggleChip(); this file forwards the draft it gets back and no more.
-  // `current` is the draft AS IT READS ON SCREEN, so a chip tapped while a price is half-typed keeps it.
-  const toggle = (chip: ChipView) => commit(toggleChip(current, resolved, { group: chip.group, value: chip.value }));
+  // §1.2 — every click goes through toggleChip(), which returns the draft AFTER the release; this file
+  // forwards what it gets back and no more. `current` is the draft AS IT READS ON SCREEN, so a chip tapped
+  // while a price is half-typed keeps it — and settles it, which is why the release runs on the pair.
+  const toggle = (chip: ChipView) => commit(toggleChip(pool, current, resolved, { group: chip.group, value: chip.value }));
 
-  /** §2.3 — the button is greyed while the chosen set plus the typed values is the stored question's. */
+  /** §1.4 — the button is greyed while the chosen set plus the typed values is the stored question's. */
   const unchanged = stored !== null && isUnchanged(current, stored);
 
   const priceField = (field: PriceField, label: string, big: boolean) => (
@@ -315,7 +314,7 @@ export default function FilterPanel({
           <h3 className="font-medium text-neutral-900">{FILTER_LABEL.years}</h3>
           <div className="mt-3 flex flex-wrap gap-2">
             {resolved.years.map((chip) => (
-              <Chip key={chip.value} state={chip.state} count={chip.count} selectable={chip.selectable} onClick={() => toggle(chip)}>
+              <Chip key={chip.value} state={chip.state} count={chip.count} onClick={() => toggle(chip)}>
                 {chip.value}
               </Chip>
             ))}
@@ -328,7 +327,7 @@ export default function FilterPanel({
             <h3 className="font-medium text-neutral-900">{FILTER_LABEL.kmMax}</h3>
             <div className="mt-3 flex flex-wrap gap-2">
               {resolved.km.map((chip) => (
-                <Chip key={chip.value} state={chip.state} count={chip.count} selectable={chip.selectable} onClick={() => toggle(chip)}>
+                <Chip key={chip.value} state={chip.state} count={chip.count} onClick={() => toggle(chip)}>
                   {KM_CHIP_PREFIX} {num(chip.value)}
                 </Chip>
               ))}
@@ -342,7 +341,7 @@ export default function FilterPanel({
             <h3 className="font-medium text-neutral-900">{FILTER_LABEL.regions}</h3>
             <div className="mt-3 flex flex-wrap gap-2">
               {resolved.regions.map((chip) => (
-                <Chip key={chip.value} state={chip.state} count={chip.count} selectable={chip.selectable} onClick={() => toggle(chip)}>
+                <Chip key={chip.value} state={chip.state} count={chip.count} onClick={() => toggle(chip)}>
                   {chip.value}
                 </Chip>
               ))}

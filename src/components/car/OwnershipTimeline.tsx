@@ -80,9 +80,43 @@ export default function OwnershipTimeline({
   const scaleRef = useRef<HTMLDivElement>(null);
   const [scaleWidth, setScaleWidth] = useState(0);
 
-  // §4.3 — the explanation popover, opened from the 0-km phrase in the first hand's label. Its mechanics are
-  // the ones the <details> gave: the control toggles it, and nothing else closes it.
+  // §4.3 — the explanation popover, opened from the 0-km phrase in the first hand's label.
   const [zeroKmOpen, setZeroKmOpen] = useState(false);
+
+  // Run 8b §4 — AND IT CLOSES (D1, ruled 24/09 "כן ברור שחייב"). Until now the phrase was the only thing that
+  // closed it, so it sat there while the reader went on with the page. Now, WHILE IT IS OPEN:
+  //   (a) a click or tap anywhere outside both the explanation and the phrase closes it. The listener is on
+  //       `pointerdown`, not `click`, so the phone's tap counts — and so does a drag that starts outside.
+  //   (b) Esc closes it and returns focus to the phrase, which is where the reader opened it from.
+  // A click INSIDE the explanation does not close it (the text is selectable). A click on the phrase falls
+  // through to the button's own onClick, which toggles it shut — pointerdown must not close it first, or the
+  // toggle would re-open it, which is what the phrase test below is for.
+  //
+  // The listeners exist ONLY while it is open and are removed on close. The refs and the state are this
+  // COPY's own — the card renders the axis twice (phone and desktop) — so each copy handles only its own
+  // popover and can neither close nor reopen the other's.
+  const phraseRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (!zeroKmOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      if (phraseRef.current?.contains(target) === true || popoverRef.current?.contains(target) === true) return;
+      setZeroKmOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setZeroKmOpen(false);
+      phraseRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [zeroKmOpen]);
 
   // useEffect, not useLayoutEffect: this component is server-rendered too, and useLayoutEffect does nothing
   // there but warn. The server HTML has already painted its two end labels by then, so measuring one paint
@@ -226,6 +260,7 @@ export default function OwnershipTimeline({
                           The rest of the label carries none. Click / Enter / Space all open it, which is what
                           a button gives and a <summary> did not, and `aria-expanded` says which way it is. */}
                       <button
+                        ref={phraseRef}
                         type="button"
                         aria-expanded={zeroKmOpen}
                         onClick={() => setZeroKmOpen((open) => !open)}
@@ -241,9 +276,11 @@ export default function OwnershipTimeline({
                       >
                         {head.phrase}
                       </button>
-                      {/* the explanation, unchanged in text and in look — only its anchor moved (§4.3) */}
+                      {/* the explanation, unchanged in text, place and look — Run 8b §4 only adds the two
+                          ways it closes, and they are listeners, not markup */}
                       {zeroKmOpen && zeroKmExplanation !== null && (
                         <p
+                          ref={popoverRef}
                           className="absolute z-10 mt-1 w-64 rounded-lg border border-[#d8d3cb] bg-white p-3 text-[13px] font-normal shadow-lg"
                           style={{ color: DARK, top: "100%", insetInlineStart: 0 }}
                         >

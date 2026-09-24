@@ -2,15 +2,17 @@
 
 // The screen's server actions (BRIEF Days 15–16, Run 2b §6). Three of them, and nothing else crosses the wire.
 //
-//   ask()         one question -> one `searches` row (+ its `search_results` rows) -> the three raw picks
-//   drawer()      Run 8 §3.3 — THE RESOLVE CALL: one draft in, the whole drawer out (every chip's state and
-//                 count, the effective filters, the button's number). It replaces counts(), which returned
-//                 numbers alone, and it absorbs shelf(), which is gone: the shelf comes back with the chips
-//                 it belongs to, in the same round trip. One call per settled edit, as the counts call was.
-//   liveModels()  the model bar's list; called on the SERVER in page.tsx, and available to the client for a retry
+//   ask()             one question -> one `searches` row (+ its `search_results` rows) -> the three raw picks
+//   modelFilterRows() Run 8b §2.3 — THE MODEL-ROWS CALL, and the drawer's only call left: one model in, its
+//                     live filter rows and km anchors out. It replaces Run 8's drawer(), which took a draft
+//                     and returned a resolved drawer — one round trip per settled edit, which is exactly the
+//                     delay Run 8b removes. Called ONLY when the active model changes to a model whose rows
+//                     are not already in hand; the browser resolves every chip itself, from these rows.
+//   liveModels()      the model bar's list; called on the SERVER in page.tsx, and available to the client for a retry
 //
-// Run 8 §3.2 — THE RESULTS SCREEN NEVER CALLS drawer() ON MOUNT: the page's own request carries the drawer
-// (load.ts, §3.1). This action answers the edits that follow, and the opening screen's first model pick.
+// Run 8b §2.3 — THE RESULTS SCREEN NEVER CALLS IT AT ALL: the page's own request carries the rows (load.ts,
+// §2.1), and a chip click or a price edit is resolved in the browser. The opening screen's first model pick
+// is what this action is for.
 //
 // NO FILTER LOGIC LIVES HERE. src/lib/search/filters.ts is the single source (§0.8): these actions pass a
 // SearchFilters through and never decide what it means. Nor is anything re-scored or re-ranked — every verdict
@@ -25,10 +27,9 @@
 // one plain line under the bar.
 
 import { db } from "@/lib/db";
-import { draftFromQuestion, resolveDrawer } from "@/lib/search/chip-state";
-import { drawerInput, filterCounts } from "@/lib/search/counts";
+import type { ModelRows } from "@/lib/search/chip-state";
+import { filterCounts, modelRows } from "@/lib/search/counts";
 import { activeFilterNames, type SearchFilters } from "@/lib/search/filters";
-import type { DrawerPayload } from "@/lib/search/load";
 import { liveModels as loadLiveModels, type LiveModel } from "@/lib/search/models";
 import { runSearch } from "@/lib/search/run";
 import { searchIdentity } from "@/lib/search/visitor";
@@ -160,16 +161,15 @@ export async function reliefFor(model: string, filters: SearchFilters): Promise<
 }
 
 /**
- * Run 8 §3.3 — THE RESOLVE CALL. The draft goes out, the whole drawer comes back: every chip with its state
- * and its count, the effective filters, `total` and `emptyCombination`. One round trip per settled edit, as
- * the counts call was; the browser never computes a state itself.
+ * Run 8b §2.3 — THE MODEL-ROWS CALL. One model goes out, its live filter rows and km anchors come back; the
+ * browser holds them for the page's life and resolves every chip and every number from them, in render, with
+ * no further call. NO DRAFT CROSSES THE WIRE and nothing about a chip is decided here.
  *
- * It calls the same drawerInput() + resolveDrawer() pair the page calls (load.ts §3.1), so the drawer on
- * arrival and the drawer after an edit come out of one piece of code.
+ * It is the same modelRows() the results page calls (load.ts §2.1), so the rows a model change brings in and
+ * the rows an arrival brings in come out of one piece of code.
  */
-export async function drawer(input: { model: string; draft?: SearchFilters }): Promise<DrawerPayload> {
-  const { pool, shelf } = await drawerInput(input.model);
-  return { shelf, resolved: resolveDrawer(pool, shelf, draftFromQuestion(input.draft ?? {})) };
+export async function modelFilterRows(input: { model: string }): Promise<ModelRows> {
+  return modelRows(input.model);
 }
 
 /** §5 — the model bar's list: LIVE models only, never the catalog. */

@@ -37,29 +37,33 @@
 // A COLD ARRIVAL (a link, a refresh) GETS NO PLACEHOLDER: the browser's own loading indication, as before
 // Run 7. That is the ruled behaviour, not a gap.
 //
-// THE DRAWER ARRIVES WITH THE PAGE (Run 8 §3). Until now the shelf and the counters were fetched from the
-// browser after mount, so the drawer was blank until the shelf returned and then numberless until the counts
-// returned — on EVERY arrival, "עדכן" included, because the route keys this component by the question's
-// public_id. Now the results page resolves the whole drawer server-side and hands it over as `drawer`: this
-// screen SEEDS ITS STATE FROM THE PROPS AND FETCHES NOTHING ON MOUNT. The frame stays and the counters switch
-// in one step with the cards; a link or a refresh shows the drawer full from the first paint.
+// THE DRAWER ARRIVES WITH THE PAGE AND IS RESOLVED WHERE THIS COMPONENT RENDERS (Run 8b §2). Run 8 had the
+// page hand over a RESOLVED drawer and every edit ask the server for the next one, so each chip click waited
+// for a round trip before anything moved — "an unbearable delay that wasn't there before". Now the page
+// carries the model's FILTER ROWS (`modelRows`) and this component resolves the drawer from them with the
+// same pure library: on the server for the first paint, in the browser for every edit after it, memoised on
+// its inputs. A chip click and a price edit make NO SERVER CALL at all.
 //
-// AND IT DECIDES NOTHING (§1). Every chip's state, every count, the effective filters and the button's number
-// come from src/lib/search/chip-state.ts — on the server in the page and in the resolve action alike. This
-// file forwards a click to toggleChip() and renders what comes back.
+// THE ONE CALL LEFT (§2.3) is the model's rows, and only when the active model changes to a model whose rows
+// are not in hand — the opening screen's first pick, in practice, since a model chosen on the results screen
+// is a new question and arrives with its own page. Every model's rows are then held for the page's life, so
+// switching back to one asks nothing.
+//
+// AND IT DECIDES NOTHING (§1). Every chip's state, every count, the shelf, the release at 0 and the button's
+// number come from src/lib/search/chip-state.ts. This file hands the rows and the draft to resolveDrawer(),
+// forwards a click to toggleChip(), and commits exactly what the library returns.
 //
 // MOBILE FIRST. Desktop is the widening: the drawer becomes a panel that never closes (and therefore has no
 // history entry of its own). `dir="rtl"` is set in layout.tsx, so every inset here is logical.
 
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { applyFilters as effectiveFilters, isUnchanged } from "@/lib/search/chip-state";
-import { noFilters, normalizeFilters, sameFilters } from "@/lib/search/filters";
+import { applyFilters as sentFilters, draftFromQuestion, isUnchanged, release, resolveDrawer, shelfOf, type ModelRows } from "@/lib/search/chip-state";
+import { noFilters, sameFilters } from "@/lib/search/filters";
 import type { SearchFilters } from "@/lib/search/filters";
-import type { DrawerPayload } from "@/lib/search/load";
 import type { LiveModel } from "@/lib/search/models";
-import { ask, drawer as loadDrawer, type AskResult, type FilterName } from "@/app/actions/search";
+import { ask, modelFilterRows, type AskResult, type FilterName } from "@/app/actions/search";
 import { BRAND } from "@/lib/brand";
 import FilterPanel, { Spinner } from "./FilterPanel";
 import ModelBar from "./ModelBar";
@@ -77,9 +81,6 @@ const FAILED = "משהו נפל בדרך. נסו שוב.";
 const same = sameFilters;
 const isEmpty = noFilters;
 
-/** Which (model, draft) pair a held drawer answers. Two equal questions produce one key (§1.3's canon). */
-const drawerKey = (model: string, draft: SearchFilters): string => JSON.stringify([model, normalizeFilters(draft)]);
-
 // §8 — the desktop panel never closes, so it never gets a history entry. Everything else that opens does.
 const isDesktop = (): boolean => typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
 
@@ -91,16 +92,17 @@ type Asked = { model: AskedModel; filters: SearchFilters };
 export default function SearchScreen({
   models,
   initial = null,
-  drawer = null,
+  modelRows = null,
 }: {
   models: LiveModel[];
   /** The stored run of `/?s=<public_id>`, rendered on the server. null = the opening screen. */
   initial?: AskResult | null;
   /**
-   * Run 8 §3.1 — the drawer of that question, resolved in the page's own request. Present on every `/?s=`
-   * arrival and null on the opening screen, which has no question and therefore no drawer to seed.
+   * Run 8b §2.1 — the asked question's model's live filter rows and km anchors, fetched in the page's own
+   * request. Present on every `/?s=` arrival and null on the opening screen, which has no question and
+   * therefore no model until one is picked.
    */
-  drawer?: DrawerPayload | null;
+  modelRows?: ModelRows | null;
 }) {
   const router = useRouter();
 
@@ -115,12 +117,15 @@ export default function SearchScreen({
         })();
 
   const [chosen, setChosen] = useState<LiveModel | null>(initial === null ? null : (models.find((m) => m.key === initial.question.model_key) ?? null));
-  const [draft, setDraft] = useState<SearchFilters>(initial?.question.filters ?? {});
+  // §1.3 — the drawer opens on the stored question AS IT IS: draftFromQuestion() is the library's one way in,
+  // and it releases nothing — a stored chip that is 0 now is drawn chosen, and the button stays greyed.
+  const [draft, setDraft] = useState<SearchFilters>(initial === null ? {} : draftFromQuestion(initial.question.filters));
   const [asked, setAsked] = useState<Asked | null>(askedModel === null || initial === null ? null : { model: askedModel, filters: initial.question.filters });
   const [answer, setAnswer] = useState<AskResult | null>(initial);
-  // §3.1 — SEEDED FROM THE PROPS. On a `/?s=` arrival this is already the whole drawer, so the first render
-  // draws it complete; on the opening screen it is null until a model is chosen.
-  const [resolved, setResolved] = useState<DrawerPayload | null>(drawer);
+  // §2.1 — SEEDED FROM THE PROPS: the active model's rows, which is everything the drawer is resolved from.
+  // On a `/?s=` arrival they are already here, so the first render draws the drawer complete; on the opening
+  // screen they are null until a model is chosen.
+  const [rows, setRows] = useState<ModelRows | null>(modelRows);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingModel, setEditingModel] = useState(false); // §6 — the question row's search bar is open
   const [focus, setFocus] = useState<FilterName | null>(null);
@@ -136,17 +141,12 @@ export default function SearchScreen({
   const [navPending, startNav] = useTransition();
   const pending = submitting || navPending;
 
-  // Every resolve call is answered out of order sooner or later; only the latest one may land. The last
-  // drawer stays on screen until then, which is what §5 asks for instead of a spinner.
-  const countsSeq = useRef(0);
+  // §2.3 — two model-rows calls can be in flight if the model is switched twice; only the latest may land.
+  const rowsSeq = useRef(0);
 
-  // §3.1 — the drawer in hand and WHICH (model, draft) it answers. It starts as the page's own payload, so
-  // the effect below has nothing to ask for on mount; every landed answer moves it on. A draft that comes
-  // back to a pair already answered (a cancel, a chip toggled twice) asks nothing again. It is a ref as well
-  // as state because "עדכן" must read the LATEST one from inside an async handler, not the render's copy.
-  const held = useRef<{ key: string; payload: DrawerPayload } | null>(
-    drawer === null || initial === null ? null : { key: drawerKey(initial.question.model, initial.question.filters), payload: drawer },
-  );
+  // §2.3 — EVERY MODEL'S ROWS, HELD FOR THE PAGE'S LIFE: a second switch to a model already in hand does not
+  // call again. Seeded with the page's own payload, so a `/?s=` arrival starts with nothing to ask for.
+  const rowsByKey = useRef<Map<string, ModelRows>>(new Map(modelRows === null ? [] : [[modelRows.model_key, modelRows]]));
 
   const fail = useCallback((e: unknown) => {
     console.error("[search screen]", e);
@@ -159,35 +159,54 @@ export default function SearchScreen({
   const history = useScreenHistory({ onCancelOverlay: () => revertDraft() });
 
   // The model whose drawer is in force: the asked question's, or the one being chosen on the opening screen.
+  // The key travels with it because the rows are held by key and `modelKey()` cannot be imported here (it
+  // sits beside a Prisma client).
   const activeModel = asked?.model.model ?? chosen?.model ?? null;
+  const activeKey = asked?.model.key ?? chosen?.key ?? null;
 
-  // Choosing a model (or un-choosing it by typing over the name) resets everything that is per model.
+  // Choosing a model (or un-choosing it by typing over the name) resets everything that is per model. Rows
+  // already in hand are put back at once — that model's drawer needs no call and shows no wait (§2.3).
   function chooseModel(m: LiveModel | null) {
     setChosen(m);
-    setResolved(null);
-    held.current = null;
     setDraft({});
+    setRows(m === null ? null : (rowsByKey.current.get(m.key) ?? null));
   }
 
-  // §2.4 / §3.3 — every settled edit sends the DRAFT to the server and takes back the resolved drawer: the
-  // chips' states, their counts, the effective filters and the button's number. No state is derived here.
+  // §2.3 — THE DRAWER'S ONE SERVER CALL: the active model's rows, and only when they are not in hand. There
+  // is nothing here for a chip click or a price edit — those are resolved in render, in the browser — and
+  // nothing to ask for on mount of a results screen, whose rows arrive with the page.
   //
-  // §3.2 — and this effect ASKS FOR NOTHING ON MOUNT of a results screen: the page's payload already answers
-  // the (model, draft) it opens with, so `held` matches on the first pass and the effect returns. The shelf
-  // has no call of its own any more — it comes back with the chips, in this one round trip.
+  // While a new model's rows are on their way the drawer shows what it showed during Run 8's call: `rows` is
+  // null, so no panel is rendered at all until they land, and then it is complete (§2.3 / §0.4 d).
   useEffect(() => {
-    if (activeModel === null) return;
-    const key = drawerKey(activeModel, draft);
-    if (held.current?.key === key) return;
-    const seq = ++countsSeq.current;
-    loadDrawer({ model: activeModel, draft: isEmpty(draft) ? undefined : draft })
-      .then((d) => {
-        if (seq !== countsSeq.current) return; // latest wins; a stale answer is dropped
-        held.current = { key, payload: d };
-        setResolved(d);
+    if (activeModel === null || activeKey === null) return;
+    if (rows?.model_key === activeKey) return;
+    const inHand = rowsByKey.current.get(activeKey);
+    if (inHand !== undefined) {
+      setRows(inHand);
+      return;
+    }
+    const seq = ++rowsSeq.current;
+    modelFilterRows({ model: activeModel })
+      .then((r) => {
+        rowsByKey.current.set(r.model_key, r); // held for the page's life, whether or not it is still wanted
+        if (seq !== rowsSeq.current) return; // latest wins; a stale answer is dropped
+        setRows(r);
+        // §1.2 — A CHANGE OF THE ACTIVE MODEL IS AN EDIT: the library returns the draft after the release,
+        // and this commits exactly that. It returns the same object when nothing is released.
+        setDraft((d) => release(r.rows, d));
       })
       .catch(fail);
-  }, [activeModel, draft, fail]);
+  }, [activeModel, activeKey, rows, fail]);
+
+  // §3 — THE SHELF: the options with stock in the rows plus the ON-SCREEN question's own values, so a stored
+  // value never vanishes from the drawer. Built by the same pure library, from the rows in hand.
+  const shelf = useMemo(() => (rows === null ? null : shelfOf(rows, asked?.filters ?? null)), [rows, asked]);
+
+  // §2.2 — THE RESOLVE, WHERE THE COMPONENT RENDERS: on the server for the first paint and in the browser
+  // for every edit after it, one pure function, memoised on its inputs. This is what makes a chip click
+  // instant — it changes the draft, and the next render has the whole drawer.
+  const resolved = useMemo(() => (rows === null || shelf === null ? null : resolveDrawer(rows.rows, shelf, draft)), [rows, shelf, draft]);
 
   /**
    * §11.3 — the push, and the only one this screen makes. It runs inside a transition, so React holds the
@@ -229,43 +248,28 @@ export default function SearchScreen({
   }
 
   /**
-   * §2.5 — the effective filters of a draft, which is what "עדכן" sends: never a dormant chip.
+   * Run 7 §1.3 — "עדכן" WITH NO CHANGE IS A CANCEL, on this screen as on the car page. Run 8b §1.4 keeps
+   * isUnchanged() as the ONE predicate behind that test and the greyed button: the chosen set plus the typed
+   * values against the question the shown picks answer. The model cannot change from this sheet, so it is
+   * unchanged by construction. On a match nothing is asked: no ask() call, no new `searches` row, no
+   * navigation, and no re-render of the results — it goes down exactly the path the X and the backdrop go
+   * down. The button is already `disabled` in that state; this is the belt behind those braces.
    *
-   * The drawer in hand answers the draft in every case but one — a price settled by the very click that
-   * pressed the button, whose resolve is still in flight — and there it is resolved first. The screen never
-   * works out an effective filter itself; it asks the same action the drawer asks.
-   */
-  async function effectiveOf(model: string, next: SearchFilters): Promise<SearchFilters> {
-    const key = drawerKey(model, next);
-    const payload = held.current?.key === key ? held.current.payload : await loadDrawer({ model, draft: isEmpty(next) ? undefined : next });
-    return effectiveFilters(payload.resolved);
-  }
-
-  /**
-   * Run 7 §1.3 — "עדכן" WITH NO EFFECTIVE CHANGE IS A CANCEL, on this screen as on the car page. Run 8 §1.3
-   * gives that test and the greyed button ONE predicate: isUnchanged() compares the CHOSEN SET — awake and
-   * dormant together — plus the typed values against the question the shown picks answer. The model cannot
-   * change from this sheet, so it is unchanged by construction. On a match nothing is asked: no ask() call,
-   * no new `searches` row, no navigation, and no re-render of the results — it goes down exactly the path
-   * the X and the backdrop go down. The button is already `disabled` in that state (§2.3); this is the belt
-   * behind that braces.
+   * §2.3 — the one case Run 8 needed a round trip for is now local: a price settled by the very click that
+   * pressed the button arrives here unreleased, and `release` over the rows in hand answers it synchronously.
+   * There is no call, so there is no race to handle.
    */
   function applyFilters(next: SearchFilters) {
     if (asked !== null && isUnchanged(next, asked.filters)) return closeDrawer();
-    if (activeModel === null) return;
-    setSubmitting(true); // §11.3 — the busy state starts on the click, before anything is awaited
-    effectiveOf(activeModel, next)
-      .then((effective) => doAsk(effective))
-      .catch((e) => {
-        fail(e);
-        setSubmitting(false);
-      });
+    if (activeModel === null || rows === null) return;
+    void doAsk(sentFilters(release(rows.rows, next)), activeModel);
   }
 
   // Closing the drawer without "עדכן" is a CANCEL (§5): the draft goes back to the asked question and the
   // results are live again. No diff state survives a close.
   function revertDraft() {
-    setDraft(asked?.filters ?? {});
+    // §1.3 — a cancel is not an edit: the stored question comes back as it is, through the same one way in.
+    setDraft(asked === null ? {} : draftFromQuestion(asked.filters));
     setResetToken((n) => n + 1);
     setDrawerOpen(false);
     setFocus(null);
@@ -284,15 +288,16 @@ export default function SearchScreen({
   }
 
   const dim = answered && (editingModel || !same(draft, asked.filters));
-  // §1.2 — the button's number is the pool under the EFFECTIVE filters. Before the first resolve of the
+  // §1.4 — the button's number is the pool under the draft as it stands. Before a model is chosen on the
   // opening screen there is none, and the button carries no number at all, exactly as it did before.
-  const poolNow = resolved?.resolved.total ?? answer?.pool_count ?? null;
+  const poolNow = resolved?.total ?? answer?.pool_count ?? null;
 
   const panel =
-    resolved === null ? null : (
+    resolved === null || rows === null ? null : (
       <FilterPanel
-        key={`${resolved.shelf.model_key}-${resetToken}`}
-        resolved={resolved.resolved}
+        key={`${rows.model_key}-${resetToken}`}
+        pool={rows.rows}
+        resolved={resolved}
         draft={draft}
         poolNow={poolNow}
         stored={asked?.filters ?? null}

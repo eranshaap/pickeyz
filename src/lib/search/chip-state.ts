@@ -1,32 +1,40 @@
-// The drawer's rules (BRIEF Run 8 §1) — PURE, and the only place a chip's state is decided.
+// The drawer's rules (BRIEF Run 8b §1, §2.4, §3) — PURE, and the only place a chip's state is decided.
 //
-// FilterPanel.tsx and SearchScreen.tsx render and forward; they decide nothing. The page (§3.1) and the
-// resolve action (§3.3) both call resolveDrawer(), so the drawer on arrival and the drawer after an edit are
-// computed by ONE piece of code and cannot disagree.
+// WHERE IT RUNS (§2.2). This module is imported by the results page AND by the browser: resolveDrawer() runs
+// where the component renders — on the server for the first paint, in the browser for every edit after it —
+// so a chip click and a price edit make NO server call. Run 8 resolved the drawer in an action and the
+// component rendered only the server's answer, which put a network round trip in front of every click; that
+// is what Run 8b takes out. The one call left is the model's rows (§2.3), and it is not this module's
+// business: this module is given rows and answers questions about them.
 //
 // THE VOCABULARY (§1.1). A CHIP belongs to one of the three chip groups — years (multi-select), km ceiling
 // (single-select), region (multi-select). The TYPED VALUES are the two price fields. The DRAFT is what the
 // user has chosen: the set of chosen chips plus the typed values, carried in the canonical SearchFilters of
 // filters.ts — there is no parallel filters shape, and a chip remembers only that it was chosen: no order,
-// no history. A chip is in one of three states:
+// no history. A chip is in one of THREE states, and there is no fourth:
 //
-//   off       not chosen. Clickable (switches on) ONLY if its count is > 0; with count 0 it is NOT
-//             SELECTABLE (findCar-now.md: "צ'יפ עם מונה 0 אינו ניתן לבחירה" — this cancels "מונה 0 אינו נועל").
-//   awake     chosen, count > 0. Counted in the filters and in "עדכן · N".
-//   dormant   chosen, count 0. Drawn greyed (§2.2), NOT in the filters and NOT in "עדכן · N", and it wakes
-//             by itself the moment its count returns above 0 — whichever filter was released.
+//   chosen    in the draft. Counted in the filters and in "עדכן · N", whatever its count is.
+//   off       not in the draft, count > 0. Clickable — it switches on.
+//   off-0     not in the draft, count 0. A real `disabled` button; the "0" is still shown.
+//
+// RUN 8's "DORMANT" CHIP IS CANCELLED (§1.2, ruled 24/09 and confirmed as restated). A chosen chip that an
+// edit takes to 0 does not go grey and does not wait to be woken: it simply LEAVES THE SELECTION and becomes
+// an ordinary off / off-0 chip. It never comes back by itself — deleting the price that emptied it leaves it
+// off, with its number back, for the user to click if they want it again. There is no memory of any kind, and
+// therefore no state, no look and no waking rule to carry.
 //
 // A CHIP'S COUNT keeps today's definition exactly (counts.ts §0.11): listings in that option within the
-// OTHER groups' effective filters, its own group ignored — so touching a chip inside a group never moves
-// that group's numbers. "Effective filters" = the awake chips + the typed values; a dormant chip is not in
-// them. The counting predicate is the search's own (filters.ts), here as everywhere else.
+// OTHER groups' chosen chips and the typed values, its own group ignored — so touching a chip inside a group
+// never moves that group's numbers. The counting predicate is the search's own (filters.ts), here as
+// everywhere else.
 
 import { countPassing, normalizeFilters, sameFilters, type Filterable, type SearchFilters } from "./filters";
 
 /** The three chip groups. The name is the SearchFilters key the group writes, so nothing translates. */
 export type ChipGroup = "years" | "kmMax" | "regions";
 
-export type ChipState = "off" | "awake" | "dormant";
+/** §1.1 — three states, and no fourth. `off-0` is the one that cannot be clicked on. */
+export type ChipState = "chosen" | "off" | "off-0";
 
 /** A chip as the drawer draws it. `value` is the year, the km ceiling or the region name. */
 export type ChipView<V extends number | string = number | string> = {
@@ -34,28 +42,41 @@ export type ChipView<V extends number | string = number | string> = {
   value: V;
   state: ChipState;
   count: number;
-  /** §1.1 — an off chip with count 0 is not selectable; a chosen chip is always clickable (it switches off). */
-  selectable: boolean;
 };
 
 /** Which chip a click is about. The component sends this and nothing else. */
 export type ChipRef = { group: ChipGroup; value: number | string };
 
 /**
- * The drawer, resolved. `years`/`km`/`regions` are the SHELF's chips in the shelf's own order; `effective`
- * is what "עדכן" would send; `total` is the number on the button.
+ * The drawer, resolved. `years`/`km`/`regions` are the SHELF's chips in the shelf's own order; `total` is
+ * the number on the "עדכן · N" button — the pool under the draft as it stands.
+ *
+ * There is no `effective` and no `emptyCombination` any more (§1.4): after an edit the draft cannot hold a
+ * chip at 0, so what "עדכן" sends IS the draft (applyFilters below), and the only way the pool can be empty
+ * is a typed price that leaves nothing — which the button says as "עדכן · 0", as it always did.
  */
 export type ResolvedDrawer = {
   years: ChipView<number>[];
   km: ChipView<number>[];
   regions: ChipView<string>[];
-  effective: SearchFilters;
   total: number;
-  /** §1.2 step 2 — the chosen chips leave nothing TOGETHER although none of them is a culprit on its own. */
-  emptyCombination: boolean;
 };
 
-/** §1.2 — which chips the drawer offers for one model. The shape counts.ts's filterShelf() already returns. */
+/**
+ * §2.1 — ONE MODEL'S LIVE FILTER ROWS, as the page carries them to the browser and as the model-rows action
+ * returns them. `rows` holds only the fields countPassing() reads (filters.ts's Filterable): no listing id
+ * and no other listing data. `km_anchors` is `model_stats.km_filter_anchors` as the norms run wrote it —
+ * null means the model has no km group at all, and `km_note` says why.
+ */
+export type ModelRows = {
+  model: string; // the display spelling, as models.model holds it
+  model_key: string; // modelKey(model) — what the search is run with
+  rows: Filterable[];
+  km_anchors: number[] | null;
+  km_note: string | null;
+};
+
+/** §1.2 / §3 — which chips the drawer offers for one model, in the shelf's usual order. */
 export type DrawerShelf = {
   years: number[];
   km_anchors: number[] | null;
@@ -63,10 +84,44 @@ export type DrawerShelf = {
 };
 
 // ---------------------------------------------------------------------------
+// §2.4 / §3 — THE SHELF, built where the resolve runs
+// ---------------------------------------------------------------------------
+
+/**
+ * §2.4 — the shelf's arithmetic, which lived in the `"use server"` counts.ts (shelfOf) and is pure: it moved
+ * here so the browser can build it from the rows the page carries. §3 adds the one new rule to it.
+ *
+ * §3 — THE SHELF KEEPS THE ON-SCREEN QUESTION'S OWN VALUES (D3, ruled 24/09). The shelf is the options WITH
+ * STOCK in the rows plus the stored question's own values in every group — years, regions and the km ceiling
+ * — deduplicated, in the shelf's usual order. So a stored value whose last car has left the pool is still
+ * drawn: chosen with count 0 on open (§1.3), off-0 after the first edit releases it (§1.2). Only the
+ * ON-SCREEN question's values join; the draft's do not — a value can only enter the draft from the shelf, and
+ * after "עדכן" the NEW question's values define the new page's shelf.
+ *
+ * `stored` is null on the opening screen (no question), where nothing joins.
+ *
+ * THE ONE CASE THIS RULE DOES NOT REACH, flagged in REPORT.md: when `km_anchors` is null the model has no km
+ * group at all (counts.ts §5, unchanged) — there is no block for a stored ceiling to join, so a stored
+ * `kmMax` is not drawn. It cannot arise from a question asked through this drawer (a ceiling can only be
+ * chosen from an anchor), only from anchors deleted after the fact.
+ */
+export function shelfOf(model: ModelRows, stored: SearchFilters | null): DrawerShelf {
+  const storedKm = stored?.kmMax;
+  return {
+    years: [...new Set([...model.rows.map((r) => r.year), ...(stored?.years ?? [])])].sort((a, b) => a - b),
+    km_anchors:
+      model.km_anchors === null ? null : [...new Set([...model.km_anchors, ...(storedKm === undefined ? [] : [storedKm])])].sort((a, b) => a - b),
+    regions: [...new Set([...model.rows.map((r) => r.region).filter((v): v is string => v !== null), ...(stored?.regions ?? [])])].sort((a, b) =>
+      a.localeCompare(b),
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // the filters arithmetic, expressed once
 // ---------------------------------------------------------------------------
 
-/** The typed values alone — E of §1.2 step 1. */
+/** The typed values alone — the half of a draft no chip can be released from. */
 function typedOnly(draft: SearchFilters): SearchFilters {
   const e: SearchFilters = {};
   if (draft.priceMin !== undefined) e.priceMin = draft.priceMin;
@@ -112,94 +167,73 @@ function filtersOf(typed: SearchFilters, chosen: { group: ChipGroup; value: numb
   return f;
 }
 
+/** Every chosen chip of a draft, group by group. */
+function chosenChips(draft: SearchFilters): { group: ChipGroup; value: number | string }[] {
+  return GROUPS.flatMap((group) => chosenOf(draft, group).map((value) => ({ group, value })));
+}
+
+/** §1.1 — a chip's count: its own option within the OTHER groups' chosen chips and the typed values. */
+function countOf(pool: Filterable[], draft: SearchFilters, group: ChipGroup, value: number | string): number {
+  return countPassing(pool, { ...without(draft, group), ...only(group, value) });
+}
+
 // ---------------------------------------------------------------------------
-// §1.2 — the one function that decides
+// §1.1 — the one function that draws
 // ---------------------------------------------------------------------------
 
 /**
- * §1.2 — every chip with its state and count, the effective filters, the button's number, and whether the
- * combination is empty. Deterministic, four steps, no iteration:
+ * §1.1 — every chip of the shelf with its state and its count, and the button's number. No iteration and no
+ * decision: a chosen chip is `chosen`, whatever its count; a chip that is not in the draft is `off` with
+ * cars and `off-0` without them.
  *
- *  1. PRICE ALONE. E = the typed values only. Every chosen chip whose count within E is 0 is DORMANT — the
- *     price on its own leaves it nothing.
- *  2. THE COMBINATION. Add the remaining chosen chips to E. If the pool under E is EMPTY: stop — the
- *     remaining chips stay AWAKE, `total` is 0 and `emptyCombination` is true. That is the existing
- *     emptied-pool situation and it keeps today's behaviour (§5); the drawer does not pick a culprit when no
- *     single chip is one.
- *  3. CHIPS THAT ADD NOTHING. Otherwise every remaining chosen chip whose count within E's OTHER groups is 0
- *     is DORMANT. This can only happen inside a multi-select group whose other chip carries the pool (2021
- *     and 2022 chosen, a region chosen, and every car in that region under the price is a 2022). Putting
- *     such a chip to sleep does not change the pool, so ONE pass is enough.
- *  4. RESULT. Effective = E minus the dormant chips; `total` = the pool under it; every chip's displayed
- *     count is taken within the effective filters of the other groups. A dormant chip's displayed count is
- *     therefore always 0 — its count can only shrink when more filters are added.
- *
- * Why step 2 is rare and why clicks never cause it: a chip can only be switched ON while its count is > 0
- * (§1.1), so a click never empties the pool. Only a typed price — or the market changing since the question
- * was asked — can.
- *
- * A chosen value the shelf does not offer (a year whose last car left the pool since the question was
- * stored) has no chip to draw. It is still resolved: its count is 0, so step 1 puts it to sleep and it drops
- * out of `effective` exactly like any other dormant chip. Nothing special-cases it.
+ * A chosen value the shelf does not offer has no chip to draw and is not drawn — §3 makes that unreachable
+ * for the on-screen question's own values, which always join the shelf. It is still in the draft, still in
+ * `total`, and still released by the first edit like any other chosen chip at 0.
  */
 export function resolveDrawer(pool: Filterable[], shelf: DrawerShelf, draft: SearchFilters): ResolvedDrawer {
-  const typed = typedOnly(draft);
-  const chosen = GROUPS.flatMap((group) => chosenOf(draft, group).map((value) => ({ group, value })));
-
-  // step 1 — the price alone
-  const dormant = new Set<string>();
-  for (const c of chosen) {
-    if (countPassing(pool, { ...typed, ...only(c.group, c.value) }) === 0) dormant.add(idOf(c.group, c.value));
-  }
-
-  // step 2 — the combination
-  const remaining = chosen.filter((c) => !dormant.has(idOf(c.group, c.value)));
-  const combined = filtersOf(typed, remaining);
-  const emptyCombination = countPassing(pool, combined) === 0;
-
-  // step 3 — chips that add nothing (skipped entirely when step 2 stopped early)
-  if (!emptyCombination) {
-    for (const c of remaining) {
-      if (countPassing(pool, { ...without(combined, c.group), ...only(c.group, c.value) }) === 0) dormant.add(idOf(c.group, c.value));
-    }
-  }
-
-  // step 4 — the effective filters, the button's number, and every chip's displayed count
-  const effective = filtersOf(
-    typed,
-    chosen.filter((c) => !dormant.has(idOf(c.group, c.value))),
-  );
-  const total = countPassing(pool, effective);
+  const chosen = new Set(chosenChips(draft).map((c) => idOf(c.group, c.value)));
 
   const view = <V extends number | string>(group: ChipGroup, value: V): ChipView<V> => {
-    const id = idOf(group, value);
-    const isChosen = chosen.some((c) => idOf(c.group, c.value) === id);
-    const count = countPassing(pool, { ...without(effective, group), ...only(group, value) });
-    const state: ChipState = !isChosen ? "off" : dormant.has(id) ? "dormant" : "awake";
-    return { group, value, state, count, selectable: state !== "off" || count > 0 };
+    const count = countOf(pool, draft, group, value);
+    const state: ChipState = chosen.has(idOf(group, value)) ? "chosen" : count > 0 ? "off" : "off-0";
+    return { group, value, state, count };
   };
 
   return {
     years: shelf.years.map((y) => view("years", y)),
     km: (shelf.km_anchors ?? []).map((k) => view("kmMax", k)),
     regions: shelf.regions.map((r) => view("regions", r)),
-    effective,
-    total,
-    emptyCombination,
+    total: countPassing(pool, draft),
   };
 }
 
 // ---------------------------------------------------------------------------
-// §1.3 — the other pure functions
+// §1.2 — the release, and the edits that carry it
 // ---------------------------------------------------------------------------
 
 /**
- * The draft the drawer opens with: the stored question's chips as chosen, its price bounds as typed. A
- * stored question never contains a dormant chip — applyFilters() below is what writes it — so this is a
- * normalisation and never a translation.
+ * §1.2 — THE RELEASE. After every edit, in ONE pass: every chosen chip whose count is 0 leaves the draft.
+ *
+ * AN EDIT IS: a chip toggle that changes the draft (toggleChip below applies the release itself), a settled
+ * price — typed, changed or deleted — and a change of the active model. Each of the three returns the draft
+ * AFTER the release, so the component commits exactly what this library returns and derives nothing.
+ *
+ * ONE PASS IS ENOUGH. If a chip c survives, some car x in the pool matches c's own option and every other
+ * group of the draft. For each other group h, x's own value v in h is chosen and its count is at least 1
+ * (x itself witnesses it), so v survives too — x therefore still matches the released draft, and c's count
+ * is still at least 1. No chosen chip is left at 0 (asserted in chip-state.test.ts, case 13).
+ *
+ * NO MEMORY OF ANY KIND: a released chip is an ordinary off / off-0 chip. Deleting the price that emptied it
+ * gives it its number back and nothing else — to have it chosen again the user clicks it.
+ *
+ * The draft is returned AS IT IS — the same object — when nothing is released, so an edit that changes
+ * nothing re-renders nothing.
  */
-export function draftFromQuestion(stored: SearchFilters): SearchFilters {
-  return normalizeFilters(stored);
+export function release(pool: Filterable[], draft: SearchFilters): SearchFilters {
+  const chosen = chosenChips(draft);
+  const keep = chosen.filter((c) => countOf(pool, draft, c.group, c.value) > 0);
+  if (keep.length === chosen.length) return draft;
+  return filtersOf(typedOnly(draft), keep);
 }
 
 /** Find a chip in the resolved drawer. A click on a chip the drawer does not offer is a bug, not a no-op. */
@@ -211,56 +245,67 @@ function viewOf(resolved: ResolvedDrawer, chip: ChipRef): ChipView {
 }
 
 /**
- * §1.3 — a click.
+ * §1.2 — a click, with the release included in what comes back.
  *
- *   off with count 0     the draft is returned UNCHANGED (nothing happens, no request)
- *   off with count > 0   chosen; in a single-select group it replaces the group's chosen chip, whose memory
- *                        is thereby cleared
- *   awake or dormant     removed from the chosen set — a manual switch-off clears the memory, and after it
- *                        count changes never wake it
+ *   off-0    THE DRAFT IS RETURNED UNCHANGED — the same object. A click on an off-0 chip is not an edit:
+ *            nothing re-renders, nothing is released, nothing is sent. (The chip is a real `disabled`
+ *            button, so the handler should not fire at all; this is the belt behind those braces.)
+ *   off      chosen; in a single-select group it replaces whatever the group had chosen
+ *   chosen   removed from the chosen set
  */
-export function toggleChip(draft: SearchFilters, resolved: ResolvedDrawer, chip: ChipRef): SearchFilters {
+export function toggleChip(pool: Filterable[], draft: SearchFilters, resolved: ResolvedDrawer, chip: ChipRef): SearchFilters {
   const view = viewOf(resolved, chip);
-  if (view.state === "off" && !view.selectable) return draft;
+  if (view.state === "off-0") return draft;
 
   const next: SearchFilters = { ...draft };
   if (chip.group === "kmMax") {
     // single-select: choosing replaces whatever was chosen, clicking the chosen one clears the group
     if (view.state === "off") next.kmMax = chip.value as number;
     else delete next.kmMax;
-    return next;
-  }
-  if (chip.group === "years") {
+  } else if (chip.group === "years") {
     const years = (draft.years ?? []).filter((y) => y !== chip.value);
     if (view.state === "off") years.push(chip.value as number);
     if (years.length === 0) delete next.years;
     else next.years = years;
-    return next;
+  } else {
+    const regions = (draft.regions ?? []).filter((r) => r !== chip.value);
+    if (view.state === "off") regions.push(chip.value as string);
+    if (regions.length === 0) delete next.regions;
+    else next.regions = regions;
   }
-  const regions = (draft.regions ?? []).filter((r) => r !== chip.value);
-  if (view.state === "off") regions.push(chip.value as string);
-  if (regions.length === 0) delete next.regions;
-  else next.regions = regions;
-  return next;
+  return release(pool, next);
+}
+
+// ---------------------------------------------------------------------------
+// §1.3 / §1.4 — the other pure functions
+// ---------------------------------------------------------------------------
+
+/**
+ * §1.3 — ON OPEN, NOTHING IS RELEASED. The stored question is drawn AS IT IS: a chip whose count is 0 now,
+ * because the market changed since the question was asked, is drawn CHOSEN with its count 0, and
+ * isUnchanged() is true — so the button is greyed, as ruled (greyed while nothing changed). The first edit
+ * releases it like any other chosen chip at 0.
+ */
+export function draftFromQuestion(stored: SearchFilters): SearchFilters {
+  return normalizeFilters(stored);
 }
 
 /**
- * §1.3 — the ONE predicate behind both the greyed "עדכן" (§2.3) and Run 7 §1.3's "apply with no effective
- * change = cancel". It compares the CHOSEN SET — awake and dormant together — plus the typed values against
- * the stored question, through the canonical deep-equal of filters.ts.
+ * §1.4 — the ONE predicate behind both the greyed "עדכן" and Run 7 §1.3's "apply with no change = cancel":
+ * the chosen set plus the typed values against the stored question, through the canonical deep-equal of
+ * filters.ts.
  *
- * A dormant chip cannot appear without another change that already lit the button. The one case where one
- * appears with nothing done — a stored chip that is 0 on open because the market changed — keeps the button
- * greyed, by rule: the chosen set is still the stored question's.
+ * The consequence to keep: a price typed, releasing a chip, then deleted is NOT unchanged — the chip does
+ * not come back, so the draft is not the stored question any more and the button stays lit.
  */
 export function isUnchanged(draft: SearchFilters, stored: SearchFilters): boolean {
   return sameFilters(draft, stored);
 }
 
 /**
- * §1.3 — what "עדכן" sends: the effective filters. A dormant chip is never sent, never stored and therefore
- * forgotten at "עדכן" — the filter session ends there, with no extra mechanism.
+ * §1.4 — what "עדכן" sends: THE DRAFT AS IT STANDS. After an edit nothing at 0 can be in it (release), and
+ * the unchanged stored question never gets here — it is cancelled by "עדכן", as today.
  */
-export function applyFilters(resolved: ResolvedDrawer): SearchFilters {
-  return resolved.effective;
+export function applyFilters(draft: SearchFilters): SearchFilters {
+  return draft;
 }

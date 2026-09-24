@@ -18,8 +18,7 @@
 
 import type { Prisma } from "@/generated/prisma/client";
 import { israelDay } from "@/lib/display/texts";
-import { draftFromQuestion, resolveDrawer, type ResolvedDrawer } from "./chip-state";
-import type { ShelfView } from "./counts";
+import type { ModelRows } from "./chip-state";
 import type { SearchFilters } from "./filters";
 
 // ---------------------------------------------------------------------------
@@ -220,12 +219,6 @@ export async function resultsOf(search_id: number): Promise<ResultRow[]> {
   return db.search_results.findMany({ where: { search_id }, select: RESULT_COLUMNS, orderBy: [{ rank: "asc" }, { listing_id: "asc" }] });
 }
 
-/**
- * Run 8 §3.1 — the drawer, as the RESULTS PAGE receives it: the model's shelf and the resolved drawer of the
- * stored question's own filters. The screen seeds its state from this and fetches nothing on mount.
- */
-export type DrawerPayload = { shelf: ShelfView; resolved: ResolvedDrawer };
-
 export type LoadedAddress = {
   /** The person's question — ITS public_id is the address, whatever run is displayed. */
   question: SearchRow;
@@ -235,19 +228,19 @@ export type LoadedAddress = {
   signals: UpdateSignals;
   /** True when this load wrote the re-run. A second load right after it finds no update and writes nothing. */
   rerun_written: boolean;
-  /** Run 8 §3.1 — present only when the caller asked for it; the car page has no drawer and does not pay. */
-  drawer: DrawerPayload | null;
+  /**
+   * Run 8b §2.1 — the question's model's LIVE FILTER ROWS and km anchors, in place of Run 8's resolved
+   * drawer: the browser resolves the drawer from these, in render, with no call of its own (§2.2). Present
+   * only when the caller asked for it; the car page has no drawer and does not pay.
+   */
+  model_rows: ModelRows | null;
 };
 
-/**
- * Run 8 §3.1 — the drawer for one stored question. ONE fetch of the model's live listings (drawerInput), then
- * the pure resolveDrawer() — the same function the resolve action calls, so the drawer on arrival and the
- * drawer after an edit are computed by one piece of code.
- */
-async function drawerFor(model_searched: string, filters: SearchFilters): Promise<DrawerPayload> {
-  const { drawerInput } = await import("./counts");
-  const { pool, shelf } = await drawerInput(model_searched);
-  return { shelf, resolved: resolveDrawer(pool, shelf, draftFromQuestion(filters)) };
+/** Run 8b §2.1 — the rows, on their own: the page carries the stored filters already, and §3's shelf join
+ * and the resolve both happen where the component renders. */
+async function modelRowsFor(model_searched: string): Promise<ModelRows> {
+  const { modelRows } = await import("./counts");
+  return modelRows(model_searched);
 }
 
 /**
@@ -260,20 +253,20 @@ async function drawerFor(model_searched: string, filters: SearchFilters): Promis
  * one — harmless: both point at the same question and the later one is what `latestRun` then displays.
  * THERE IS NO LOCK, by decision (§4).
  */
-export async function loadForAddress(publicId: string, viewer: Viewer, options: { drawer?: boolean } = {}): Promise<LoadedAddress | null> {
+export async function loadForAddress(publicId: string, viewer: Viewer, options: { model_rows?: boolean } = {}): Promise<LoadedAddress | null> {
   const resolved = await resolveQuestion(publicId);
   if (resolved === null) return null;
 
-  // §3.1 — THE SEAM. The question row names the model and carries the stored filters, so the drawer's pool
-  // can be assembled from here on, CONCURRENTLY with the run's own load: the page's response is delayed by
-  // the slower of the two, never by their sum. It is started here and awaited at the bottom, once per path,
-  // so the stored-results path and the re-run path get the same drawer from the same fetch. The car page
-  // passes nothing and assembles nothing — it has no drawer.
-  const drawing = options.drawer === true ? drawerFor(resolved.question.model_searched, storedFilters(resolved.question.filters)) : null;
+  // §2.1 — THE SEAM, WHERE RUN 8 PUT IT. The question row names the model, so the model's rows can be
+  // fetched from here on, CONCURRENTLY with the run's own load: the page's response is delayed by the slower
+  // of the two, never by their sum. It is started here and awaited at the bottom, once per path, so the
+  // stored-results path and the re-run path get the same rows from the same fetch. The car page passes
+  // nothing and fetches nothing — it has no drawer.
+  const rowsLoad = options.model_rows === true ? modelRowsFor(resolved.question.model_searched) : null;
   // A rejection here must not be "unhandled" while the run's own load is still in flight; the await below is
   // what surfaces it, loudly, as every failure in this file does.
-  drawing?.catch(() => {});
-  const withDrawer = async (loaded: Omit<LoadedAddress, "drawer">): Promise<LoadedAddress> => ({ ...loaded, drawer: drawing === null ? null : await drawing });
+  rowsLoad?.catch(() => {});
+  const withRows = async (loaded: Omit<LoadedAddress, "model_rows">): Promise<LoadedAddress> => ({ ...loaded, model_rows: rowsLoad === null ? null : await rowsLoad });
 
   const run = latestRun(resolved.question, resolved.reruns);
   const [current, modelMax, dealerMax] = await Promise.all([
@@ -284,7 +277,7 @@ export async function loadForAddress(publicId: string, viewer: Viewer, options: 
   const signals = updateSignals(run, new Date(), current, modelMax, dealerMax);
 
   if (!isUpdate(signals)) {
-    return withDrawer({ question: resolved.question, run, results: await resultsOf(run.id), signals, rerun_written: false });
+    return withRows({ question: resolved.question, run, results: await resultsOf(run.id), signals, rerun_written: false });
   }
 
   const { runSearch } = await import("./run");
@@ -306,7 +299,7 @@ export async function loadForAddress(publicId: string, viewer: Viewer, options: 
 
   const { db } = await import("@/lib/db");
   const written = await db.searches.findUniqueOrThrow({ where: { id: fresh.search_id }, select: SEARCH_COLUMNS });
-  return withDrawer({ question: resolved.question, run: written, results: await resultsOf(written.id), signals, rerun_written: true });
+  return withRows({ question: resolved.question, run: written, results: await resultsOf(written.id), signals, rerun_written: true });
 }
 
 /**

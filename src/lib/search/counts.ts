@@ -27,6 +27,7 @@
 
 import { db } from "@/lib/db";
 import { modelKey } from "./assemble";
+import type { ModelRows } from "./chip-state";
 import { countPassing, kmActive, type Filterable, type SearchFilters } from "./filters";
 
 export type OptionCount = {
@@ -55,22 +56,10 @@ export type FilterCountsView = {
   // client's own draft; nothing here has to hand them back.
 };
 
-type Row = Filterable & { id: number };
-
-// Day 15 Run 2b (§5): the SHELF — the options the drawer offers for one model, with no draft and no counts.
-// It does not change while the user edits the draft, which is why it is fetched once per model and not with
-// every counter call. Every number filterCounts() prints is unchanged; this is an additional export.
-export type ShelfView = {
-  model: string; // the display spelling, as models.model holds it
-  model_key: string;
-  pool_total: number; // the model's live pool, no filter at all
-  years: number[]; // years WITH STOCK in the model pool, ascending
-  regions: string[]; // distinct non-null region in the model pool, by name
-  km_anchors: number[] | null; // the latest model_stats.km_filter_anchors; null = no km block at all (§5)
-  km_note: string | null; // why there are no anchors, when there are none
-};
-
-type ModelPool = { display: string; key: string; make: string; rows: Row[] };
+// Run 8b §2.1 — the row is EXACTLY the Filterable the search cuts with and nothing else. The listing id was
+// written here and never read; it is gone, because these rows now travel to the browser (§2.1: no listing id
+// and no other listing data) and the way to keep that true is not to carry it in the first place.
+type ModelPool = { display: string; key: string; make: string; rows: Filterable[] };
 
 // One fetch of the model's live listings, shared by the counters and the shelf. The model is matched on
 // modelKey() (uppercased, whitespace stripped), which is a normalisation SQL cannot do for us, so the cut is
@@ -92,7 +81,7 @@ async function loadModelPool(model: string): Promise<ModelPool> {
 
   let display: string | null = null;
   const makes = new Set<string>();
-  const rows: Row[] = [];
+  const rows: Filterable[] = [];
   for (const l of live) {
     const name = l.car.model.model;
     if (name === null) throw new Error(`listing ${l.id}: models.model is null`);
@@ -101,7 +90,7 @@ async function loadModelPool(model: string): Promise<ModelPool> {
     if (l.car.model.make === null) throw new Error(`listing ${l.id}: models.make is null — model_stats is keyed on (make, model)`);
     display = display ?? name;
     makes.add(l.car.model.make);
-    rows.push({ id: l.id, price: l.price, year: l.car.year, km_declared: l.km_declared, region: l.region });
+    rows.push({ price: l.price, year: l.car.year, km_declared: l.km_declared, region: l.region });
   }
   if (display === null) throw new Error(`filterCounts: no live listing has model '${model}'`);
   if (makes.size > 1) throw new Error(`filterCounts: model '${display}' spans ${makes.size} makes (${[...makes].sort().join(", ")}) — model_stats cannot be read for it`);
@@ -130,35 +119,22 @@ async function loadKmAnchors(make: string, model: string): Promise<{ anchors: nu
 }
 
 /**
- * The shelf off an already-loaded pool. Pure arithmetic.
+ * Run 8b §2.1 / §2.4 — THE WHOLE OF WHAT THE DRAWER NEEDS FROM THE DATABASE, in one fetch of the model's
+ * live listings plus the anchors row: the rows the chips are counted over and the anchors the km chips are.
  *
- * Run 8 §3.2 — filterShelf(), the fetch-the-shelf-on-its-own entry point, is GONE with the shelf() action it
- * served: the shelf is per model and cannot change within one question, so it now travels with the chips it
- * belongs to (drawerInput below) and is never asked for alone. Nothing this file prints has changed.
- */
-function shelfOf(pool: ModelPool, km: { anchors: number[] | null; note: string | null }): ShelfView {
-  return {
-    model: pool.display,
-    model_key: pool.key,
-    pool_total: pool.rows.length,
-    years: [...new Set(pool.rows.map((r) => r.year))].sort((a, b) => a - b),
-    regions: [...new Set(pool.rows.map((r) => r.region).filter((v): v is string => v !== null))].sort((a, b) => a.localeCompare(b)),
-    km_anchors: km.anchors,
-    km_note: km.note,
-  };
-}
-
-/**
- * Run 8 §3.1 — the two things resolveDrawer() needs, in ONE fetch of the model's live listings: the pool it
- * counts over and the shelf whose chips it resolves. The page assembles it with the stored-results load
- * (load.ts) and the resolve action assembles it per settled edit; neither computes anything about a chip.
+ * Nothing about a chip is decided here and the SHELF IS NOT BUILT HERE ANY MORE (§2.4): its arithmetic —
+ * the years and regions with stock, the km chips from the anchors, and §3's join of the stored question's own
+ * values — is pure and moved to src/lib/search/chip-state.ts (shelfOf), which the browser can import. Run 8's
+ * drawerInput() and the ShelfView it returned are gone with the resolved drawer they served: the page and the
+ * model-rows action hand these rows over, and resolveDrawer() runs where the component renders (§2.2).
  *
  * The rows are the counters' own rows — the same `Filterable` the search cuts with — so the drawer's numbers
  * and the search's pool can never be measured differently.
  */
-export async function drawerInput(model: string): Promise<{ pool: Filterable[]; shelf: ShelfView }> {
+export async function modelRows(model: string): Promise<ModelRows> {
   const loaded = await loadModelPool(model);
-  return { pool: loaded.rows, shelf: shelfOf(loaded, await loadKmAnchors(loaded.make, loaded.display)) };
+  const km = await loadKmAnchors(loaded.make, loaded.display);
+  return { model: loaded.display, model_key: loaded.key, rows: loaded.rows, km_anchors: km.anchors, km_note: km.note };
 }
 
 export async function filterCounts(input: { model: string; draft?: SearchFilters }): Promise<FilterCountsView> {
