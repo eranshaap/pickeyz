@@ -191,6 +191,13 @@ function EditableRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Run 8c §1 — THE LIST IS ITS OWN STATE NOW, because a choice must close it AT ONCE while the editor
+  // itself stays where it is. Until now the list was down for exactly as long as `editing`, so a chosen
+  // model left it standing over the dim through the whole round trip to the new question. It opens with the
+  // editor (§6: the editor arrives with its list already down) and closes with it; between the two it closes
+  // on a choice and opens again only on a fresh act of the user in the bar — typing, or a click into it.
+  const [listOpen, setListOpen] = useState(false);
+
   // Two inputs are rendered, one per viewport, and exactly one of them is displayed. focus() on a
   // display:none element does nothing, so both are asked and only the visible one answers.
   const input = useRef<HTMLInputElement>(null);
@@ -218,6 +225,7 @@ function EditableRow({
     setOpenMake(null);
     setError(null);
     setEditing(true);
+    setListOpen(true);
     history.pushOverlay();
   }
 
@@ -225,12 +233,14 @@ function EditableRow({
   function close(popEntry = true) {
     setEditing(false);
     setOpenMake(null);
+    setListOpen(false);
     setText(modelDisplay);
     if (popEntry) history.popOverlay();
   }
 
   async function choose(m: LiveModel) {
     if (m.key === modelKey) return close(); // §6 / §0.1 — the same model is a cancel, not a search
+    setListOpen(false); // §1 — the list goes AT ONCE, in the same event; the new question below is unchanged
     setBusy(true);
     nav.begin(); // §11.3 — the screen goes pending on the click, not on the push
     setError(null);
@@ -257,8 +267,11 @@ function EditableRow({
     if (e.key !== "Enter") return;
     e.preventDefault();
     if (isChosenText) return close(); // the asked model's own name is a cancel
-    if (modelHits.length === 1) return void choose(modelHits[0]);
-    if (makeHits.length === 1) return setOpenMake(makeHits[0]); // a manufacturer OPENS its models
+    if (modelHits.length === 1) return void choose(modelHits[0]); // §1 — Enter on a suggestion closes the list
+    if (makeHits.length === 1) {
+      setOpenMake(makeHits[0]); // a manufacturer OPENS its models; it is not a choice
+      setListOpen(true);
+    }
   }
 
   const list = (
@@ -317,10 +330,14 @@ function EditableRow({
           onChange={(e) => {
             setText(e.target.value);
             setOpenMake(null);
+            setListOpen(true); // §1 — typing is one of the two acts that open the list again
           }}
+          onPointerDown={() => setListOpen(true)} // §1 — and a click or tap into the bar is the other
           onKeyDown={onKeyDown}
         />
-        <div className="absolute inset-x-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-xl border border-[#d8d3cb] bg-white py-1 shadow-lg">{list}</div>
+        {listOpen && (
+          <div className="absolute inset-x-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-xl border border-[#d8d3cb] bg-white py-1 shadow-lg">{list}</div>
+        )}
         {error !== null && <p className="absolute inset-x-0 top-full mt-1 text-sm text-[#665f58]">{error}</p>}
       </div>
 
@@ -347,13 +364,15 @@ function EditableRow({
             onChange={(e) => {
               setText(e.target.value);
               setOpenMake(null);
+              setListOpen(true); // §1 — as on the desktop bar: typing opens the list again
             }}
+            onPointerDown={() => setListOpen(true)}
             onKeyDown={onKeyDown}
           />
           <p className="pt-2 text-[13px] text-[#665f58]">{PHONE_HELPER}</p>
           {error !== null && <p className="pt-2 text-[13px] text-[#665f58]">{error}</p>}
         </div>
-        <div className="mt-2 flex-1 overflow-y-auto">{list}</div>
+        {listOpen && <div className="mt-2 flex-1 overflow-y-auto">{list}</div>}
       </div>
     </>
   );

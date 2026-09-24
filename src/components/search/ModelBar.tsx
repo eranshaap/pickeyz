@@ -143,6 +143,20 @@ export default function ModelBar({
   const input = useRef<HTMLInputElement>(null);
   const editing = edit !== null;
 
+  // Run 8c §1 — A CHOICE CLOSES THE LIST, AND NOTHING BUT A FRESH ACT OF THE USER IN THE BAR OPENS IT AGAIN
+  // ("it's just strange that it doesn't disappear", ruled 24/09). The close itself was always there, in the
+  // same event that fills the bar; what was missing is this latch. `onFocus` opens the list, and the focus
+  // the choice leaves behind in the input — or hands back to it when the clicked row is unmounted — is not an
+  // act of the user, so it must not undo the close. The latch is dropped by the two acts that DO open the
+  // list again: typing, and a click or tap into the bar.
+  const chose = useRef(false);
+
+  /** Every open of the list goes through here, which is also where the latch is dropped. */
+  function openList() {
+    chose.current = false;
+    setOpen(true);
+  }
+
   // §0.2 — the editor opens prefilled, with the text selected, so typing replaces it. The list is already
   // down: `open` starts true in edit mode, which is state and not something an effect has to set.
   useEffect(() => {
@@ -157,7 +171,8 @@ export default function ModelBar({
     onChoose(m);
     setText(m.display);
     setOpenMake(null);
-    setOpen(false);
+    setOpen(false); // §1 — AT ONCE, in the same event that fills the bar
+    chose.current = true;
     input.current?.blur();
   }
 
@@ -176,13 +191,13 @@ export default function ModelBar({
       else onSubmit(); // §5: Enter on a chosen model searches the whole model pool
       return;
     }
-    if (modelHits.length === 1) return choose(modelHits[0]);
+    if (modelHits.length === 1) return choose(modelHits[0]); // §1 — Enter on a suggestion closes it too
     if (makeHits.length === 1) {
       setOpenMake(makeHits[0]); // §5: Enter on a manufacturer OPENS its models, it does not search
-      setOpen(true);
+      openList();
       return;
     }
-    setOpen(true); // unresolved text: show "הדגם עוד לא אצלנו" and the live models, clickable (§6)
+    openList(); // unresolved text: show "הדגם עוד לא אצלנו" and the live models, clickable (§6)
   }
 
   return (
@@ -199,12 +214,17 @@ export default function ModelBar({
         onChange={(e) => {
           setText(e.target.value);
           setOpenMake(null);
-          setOpen(true);
+          openList(); // §1 — typing is one of the two acts that open the list again
           // Typing over the name un-chooses the model on the opening screen. In the editor it does NOT: the
           // asked question stays exactly as it is until a model is chosen or the editor is cancelled (§6).
           if (!editing && chosen !== null && e.target.value !== chosen.display) onChoose(null);
         }}
-        onFocus={() => setOpen(true)}
+        // §1 — and a click or tap into the bar is the other. It is on `pointerdown` and not on the focus,
+        // because the focus is exactly what a choice can leave behind without the user having done anything.
+        onPointerDown={openList}
+        onFocus={() => {
+          if (!chose.current) setOpen(true);
+        }}
         onKeyDown={onKeyDown}
       />
 
@@ -219,7 +239,7 @@ export default function ModelBar({
             onChoose={choose}
             onOpenMake={(make) => {
               setOpenMake(make);
-              setOpen(true);
+              openList(); // a manufacturer opens its models; it is not a choice, so the list stays down
             }}
           />
         </div>

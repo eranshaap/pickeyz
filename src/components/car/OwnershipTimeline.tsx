@@ -37,10 +37,17 @@
 // same explanation popover with the same text, anchored to the phrase instead of to the marker. It is a
 // button and not a <summary> because §4.3 asks for `aria-expanded` and for Enter and Space to open it,
 // which a button gives and a <details> does not.
+//
+// RUN 8c §2 — THE PHRASE AND ITS WINDOW ARE NO LONGER THIS FILE'S. Both moved, whole and unchanged in text,
+// place and look, into ExplainPhrase.tsx, which owns every way the window opens and closes — the mouse's
+// hover, the finger's tap, the keyboard's Tab and Esc — and is generic in its two props so that Run 9's
+// "מעברי סוחר" window is the same component with other children. This file hands it the phrase text
+// texts.ts decided and the explanation as its content, and keeps no popover state, refs or listeners at all.
 
 import { useEffect, useRef, useState } from "react";
 import type { AxisSegment, NoHistoryView, OwnershipAxis } from "@/lib/display/texts";
 import { legendHeadParts, legendTail, scaleLayout, shadeRamp } from "@/lib/display/texts";
+import ExplainPhrase from "./ExplainPhrase";
 
 const DASHED = "#c9c3b9";
 const GREY = "#665f58";
@@ -80,43 +87,8 @@ export default function OwnershipTimeline({
   const scaleRef = useRef<HTMLDivElement>(null);
   const [scaleWidth, setScaleWidth] = useState(0);
 
-  // §4.3 — the explanation popover, opened from the 0-km phrase in the first hand's label.
-  const [zeroKmOpen, setZeroKmOpen] = useState(false);
-
-  // Run 8b §4 — AND IT CLOSES (D1, ruled 24/09 "כן ברור שחייב"). Until now the phrase was the only thing that
-  // closed it, so it sat there while the reader went on with the page. Now, WHILE IT IS OPEN:
-  //   (a) a click or tap anywhere outside both the explanation and the phrase closes it. The listener is on
-  //       `pointerdown`, not `click`, so the phone's tap counts — and so does a drag that starts outside.
-  //   (b) Esc closes it and returns focus to the phrase, which is where the reader opened it from.
-  // A click INSIDE the explanation does not close it (the text is selectable). A click on the phrase falls
-  // through to the button's own onClick, which toggles it shut — pointerdown must not close it first, or the
-  // toggle would re-open it, which is what the phrase test below is for.
-  //
-  // The listeners exist ONLY while it is open and are removed on close. The refs and the state are this
-  // COPY's own — the card renders the axis twice (phone and desktop) — so each copy handles only its own
-  // popover and can neither close nor reopen the other's.
-  const phraseRef = useRef<HTMLButtonElement>(null);
-  const popoverRef = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    if (!zeroKmOpen) return;
-    const onPointerDown = (e: PointerEvent) => {
-      const target = e.target;
-      if (!(target instanceof Node)) return;
-      if (phraseRef.current?.contains(target) === true || popoverRef.current?.contains(target) === true) return;
-      setZeroKmOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      setZeroKmOpen(false);
-      phraseRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [zeroKmOpen]);
+  // Run 8c §2 — the popover's state, its two refs and Run 8b's two listeners are gone from here: they are
+  // ExplainPhrase's, one set per copy of the axis, which is what they always were in effect.
 
   // useEffect, not useLayoutEffect: this component is server-rendered too, and useLayoutEffect does nothing
   // there but warn. The server HTML has already painted its two end labels by then, so measuring one paint
@@ -253,42 +225,10 @@ export default function OwnershipTimeline({
               <span>
                 <strong className="font-bold">
                   {head.before}
-                  {head.phrase !== null && (
-                    <span className="relative inline-block">
-                      {/* §4.3 — a real button STYLED AS TEXT: the font, size, weight and colour are the
-                          label's own (inherited), and the only mark it carries is the thin dotted underline.
-                          The rest of the label carries none. Click / Enter / Space all open it, which is what
-                          a button gives and a <summary> did not, and `aria-expanded` says which way it is. */}
-                      <button
-                        ref={phraseRef}
-                        type="button"
-                        aria-expanded={zeroKmOpen}
-                        onClick={() => setZeroKmOpen((open) => !open)}
-                        className="cursor-pointer border-0 bg-transparent p-0"
-                        style={{
-                          font: "inherit",
-                          color: "inherit",
-                          textDecoration: "underline dotted",
-                          textDecorationThickness: 1,
-                          textUnderlineOffset: 3,
-                          textDecorationColor: "currentColor",
-                        }}
-                      >
-                        {head.phrase}
-                      </button>
-                      {/* the explanation, unchanged in text, place and look — Run 8b §4 only adds the two
-                          ways it closes, and they are listeners, not markup */}
-                      {zeroKmOpen && zeroKmExplanation !== null && (
-                        <p
-                          ref={popoverRef}
-                          className="absolute z-10 mt-1 w-64 rounded-lg border border-[#d8d3cb] bg-white p-3 text-[13px] font-normal shadow-lg"
-                          style={{ color: DARK, top: "100%", insetInlineStart: 0 }}
-                        >
-                          {zeroKmExplanation}
-                        </p>
-                      )}
-                    </span>
-                  )}
+                  {/* Run 8c §2.1 — the phrase and its window, with today's text, from the one component
+                      that owns them. The window is rendered only when there is an explanation to put in
+                      it, exactly as before: the phrase itself does not depend on it. */}
+                  {head.phrase !== null && <ExplainPhrase phrase={head.phrase}>{zeroKmExplanation}</ExplainPhrase>}
                 </strong>
                 {legendTail(s)}
               </span>
