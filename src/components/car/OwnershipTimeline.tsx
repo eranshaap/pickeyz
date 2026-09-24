@@ -1,12 +1,12 @@
 "use client";
 
-// The ownership axis (BRIEF Run 6b §7.6; corrected by Run 7 §2, then by Run 8 §4) — "היסטוריית בעלויות".
+// The ownership axis (BRIEF Run 6b §7.6; corrected by Run 7 §2, Run 8 §4, then Run 9 §2) — "היסטוריית בעלויות".
 //
 // STILL A DUMB RENDERER: the segments, their widths, the hand numbers, the year ticks, the legend lines, the
-// 0-km phrase and the no-history wording are all decided by the pure functions of
-// src/lib/display/texts.ts (ownershipAxis, scaleLayout, shadeRamp, legendHead/legendHeadParts/legendTail,
-// zeroKmExplanation, noHistoryView) and tested there. Nothing here computes a duration, reads an invoice or
-// picks a colour.
+// 0-km phrase, the dealer-transitions summary and the no-history wording are all decided by the pure
+// functions of src/lib/display/texts.ts (ownershipAxis, scaleLayout, legendHeadParts/legendTail,
+// dealerTransitionsLine, zeroKmExplanation, noHistoryView) and src/lib/display/shades.ts (shadeFor), and
+// tested there. Nothing here computes a duration, reads an invoice or picks a colour.
 //
 // IT IS A CLIENT COMPONENT FOR ONE REASON (§2.3): the collision rule is "a year label is drawn only if it
 // clears every already-drawn label by >= 12px, at any card width", and a width is a measured thing. The row
@@ -25,28 +25,29 @@
 // mirrored against its own bar on the deployed build — "עלייה לכביש" at the left, "היום" at the right —
 // while the bar, a CSS grid whose first column is the right one under RTL, was correct all along.
 //
-//   private / institutional   a fill from the page colour's ramp, in ownership order (§2.5)
-//   dealer                    hollow — white with a 1px dashed border, NO hand number, and (§2.2) NO label
-//                             above the axis at all: a dealer is its segment and its legend row, nothing else
+// RUN 9 §2.1 — THE LADDER RUNS FROM THE CURRENT OWNERSHIP BACKWARDS, and a dealer is a hollow box:
 //
-// RUN 8 §4.3 — NOTHING SITS ABOVE THE BAR ANY MORE. Run 7 §2.4's 0-km row — the 2px line and the words
-// "עסקת 0 ק"מ" over the leasing segment, its grid row and the height it reserved — is removed entirely and
-// the bar moves up; the card's other measurements are unchanged. The fact itself did not go anywhere: it is
-// now a WORD IN THE FIRST HAND'S LEGEND LABEL, in place of the ownership-type word (texts.ts decides that),
-// and that phrase ALONE is a real <button> — styled as text, with a thin dotted underline — which opens the
-// same explanation popover with the same text, anchored to the phrase instead of to the marker. It is a
-// button and not a <summary> because §4.3 asks for `aria-expanded` and for Enter and Space to open it,
-// which a button gives and a <details> does not.
+//   private / institutional   shadeFor(indexFromCurrent, ownerCount, pageColor) — the CURRENT ownership
+//                             carries the page colour itself and every earlier one is one rung lighter.
+//                             Run 7's ramp ran the other way and is gone (see shades.ts's head comment).
+//   dealer                    white with a 1px SOLID border in the page colour (it was a dashed grey one),
+//                             NO hand number, no shade, no rung of the ladder, and — as before — nothing
+//                             above the axis at all.
 //
-// RUN 8c §2 — THE PHRASE AND ITS WINDOW ARE NO LONGER THIS FILE'S. Both moved, whole and unchanged in text,
-// place and look, into ExplainPhrase.tsx, which owns every way the window opens and closes — the mouse's
-// hover, the finger's tap, the keyboard's Tab and Esc — and is generic in its two props so that Run 9's
-// "מעברי סוחר" window is the same component with other children. This file hands it the phrase text
-// texts.ts decided and the explanation as its content, and keeps no popover state, refs or listeners at all.
+// RUN 9 §2.2 — THE LEGEND IS A COLUMN, ONE ROW PER OWNERSHIP, AND THE DEALERS LEAVE IT. Every dealer row of
+// the axis is summed into ONE last grey row — "{N} מעברי סוחר · {משך} · לא נספרים כיד" — whose count, sum
+// and wording are dealerTransitionsLine()'s and not this file's. The phrase inside it is a dotted control
+// opening the explanation window of §2.3, exactly as "עסקת 0 ק"מ" is in the first hand's own row.
+//
+// RUN 8c §2 — THE PHRASE AND ITS WINDOW ARE NOT THIS FILE'S. Both live in ExplainPhrase.tsx, which owns
+// every way the window opens and closes — the mouse's hover, the finger's tap, the keyboard's Tab and Esc —
+// and is generic in its two props, which is why §2.3's second window needed no new behaviour: it is the
+// same component with other children. This file keeps no popover state, refs or listeners at all.
 
 import { useEffect, useRef, useState } from "react";
 import type { AxisSegment, NoHistoryView, OwnershipAxis } from "@/lib/display/texts";
-import { legendHeadParts, legendTail, scaleLayout, shadeRamp } from "@/lib/display/texts";
+import { dealerTransitionsLine, legendHeadParts, legendTail, scaleLayout } from "@/lib/display/texts";
+import { shadeFor } from "@/lib/display/shades";
 import ExplainPhrase from "./ExplainPhrase";
 
 const DASHED = "#c9c3b9";
@@ -59,14 +60,34 @@ const TICK_COLOR = "#c9c3b9";
 const TICK_HEIGHT = 8;
 const TICK_WIDTH = 1;
 
-// §3 — the bar, off the board.
+// §3 — the bar, off the board. §2.1: the per-segment minimum comes down from 14px to 10px, so a one-month
+// dealer transition between two long ownerships takes less of their share than it did.
 const BAR_HEIGHT = 28;
 const BAR_RADIUS = 6;
 const SEGMENT_GAP = 2;
+const SEGMENT_MIN_PX = 10;
 
-/** §2.5 — a dealer keeps its hollow treatment; every owner segment takes its ramp fill. */
-function segmentStyle(s: AxisSegment, fill: string | null): React.CSSProperties {
-  if (s.kind === "dealer") return { background: "#ffffff", border: `1px dashed ${GREY}` };
+// §2.2 — the legend's own measurements: a column with 8px between its rows, and the 14×14 swatch.
+const LEGEND_GAP = 8;
+const SWATCH = 14;
+const SWATCH_RADIUS = 3;
+
+/**
+ * §2.3 — the dealer-transition explanation, the one piece of Hebrew this file holds: it is MARKUP and not a
+ * string (the clause that matters is a <strong>), which is why it cannot sit in texts.ts with the rest. The
+ * words are the BRIEF's, verbatim; the phrase that opens it is dealerTransitionsLine()'s.
+ */
+const DEALER_EXPLANATION = (
+  <>
+    {"מעבר סוחר — בדרך מבעלים אחד לבא אחריו הרכב היה אצל סוחר רכב, שקנה אותו כדי למכור אותו הלאה. התקופה הזאת רשומה במשרד התחבורה, אבל "}
+    <strong className="font-bold">היא לא נספרת כיד ולא משפיעה על מחיר הרכב</strong>
+    {"."}
+  </>
+);
+
+/** §2.1 — a dealer is HOLLOW, in the page colour; every ownership segment takes its rung of the ladder. */
+function segmentStyle(s: AxisSegment, fill: string | null, color: string): React.CSSProperties {
+  if (s.kind === "dealer") return { background: "#ffffff", border: `1px solid ${color}`, boxSizing: "border-box" };
   return { background: fill ?? undefined };
 }
 
@@ -88,7 +109,7 @@ export default function OwnershipTimeline({
   const [scaleWidth, setScaleWidth] = useState(0);
 
   // Run 8c §2 — the popover's state, its two refs and Run 8b's two listeners are gone from here: they are
-  // ExplainPhrase's, one set per copy of the axis, which is what they always were in effect.
+  // ExplainPhrase's, one set per phrase per copy of the axis, which is what they always were in effect.
 
   // useEffect, not useLayoutEffect: this component is server-rendered too, and useLayoutEffect does nothing
   // there but warn. The server HTML has already painted its two end labels by then, so measuring one paint
@@ -133,16 +154,21 @@ export default function OwnershipTimeline({
 
   // ---------------------------------------------------------------- the axis
 
-  // §2.5 — one ramp per axis, over the OWNER segments only, taken in ownership order. Dealers are skipped:
-  // they are hollow and take no fill, so they also take no place in the ramp.
-  const ramp = shadeRamp(color, axis.segments.filter((s) => s.kind !== "dealer").length);
-  let owner = 0;
-  const fills = axis.segments.map((s) => (s.kind === "dealer" ? null : (ramp[owner++] ?? null)));
+  // §2.1 — the ladder is counted over the OWNERSHIP rows only and from the CURRENT one backwards: `hand` is
+  // 1 on the oldest ownership and `ownerCount` on the current one, so `ownerCount - hand` is 0 on the
+  // current ownership and grows into the past. Dealer rows carry no hand, take no rung and take no fill.
+  const ownerCount = axis.segments.filter((s) => s.kind !== "dealer").length;
+  const fills = axis.segments.map((s) => (s.kind === "dealer" ? null : shadeFor(ownerCount - (s.hand as number), ownerCount, color)));
 
-  // §2.4 — the bar and the scale row are the SAME column template, so they cannot drift apart.
-  const template = axis.segments.map((s) => `${s.share}fr`).join(" ");
+  // §2.4 — the bar and the scale row are the SAME column template, so they cannot drift apart. §2.1 — every
+  // track is minmax(10px, {share}fr): a segment can be squeezed to a sliver but never to nothing.
+  const template = axis.segments.map((s) => `minmax(${SEGMENT_MIN_PX}px, ${s.share}fr)`).join(" ");
 
   const labels = scaleLayout(axis, scaleWidth);
+
+  // §2.2 — the per-row legend list is the OWNERSHIPS; the dealers are summed into the one last row under it.
+  const ownerRows = axis.segments.map((s, i) => ({ s, fill: fills[i] })).filter((r) => r.s.kind !== "dealer");
+  const dealers = dealerTransitionsLine(axis.segments);
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-[#d8d3cb] bg-white p-4 md:px-6 md:py-5">
@@ -158,7 +184,7 @@ export default function OwnershipTimeline({
             key={i}
             className="block h-full min-w-0"
             style={{
-              ...segmentStyle(s, fills[i]),
+              ...segmentStyle(s, fills[i], color),
               // RTL: the oldest segment is at the start (right), so the outer ends are the first and the last
               borderStartStartRadius: i === 0 ? BAR_RADIUS : 0,
               borderEndStartRadius: i === 0 ? BAR_RADIUS : 0,
@@ -212,16 +238,20 @@ export default function OwnershipTimeline({
         })}
       </div>
 
-      {/* --------------------------------------------- the legend, one line per ownership (§2.6) */}
-      {/* Run 8 §4.3 — the 0-km deal lives HERE now, as the first hand's own word, with the phrase alone
-          clickable. The same row, the same phrase and the same popover on the computer and on the phone. */}
-      <ul className="flex flex-col gap-1 pt-2">
-        {axis.segments.map((s, i) => {
+      {/* --------------------------------------------- the legend (§2.2): a COLUMN, never wrapping */}
+      {/* Run 8 §4.3 — the 0-km deal lives HERE, as the first hand's own word, with the phrase alone
+          clickable. Run 9 §2.2 — the dealer rows are not in this list; their one summary row follows it. */}
+      <ul className="pt-2" style={{ display: "flex", flexDirection: "column", gap: LEGEND_GAP }}>
+        {ownerRows.map(({ s, fill }, i) => {
           const head = legendHeadParts(s);
           return (
-            <li key={i} className="flex items-center gap-2 text-[15px]" style={{ color: s.kind === "dealer" ? GREY : DARK }}>
+            <li key={i} className="flex items-center gap-2 text-[15px]" style={{ color: DARK }}>
               {/* §2.5 — the swatch is the segment's own fill, so the legend and the bar can never disagree */}
-              <span aria-hidden className="inline-block shrink-0" style={{ width: 14, height: 14, borderRadius: 3, ...segmentStyle(s, fills[i]) }} />
+              <span
+                aria-hidden
+                className="inline-block shrink-0"
+                style={{ width: SWATCH, height: SWATCH, borderRadius: SWATCH_RADIUS, ...segmentStyle(s, fill, color) }}
+              />
               <span>
                 <strong className="font-bold">
                   {head.before}
@@ -235,6 +265,31 @@ export default function OwnershipTimeline({
             </li>
           );
         })}
+
+        {/* §2.2 — the one dealer row: a hollow swatch in the page colour and the summary line, grey. The
+            phrase is the same ExplainPhrase control, so it inherits this row's colour and carries its own
+            dotted underline, and it opens §2.3's window on hover, on a tap and on Tab. */}
+        {dealers !== null && (
+          <li className="flex items-center gap-2 text-[15px]" style={{ color: GREY }}>
+            <span
+              aria-hidden
+              className="inline-block shrink-0"
+              style={{
+                width: SWATCH,
+                height: SWATCH,
+                borderRadius: SWATCH_RADIUS,
+                background: "#ffffff",
+                border: `1px solid ${color}`,
+                boxSizing: "border-box",
+              }}
+            />
+            <span>
+              {dealers.before}
+              <ExplainPhrase phrase={dealers.phrase}>{DEALER_EXPLANATION}</ExplainPhrase>
+              {dealers.after}
+            </span>
+          </li>
+        )}
       </ul>
     </div>
   );

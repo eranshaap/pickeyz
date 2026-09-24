@@ -5,15 +5,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   backLinkWord,
-  BLACK,
-  BRONZE,
-  CATEGORY_COLOR,
-  comparedToLine,
+  dealerTransitionsLine,
   duration,
   fairAmount,
   fairLine,
-  hexToHsl,
-  hslToHex,
+  gapAfterTopBlock,
   legendHead,
   legendHeadParts,
   legendLine,
@@ -26,14 +22,12 @@ import {
   percentOfNewLine,
   placeWord,
   priceBlock,
-  RAMP_STEPS,
   scaleLabelWidth,
   scaleLayout,
   type ScaleLabel,
   SCALE_LABEL_GAP_PX,
-  sellerLine,
-  shadeRamp,
   thinCellLine,
+  titleParts,
   whyHeading,
   years,
   zeroKmExplanation,
@@ -50,25 +44,28 @@ describe("the fair number (§8.2)", () => {
   });
 
   it("positive = under the market, with the digits unsigned", () => {
-    assert.equal(fairLine(5, 100_000), "5,000 ₪ מתחת לשווי השוק של רכבים כאלה");
+    assert.equal(fairLine(5, 100_000), "5,000 ₪ מתחת לשווי השוק");
   });
 
   it("negative = over the market, with the digits unsigned", () => {
-    assert.equal(fairLine(-5, 100_000), "5,000 ₪ מעל לשווי השוק של רכבים כאלה");
+    assert.equal(fairLine(-5, 100_000), "5,000 ₪ מעל לשווי השוק");
+  });
+
+  it("Run 9 §4.2 — THE SHORT FORM: no \"של רכבים כאלה\" in any of the three", () => {
+    for (const line of [fairLine(5, 100_000), fairLine(-5, 100_000), fairLine(0, 100_000)]) {
+      assert.ok(!line.includes("רכבים כאלה"), `${line} still carries the long form`);
+    }
   });
 
   it("rounding to 0 is its own sentence, with no number at all", () => {
-    assert.equal(fairLine(0, 100_000), "במחיר השוק של רכבים כאלה");
-    assert.equal(fairLine(0.04, 100_000), "במחיר השוק של רכבים כאלה"); // 40 -> 0
+    assert.equal(fairLine(0, 100_000), "במחיר השוק");
+    assert.equal(fairLine(0.04, 100_000), "במחיר השוק"); // 40 -> 0
   });
 });
 
-describe("the compared-to and thin-cell lines (§8.2)", () => {
-  it("carries the norm row's sample size and window", () => {
-    assert.equal(comparedToLine(23, 90), "הושווה ל-23 רכבים דומים שהוצעו למכירה ב-90 הימים האחרונים");
-    assert.equal(comparedToLine(7, 180), "הושווה ל-7 רכבים דומים שהוצעו למכירה ב-180 הימים האחרונים");
-  });
-
+describe("the thin-cell line (§8.2)", () => {
+  // Run 9 §4.1 — comparedToLine() and its two cases are gone with the sentence itself. The thin-cell
+  // sentence is the one line here that §4.2 leaves untouched.
   it("the thin-cell line is fixed", () => {
     assert.equal(thinCellLine(), "אין השוואת מחיר — פחות מ-5 רכבים דומים הוצעו למכירה");
   });
@@ -77,11 +74,8 @@ describe("the compared-to and thin-cell lines (§8.2)", () => {
 describe("priceBlock() (§8.2)", () => {
   const scored = { score: 5, thin_cell: false, median_price: 100_000, sample_size: 23, window_days: 90 };
 
-  it("a scored listing gets the fair number and the compared-to line", () => {
-    assert.deepEqual(priceBlock(scored), {
-      fair: "5,000 ₪ מתחת לשווי השוק של רכבים כאלה",
-      compared: "הושווה ל-23 רכבים דומים שהוצעו למכירה ב-90 הימים האחרונים",
-    });
+  it("a scored listing gets the fair number ALONE (Run 9 §4.1 — no compared-to line any more)", () => {
+    assert.deepEqual(priceBlock(scored), { fair: "5,000 ₪ מתחת לשווי השוק" });
   });
 
   it("a thin cell gets its single line instead", () => {
@@ -161,30 +155,9 @@ describe("the why heading and its guard (§7.7)", () => {
   });
 });
 
-describe("the seller line (§8.4)", () => {
-  it("lot -> name · מגרש · region", () => {
-    assert.equal(sellerLine({ dealer_type: "lot", dealer_name: "אוטו כהן", listing_region: "מרכז", dealer_region: null }), "אוטו כהן · מגרש · מרכז");
-  });
-
-  it("private -> מוכר פרטי · region, with NO name", () => {
-    assert.equal(sellerLine({ dealer_type: "private", dealer_name: "ישראל ישראלי", listing_region: "חיפה והקריות", dealer_region: null }), "מוכר פרטי · חיפה והקריות");
-  });
-
-  it("the region falls back to the dealer's when the listing has none", () => {
-    assert.equal(sellerLine({ dealer_type: "lot", dealer_name: "אוטו כהן", listing_region: null, dealer_region: "צפון" }), "אוטו כהן · מגרש · צפון");
-  });
-
-  it("both regions null -> the line renders without the region segment", () => {
-    assert.equal(sellerLine({ dealer_type: "lot", dealer_name: "אוטו כהן", listing_region: null, dealer_region: null }), "אוטו כהן · מגרש");
-    assert.equal(sellerLine({ dealer_type: "private", dealer_name: "ישראל ישראלי", listing_region: null, dealer_region: null }), "מוכר פרטי");
-  });
-
-  it("a type outside §2.7 renders name · region — never an invented word, never the raw code", () => {
-    const line = sellerLine({ dealer_type: "leasing", dealer_name: "אלבר", listing_region: "מרכז", dealer_region: null });
-    assert.equal(line, "אלבר · מרכז");
-    assert.ok(!line.includes("leasing"));
-  });
-});
+// Run 9 §4.4 — the seller line's six cases are gone with sellerLine() itself. What the page shows of the
+// region now is the region line under the price, which is markup over listings.region (CarPageView.tsx) and
+// has no string to decide.
 
 describe("durations (§8.5)", () => {
   it("the month forms", () => {
@@ -586,73 +559,80 @@ describe("the deployed example: on-the-road 1.2022, today 23/09/2026 (Run 8 §4.
 });
 
 // ---------------------------------------------------------------------------
-// Run 7 §2.5 — the shade ramp
+// Run 9 §1.2, §1.4, §1.5 — the title, the dealer-transitions line, the gap after the top block
 // ---------------------------------------------------------------------------
+//
+// Run 7 §2.5's shade-ramp suite is gone with shadeRamp() itself: the ladder is shades.ts now, and its own
+// tests are shades.test.ts (§1.1). One implementation, one suite — never two.
 
-describe("the shade ramp (Run 7 §2.5)", () => {
-  // §2.5 — "works for all four page colours (the three categories, bronze) and black"
-  const PAGE_COLORS = [CATEGORY_COLOR.best_value, CATEGORY_COLOR.peace_of_mind, CATEGORY_COLOR.cheapest, BRONZE, BLACK];
+describe("the car title (§1.2)", () => {
+  it("model and year are TWO PARTS with no comma anywhere", () => {
+    const parts = titleParts("מאזדה 3", 2021);
+    assert.deepEqual(parts, ["מאזדה 3", "2021"]);
+    assert.equal(parts.length, 2);
+    for (const part of parts) assert.ok(!part.includes(","), `${part} carries a comma`);
+  });
 
-  it("15 requested -> 15 distinct hex values, for every page colour", () => {
-    for (const c of PAGE_COLORS) {
-      const ramp = shadeRamp(c, RAMP_STEPS);
-      assert.equal(ramp.length, RAMP_STEPS);
-      assert.equal(new Set(ramp).size, RAMP_STEPS, `${c} repeated a fill inside 15 steps`);
-      assert.ok(ramp.every((v) => /^#[0-9a-f]{6}$/.test(v)), `${c} produced something that is not a hex colour`);
+  it("a car with no year is one part and nothing else", () => {
+    const parts = titleParts("מאזדה 3", null);
+    assert.deepEqual(parts, ["מאזדה 3"]);
+    assert.equal(parts.length, 1);
+  });
+
+  it("the model string itself is never edited", () => {
+    assert.equal(titleParts("SKODA OCTAVIA", 2019)[0], "SKODA OCTAVIA");
+  });
+});
+
+describe("the dealer-transitions legend line (§1.4)", () => {
+  const owner = (months: number) => ({ kind: "private" as const, months });
+  const dealer = (months: number) => ({ kind: "dealer" as const, months });
+
+  it("no dealer row at all -> null, and no last legend row is drawn", () => {
+    assert.equal(dealerTransitionsLine([owner(30), owner(24)]), null);
+    assert.equal(dealerTransitionsLine([]), null);
+  });
+
+  it("ONE dealer row: the singular phrase and the singular 'לא נספר כיד'", () => {
+    const line = dealerTransitionsLine([owner(30), dealer(1), owner(24)]);
+    assert.notEqual(line, null);
+    const l = line as NonNullable<typeof line>;
+    assert.equal(l.count, 1);
+    assert.equal(l.months, 1);
+    assert.equal(l.before, "");
+    assert.equal(l.phrase, "מעבר סוחר");
+    assert.equal(`${l.before}${l.phrase}${l.after}`, "מעבר סוחר · חודש · לא נספר כיד");
+  });
+
+  it("THREE dealer rows of 1 + 1 + 2 months: the plural phrase and the SUMMED duration", () => {
+    const line = dealerTransitionsLine([owner(30), dealer(1), owner(12), dealer(1), owner(8), dealer(2), owner(24)]);
+    const l = line as NonNullable<typeof line>;
+    assert.equal(l.count, 3);
+    assert.equal(l.months, 4);
+    assert.equal(l.before, "3 ");
+    assert.equal(l.phrase, "מעברי סוחר");
+    assert.equal(`${l.before}${l.phrase}${l.after}`, "3 מעברי סוחר · 4 חודשים · לא נספרים כיד");
+  });
+
+  it("the duration is the axis's own formatter — a year and a month reads as the axis writes it", () => {
+    const l = dealerTransitionsLine([dealer(13)]) as NonNullable<ReturnType<typeof dealerTransitionsLine>>;
+    assert.equal(`${l.before}${l.phrase}${l.after}`, "מעבר סוחר · שנה וחודש · לא נספר כיד");
+  });
+});
+
+describe("the gap after the top block (§1.5)", () => {
+  it("one and a half times the section gap, rounded UP to a multiple of 4", () => {
+    assert.equal(gapAfterTopBlock(28), 44);
+    assert.equal(gapAfterTopBlock(16), 24);
+    assert.equal(gapAfterTopBlock(40), 60);
+  });
+
+  it("the result is always a multiple of 4 and never smaller than 1.5 x S", () => {
+    for (let s = 4; s <= 64; s += 1) {
+      const g = gapAfterTopBlock(s);
+      assert.equal(g % 4, 0, `S=${s} gave ${g}`);
+      assert.ok(g >= s * 1.5, `S=${s} gave ${g}`);
+      assert.ok(g - 4 < s * 1.5, `S=${s} gave ${g} — not the SMALLEST multiple of 4 that fits`);
     }
-  });
-
-  it("no two ADJACENT segments are ever equal, up to 40 owners", () => {
-    for (const c of PAGE_COLORS) {
-      for (let n = 2; n <= 40; n += 1) {
-        const ramp = shadeRamp(c, n);
-        assert.equal(ramp.length, n);
-        for (let i = 1; i < n; i += 1) assert.notEqual(ramp[i], ramp[i - 1], `${c}: fills ${i - 1} and ${i} are equal at n=${n}`);
-      }
-    }
-  });
-
-  it("no two segments of one axis share a fill, up to the 15 the ramp guarantees", () => {
-    for (const c of PAGE_COLORS) {
-      for (let n = 1; n <= RAMP_STEPS; n += 1) assert.equal(new Set(shadeRamp(c, n)).size, n, `${c} repeated a fill at n=${n}`);
-    }
-  });
-
-  it("the fills sit on the PAGE COLOUR'S hue and climb in lightness", () => {
-    for (const c of PAGE_COLORS) {
-      const hue = hexToHsl(c).h;
-      const ramp = shadeRamp(c, RAMP_STEPS);
-      let last = -1;
-      for (const fill of ramp) {
-        const { h, l } = hexToHsl(fill);
-        if (hexToHsl(c).s > 0.02) assert.ok(Math.abs(h - hue) <= 4, `${fill} left ${c}'s hue (${h.toFixed(1)} vs ${hue.toFixed(1)})`);
-        assert.ok(l > last, `${fill} did not climb in lightness`);
-        last = l;
-      }
-    }
-  });
-
-  it("a single owner takes the darkest end — the page colour's own depth", () => {
-    for (const c of PAGE_COLORS) assert.equal(shadeRamp(c, 1)[0], shadeRamp(c, RAMP_STEPS)[0]);
-  });
-
-  it("beyond 15 the ramp cycles WITH AN OFFSET — the 16th is not the 1st again", () => {
-    for (const c of PAGE_COLORS) {
-      const ramp = shadeRamp(c, 16);
-      assert.notEqual(ramp[15], ramp[0], `${c} cycled without an offset`);
-    }
-  });
-
-  it("nothing requested -> nothing returned", () => {
-    assert.deepEqual(shadeRamp(BLACK, 0), []);
-  });
-
-  it("a colour that is not #rrggbb is a stop, never a silent grey", () => {
-    assert.throws(() => shadeRamp("wine", 3), /not a "#rrggbb" colour/);
-    assert.throws(() => shadeRamp("#abc", 3), /not a "#rrggbb" colour/);
-  });
-
-  it("hex -> hsl -> hex round-trips every page colour", () => {
-    for (const c of PAGE_COLORS) assert.equal(hslToHex(hexToHsl(c)), c.toLowerCase());
   });
 });

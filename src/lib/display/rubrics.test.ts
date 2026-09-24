@@ -4,9 +4,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { Check } from "@/lib/scoring/types";
-import { colorRubric, handRubric, kmRubric, licenceRubric, rubricStrip } from "./rubrics";
+import { colorRubric, handRubric, kmRubric, licenceRubric, rubricStrip, testLine, wholeMonthsBetween } from "./rubrics";
 
 const d = (y: number, m: number, day: number) => new Date(Date.UTC(y, m - 1, day));
+
+// Run 9 §6.3 — THE PAGE'S OWN TODAY, handed to the km rubric as a parameter. Every km case below is read
+// against this one instant, the same one the ownership axis would be drawn against.
+const TODAY = new Date("2026-09-22T09:00:00Z");
 
 const READINGS = [
   { test_date: d(2023, 4, 12), km: 41_000 },
@@ -19,72 +23,72 @@ const mismatchOnLast: Check = { check: "km", status: "mismatch", kind: "km_below
 const mismatchOnEarlier: Check = { check: "km", status: "mismatch", kind: "km_below", counts: true, declared: 70_000, official: 78_500, official_date: "2024-05-03" };
 
 describe('the ק"מ rubric (§7.5)', () => {
-  it("big is the declared km; small is ALWAYS the last test reading by test_date", () => {
-    const r = kmRubric({ km_declared: 120_000, test_readings: READINGS, km_check: match });
-    assert.equal(r.big, "120,000 ק״מ");
-    assert.equal(r.small, "בטסט 20.6.2025: 112,000");
+  it("Run 9 §6.2 — big is the declared km AS A BARE NUMBER; §6.3 — small is the last reading and how long ago", () => {
+    const r = kmRubric({ km_declared: 120_000, test_readings: READINGS, km_check: match, today: TODAY });
+    assert.equal(r.big, "120,000"); // §6.2 — the unit is the cell's header, never repeated in the value
+    assert.equal(r.small, "בטסט לפני שנה ו-3 חודשים: 112,000");
     assert.equal(r.dark, false);
   });
 
   it("the last reading wins even when the readings arrive out of order", () => {
     const shuffled = [READINGS[2], READINGS[0], READINGS[1]];
-    assert.equal(kmRubric({ km_declared: 120_000, test_readings: shuffled, km_check: match }).small, "בטסט 20.6.2025: 112,000");
+    assert.equal(kmRubric({ km_declared: 120_000, test_readings: shuffled, km_check: match, today: TODAY }).small, "בטסט לפני שנה ו-3 חודשים: 112,000");
   });
 
   it("no reading at all -> עוד לא עבר טסט", () => {
-    const r = kmRubric({ km_declared: 120_000, test_readings: [], km_check: match });
+    const r = kmRubric({ km_declared: 120_000, test_readings: [], km_check: match, today: TODAY });
     assert.equal(r.small, "עוד לא עבר טסט");
     assert.equal(r.dark, false);
   });
 
   it("dark exactly per the engine's cross-check verdict — never a threshold of its own", () => {
-    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: mismatchOnLast }).dark, true);
-    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: match }).dark, false);
-    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: { check: "km", status: "unavailable", reason: "no_reading" } }).dark, false);
-    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: { check: "km", status: "skipped", reason: "possibly_sold" } }).dark, false);
+    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: mismatchOnLast, today: TODAY }).dark, true);
+    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: match, today: TODAY }).dark, false);
+    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: { check: "km", status: "unavailable", reason: "no_reading" }, today: TODAY }).dark, false);
+    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: { check: "km", status: "skipped", reason: "possibly_sold" }, today: TODAY }).dark, false);
   });
 
   it("no invoice -> never dark", () => {
-    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: null }).dark, false);
+    assert.equal(kmRubric({ km_declared: 90_000, test_readings: READINGS, km_check: null, today: TODAY }).dark, false);
   });
 
   it("THE COUNTED-READING CASE: the contradiction was counted against a reading that is not the last", () => {
-    const r = kmRubric({ km_declared: 70_000, test_readings: READINGS, km_check: mismatchOnEarlier });
+    const r = kmRubric({ km_declared: 70_000, test_readings: READINGS, km_check: mismatchOnEarlier, today: TODAY });
     assert.equal(r.dark, true);
-    assert.equal(r.small, "בטסט 3.5.2024: 78,500"); // the reading that was counted, not the last test
+    assert.equal(r.small, "בטסט לפני שנתיים ו-4 חודשים: 78,500"); // the reading that was counted, not the last test
   });
 
   it("a null declared km renders — and can never be dark", () => {
-    const r = kmRubric({ km_declared: null, test_readings: READINGS, km_check: mismatchOnLast });
+    const r = kmRubric({ km_declared: null, test_readings: READINGS, km_check: mismatchOnLast, today: TODAY });
     assert.equal(r.big, "—");
     assert.equal(r.dark, false);
   });
 });
 
 describe("the יד rubric (§7.5, Run 7 §6)", () => {
-  it("AGREEMENT -> NO SMALL LINE AT ALL: the \"N בעלויות\" caption is gone (§6)", () => {
-    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: 2, has_registry_history: true }), { big: "יד 2", small: null, dark: false });
+  it("Run 9 §6.2 — the big value is the NUMBER ALONE; AGREEMENT -> no small line (§6)", () => {
+    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: 2, has_registry_history: true }), { big: "2", small: null, dark: false });
   });
 
   it("one owner loses its caption too — agreement is agreement whatever the number (§6)", () => {
-    assert.deepEqual(handRubric({ hand_declared: 1, registry_hand: 1, has_registry_history: true }), { big: "יד 1", small: null, dark: false });
+    assert.deepEqual(handRubric({ hand_declared: 1, registry_hand: 1, has_registry_history: true }), { big: "1", small: null, dark: false });
   });
 
   it("MISMATCH -> the existing dark line, and the declaration is NOT overridden (§6)", () => {
     const r = handRubric({ hand_declared: 1, registry_hand: 3, has_registry_history: true });
-    assert.deepEqual(r, { big: "יד 1", small: "במשרד התחבורה: יד 3", dark: true });
+    assert.deepEqual(r, { big: "1", small: "במשרד התחבורה: יד 3", dark: true });
   });
 
   it("THE NO-DECLARED-HAND CASE: the big value falls back to the registry's hand — nothing declared, so nothing contradicts, so no small line", () => {
-    assert.deepEqual(handRubric({ hand_declared: null, registry_hand: 3, has_registry_history: true }), { big: "יד 3", small: null, dark: false });
+    assert.deepEqual(handRubric({ hand_declared: null, registry_hand: 3, has_registry_history: true }), { big: "3", small: null, dark: false });
   });
 
   it("a car with no registry history keeps its dark לפי המוכר, לא אומת — neither agreement nor mismatch (§6, see REPORT.md)", () => {
-    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: null, has_registry_history: false }), { big: "יד 2", small: "לפי המוכר, לא אומת", dark: true });
+    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: null, has_registry_history: false }), { big: "2", small: "לפי המוכר, לא אומת", dark: true });
   });
 
   it("history rows but no registry hand -> the same unverified line", () => {
-    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: null, has_registry_history: true }), { big: "יד 2", small: "לפי המוכר, לא אומת", dark: true });
+    assert.deepEqual(handRubric({ hand_declared: 2, registry_hand: null, has_registry_history: true }), { big: "2", small: "לפי המוכר, לא אומת", dark: true });
   });
 
   it("no declaration and no registry history -> — and never dark", () => {
@@ -163,17 +167,51 @@ describe("the רישיון rubric (§7.5, Run 7 §6)", () => {
   });
 });
 
+describe("the test line (Run 9 §1.3)", () => {
+  const READING = 75_068;
+
+  it("45 days -> one whole month", () => {
+    assert.equal(testLine(READING, d(2026, 8, 8), d(2026, 9, 22)), "בטסט לפני חודש: 75,068");
+  });
+
+  it("14 days -> no whole month yet: THIS month", () => {
+    assert.equal(testLine(READING, d(2026, 9, 8), d(2026, 9, 22)), "בטסט החודש: 75,068");
+  });
+
+  it("400 days -> a year and a month, in the axis's own words", () => {
+    assert.equal(testLine(READING, d(2025, 8, 12), d(2026, 9, 16)), "בטסט לפני שנה וחודש: 75,068");
+  });
+
+  it("no reading, or a reading with no date -> עוד לא עבר טסט", () => {
+    assert.equal(testLine(null, d(2026, 8, 8), d(2026, 9, 22)), "עוד לא עבר טסט");
+    assert.equal(testLine(READING, null, d(2026, 9, 22)), "עוד לא עבר טסט");
+  });
+
+  it("the month count is DAY-AWARE — a month completes on the same day of the next month", () => {
+    assert.equal(wholeMonthsBetween(d(2026, 8, 22), d(2026, 9, 21)), 0); // one day short
+    assert.equal(wholeMonthsBetween(d(2026, 8, 22), d(2026, 9, 22)), 1); // exactly on the day
+    assert.equal(wholeMonthsBetween(d(2025, 8, 12), d(2026, 9, 16)), 13); // 400 days
+    assert.equal(wholeMonthsBetween(d(2026, 9, 8), d(2026, 9, 22)), 0); // 14 days
+  });
+
+  it("the reading carries thousands separators and NO unit (§6.2)", () => {
+    const line = testLine(1_234_567, d(2026, 8, 8), d(2026, 9, 22));
+    assert.ok(line.endsWith(": 1,234,567"), line);
+    assert.ok(!line.includes("ק"), line.slice(-20));
+  });
+});
+
 describe("the strip (§7.3, §7.4)", () => {
   it("four rubrics in the board order", () => {
     const strip = rubricStrip({
-      km: { km_declared: 120_000, test_readings: READINGS, km_check: match },
+      km: { km_declared: 120_000, test_readings: READINGS, km_check: match, today: TODAY },
       hand: { hand_declared: 2, registry_hand: 2, has_registry_history: true },
       color: { color: "לבן", registry_color: "לבן", color_mismatch: undefined, color_changed_reported: false },
-      licence: { test_expiry: d(2027, 3, 1), now: new Date("2026-09-22T09:00:00Z") },
+      licence: { test_expiry: d(2027, 3, 1), now: TODAY },
     });
     assert.deepEqual(strip.map((s) => s.heading), ['ק"מ', "יד", "צבע", "רישיון בתוקף עד"]); // §6 — the רישיון header carries the words
     assert.equal(strip.every((s) => !s.rubric.dark), true);
     // §6 — an all-agreement car says nothing under three of the four: only ק"מ always has its reading line.
-    assert.deepEqual(strip.map((s) => s.rubric.small), ["בטסט 20.6.2025: 112,000", null, null, null]);
+    assert.deepEqual(strip.map((s) => s.rubric.small), ["בטסט לפני שנה ו-3 חודשים: 112,000", null, null, null]);
   });
 });

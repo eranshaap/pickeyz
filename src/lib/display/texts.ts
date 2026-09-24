@@ -81,9 +81,13 @@ export function pageColor(labels: Category[]): string {
 // §8.2 — the fair number, the compared-to line, the thin-cell line
 // ---------------------------------------------------------------------------
 
-const BELOW_MARKET = "מתחת לשווי השוק של רכבים כאלה";
-const ABOVE_MARKET = "מעל לשווי השוק של רכבים כאלה";
-const AT_MARKET = "במחיר השוק של רכבים כאלה";
+// Run 9 §4.2 — THE SHORT FORM. "של רכבים כאלה" is gone from all three: the comparison sentence that used
+// to name the comparison group went with it (§4.1), and the phrase has to stand on one line under the price.
+// These three constants are the phrase's ONE home — fairLine() below is its only producer, priceBlock() its
+// only caller, and the pick cards do not spell it at all.
+const BELOW_MARKET = "מתחת לשווי השוק";
+const ABOVE_MARKET = "מעל לשווי השוק";
+const AT_MARKET = "במחיר השוק";
 const THIN_CELL_LINE = "אין השוואת מחיר — פחות מ-5 רכבים דומים הוצעו למכירה";
 
 /** The deal in shekels, rounded to the nearest 100: `listings.score ÷ 100 × median_price` of the norm row. */
@@ -101,12 +105,12 @@ export function fairLine(score: number, median_price: number): string {
   return `${shekel(Math.abs(amount))} ${amount > 0 ? BELOW_MARKET : ABOVE_MARKET}`;
 }
 
-/** §8.2 — what the fair number rests on: the norm row's sample size and its window. */
-export function comparedToLine(sample_size: number, window_days: number): string {
-  return `הושווה ל-${num(sample_size)} רכבים דומים שהוצעו למכירה ב-${num(window_days)} הימים האחרונים`;
-}
+// Run 9 §4.1 — comparedToLine() IS GONE. "הושווה ל-{N} רכבים דומים שהוצעו למכירה ב-{D} הימים האחרונים" was
+// deleted, not hidden: it is no longer produced anywhere. `sample_size` and `window_days` themselves are
+// untouched — priceBlock() still requires both below (a norm row without them is not a scored listing), and
+// the invoice and the measurement go on reading them.
 
-/** §8.2 — a thin cell shows this single line INSTEAD of the fair number and the compared-to line. */
+/** §8.2 — a thin cell shows this single line INSTEAD of the fair number. */
 export function thinCellLine(): string {
   return THIN_CELL_LINE;
 }
@@ -120,12 +124,12 @@ export function percentOfNewLine(price: number, new_price: number): string {
  * §8.2 — what sits under the "% ממחיר החדש" row, decided once for the whole page.
  *
  *   thin cell            the single thin-cell line, no fair number
- *   unscored (no invoice / no norm row / no score)   NOTHING — no fair, no compared, no thin line
- *   otherwise            the fair number and the compared-to line
+ *   unscored (no invoice / no norm row / no score)   NOTHING — no fair, no thin line
+ *   otherwise            the fair number, alone (Run 9 §4.1 — the compared-to line no longer exists)
  *
  * A cancelled car has no invoice at all (§7.1), so it lands on `null` like any other unscored listing.
  */
-export type PriceBlock = { fair: string; compared: string } | { thin: string } | null;
+export type PriceBlock = { fair: string } | { thin: string } | null;
 
 export function priceBlock(input: {
   score: number | null;
@@ -136,7 +140,7 @@ export function priceBlock(input: {
 }): PriceBlock {
   if (input.thin_cell) return { thin: thinCellLine() };
   if (input.score === null || input.median_price === null || input.sample_size === null || input.window_days === null) return null;
-  return { fair: fairLine(input.score, input.median_price), compared: comparedToLine(input.sample_size, input.window_days) };
+  return { fair: fairLine(input.score, input.median_price) };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +163,21 @@ export function backLinkWord(input: { hasQuestion: boolean; labels: Category[] }
 /** §7.1 — "מקום {rank}" when the listing has a place and no label. */
 export function placeWord(rank: number): string {
   return `מקום ${num(rank)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Run 9 §1.2 — the car title
+// ---------------------------------------------------------------------------
+
+/**
+ * §1.2 — the title's parts: the model, then the year. NO COMMA ANYWHERE — the two are separated by a gap the
+ * component opens (0.4em), never by punctuation, which is the whole of the change. A car with no year is one
+ * part and nothing else.
+ *
+ * The model string itself is whatever the caller already shows; this function never edits it.
+ */
+export function titleParts(model: string, year: number | null): string[] {
+  return year === null ? [model] : [model, String(year)];
 }
 
 // ---------------------------------------------------------------------------
@@ -185,40 +204,17 @@ export function whyHeading(input: { labels: Category[]; rank: number | null; lin
 }
 
 // ---------------------------------------------------------------------------
-// §8.4 — the seller line
+// §8.4 — the seller line: GONE (Run 9 §4.4)
 // ---------------------------------------------------------------------------
 
-// §2.7 — the only two live dealer types. A type outside this table renders the line WITHOUT a type word
-// ("{name} · {region}") — never an invented word and never the raw code; §10's readback surfaces such a row.
-export const SELLER_TYPE_WORD: Readonly<Record<string, string>> = {
-  lot: "מגרש",
-  private: "מוכר פרטי",
-};
-
-const PRIVATE_TYPE = "private";
-
-/**
- * §8.4 — `lot` → "{name} · מגרש · {region}"; `private` → "מוכר פרטי · {region}" (NO name); any other type →
- * "{name} · {region}". Region is `listings.region` falling back to `dealers.region`; with both null the line
- * renders without the region segment. No phone number appears on any screen.
- */
-export function sellerLine(input: {
-  dealer_type: string;
-  dealer_name: string;
-  listing_region: string | null;
-  dealer_region: string | null;
-}): string {
-  const region = input.listing_region ?? input.dealer_region;
-  const parts: string[] = [];
-  if (input.dealer_type === PRIVATE_TYPE) {
-    parts.push(SELLER_TYPE_WORD[PRIVATE_TYPE]);
-  } else {
-    parts.push(input.dealer_name);
-    if (Object.hasOwn(SELLER_TYPE_WORD, input.dealer_type)) parts.push(SELLER_TYPE_WORD[input.dealer_type]);
-  }
-  if (region !== null) parts.push(region);
-  return parts.join(" · ");
-}
+// sellerLine(), SELLER_TYPE_WORD and the PRIVATE_TYPE code are deleted, not hidden: the business name, the
+// "מגרש" / "מוכר פרטי" word, the dealer's region and the line that joined them no longer appear on the car
+// page on either screen. The DATA is untouched — listings.region, dealers.name, dealers.dealer_type and
+// dealers.region are all still read and stored; what the page shows of the region now is the region line
+// under the price (CarPageView.tsx §4.3), which reads listings.region and nothing else.
+//
+// src/components/search/labels.tsx keeps its own sellerKind() for the RESULT CARDS — a different line, on a
+// different screen, that §7 leaves alone.
 
 // ---------------------------------------------------------------------------
 // §8.5 — durations and the ownership-type words
@@ -441,6 +437,60 @@ export function legendHeadParts(s: AxisSegment): { before: string; phrase: strin
 export const ZERO_KM_MARKER = ZERO_KM_LABEL;
 
 // ---------------------------------------------------------------------------
+// Run 9 §1.4 — the dealer-transitions legend line
+// ---------------------------------------------------------------------------
+
+const DEALER_TRANSITION_ONE = "מעבר סוחר";
+const DEALER_TRANSITION_MANY = "מעברי סוחר";
+const NOT_COUNTED_ONE = "לא נספר כיד";
+const NOT_COUNTED_MANY = "לא נספרים כיד";
+
+/**
+ * §2.2 — the dealer rows LEAVE the per-row legend list and come back as ONE last row summarising them all.
+ * `phrase` is the part the component makes a dotted control (ExplainPhrase); `before + phrase + after` is
+ * the whole line and nothing else, so the split can never change what it reads.
+ */
+export type DealerTransitions = {
+  count: number;
+  months: number;
+  before: string;
+  phrase: string;
+  after: string;
+};
+
+/**
+ * §1.4 — null when the axis has no dealer row at all; otherwise the summary of every dealer row on it, with
+ * the months summed and the duration written by the axis's own formatter.
+ */
+export function dealerTransitionsLine(segments: readonly { kind: OwnershipKind; months: number }[]): DealerTransitions | null {
+  const dealers = segments.filter((s) => s.kind === "dealer");
+  if (dealers.length === 0) return null;
+  const count = dealers.length;
+  const total = dealers.reduce((a, s) => a + s.months, 0);
+  const one = count === 1;
+  return {
+    count,
+    months: total,
+    before: one ? "" : `${num(count)} `,
+    phrase: one ? DEALER_TRANSITION_ONE : DEALER_TRANSITION_MANY,
+    after: ` · ${duration(total)} · ${one ? NOT_COUNTED_ONE : NOT_COUNTED_MANY}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Run 9 §1.5 — the gap after the top block
+// ---------------------------------------------------------------------------
+
+/**
+ * §1.5 — the distance from the top block to the first section heading under it: one and a half times the
+ * page's own section gap, rounded UP to a multiple of 4. It is a function of S and never a second constant,
+ * so the day S changes this follows it.
+ */
+export function gapAfterTopBlock(sectionGapPx: number): number {
+  return Math.ceil((sectionGapPx * 1.5) / 4) * 4;
+}
+
+// ---------------------------------------------------------------------------
 // Run 7 §2.3 — ONE tick layout, with the collision rule
 // ---------------------------------------------------------------------------
 
@@ -541,79 +591,13 @@ export function scaleLayout(axis: OwnershipAxis, width_px: number): ScaleLabel[]
 }
 
 // ---------------------------------------------------------------------------
-// §2.5 — the shade ramp
+// §2.5 — the shade ramp: GONE (Run 9 §1.1)
 // ---------------------------------------------------------------------------
 
-/** The ramp's guaranteed length: `shadeRamp(c, 15)` returns 15 visually distinct fills for every page colour. */
-export const RAMP_STEPS = 15;
-
-// The lightness bounds the ramp interpolates between, on the page colour's own hue. They are wide enough
-// that 15 steps are 0.0457 apart in L — roughly 12 of 255 per channel, which no screen renders as one shade.
-const RAMP_L_DARK = 0.2;
-const RAMP_L_LIGHT = 0.84;
-
-/** Half a step of the 15-stop ramp — the offset a cycle beyond 15 is shifted by, so neighbours still differ. */
-const RAMP_CYCLE_OFFSET = 1 / ((RAMP_STEPS - 1) * 2);
-
-export type Hsl = { h: number; s: number; l: number };
-
-/** "#rrggbb" → HSL. A string that is not a six-digit hex colour is a stop, never a silent grey. */
-export function hexToHsl(hex: string): Hsl {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
-  if (m === null) throw new Error(`shade ramp: ${JSON.stringify(hex)} is not a "#rrggbb" colour`);
-  const n = Number.parseInt(m[1], 16);
-  const r = ((n >> 16) & 0xff) / 255;
-  const g = ((n >> 8) & 0xff) / 255;
-  const b = (n & 0xff) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  if (d === 0) return { h: 0, s: 0, l };
-  const s = d / (1 - Math.abs(2 * l - 1));
-  const h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  return { h: h * 60, s, l };
-}
-
-const channel = (p: number, q: number, t: number): number => {
-  const x = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
-  if (x < 1 / 6) return p + (q - p) * 6 * x;
-  if (x < 1 / 2) return q;
-  if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
-  return p;
-};
-
-/** HSL → "#rrggbb". */
-export function hslToHex({ h, s, l }: Hsl): string {
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-  const p = 2 * l - q;
-  const t = h / 360;
-  const to = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0");
-  return s === 0 ? `#${to(l)}${to(l)}${to(l)}` : `#${to(channel(p, q, t + 1 / 3))}${to(channel(p, q, t))}${to(channel(p, q, t - 1 / 3))}`;
-}
-
-/**
- * §2.5 — `n` fills on the PAGE COLOUR'S OWN HUE, lightness-interpolated between a dark and a light bound.
- * This replaces the old two-shades-per-category palette, which repeated itself from the third owner on.
- *
- *   n <= RAMP_STEPS   the n fills are spread across the whole range, so no two are ever equal — a single
- *                     owner takes the darkest end, which is the page colour's own depth.
- *   n >  RAMP_STEPS   the 15 stops cycle, each cycle shifted by half a step, so NEIGHBOURS still differ.
- *                     §2.5 asks for exactly that beyond 15, not for unlimited distinctness.
- */
-export function shadeRamp(pageColorHex: string, n: number): string[] {
-  if (n <= 0) return [];
-  const { h, s } = hexToHsl(pageColorHex);
-  const out: string[] = [];
-  for (let i = 0; i < n; i += 1) {
-    let t: number;
-    if (n === 1) t = 0;
-    else if (n <= RAMP_STEPS) t = i / (n - 1);
-    else t = ((i % RAMP_STEPS) / (RAMP_STEPS - 1) + Math.floor(i / RAMP_STEPS) * RAMP_CYCLE_OFFSET) % 1;
-    out.push(hslToHex({ h, s, l: RAMP_L_DARK + (RAMP_L_LIGHT - RAMP_L_DARK) * t }));
-  }
-  return out;
-}
+// Run 7's shadeRamp(), with hexToHsl(), hslToHex(), RAMP_STEPS and the HSL lightness bounds it interpolated
+// between, is deleted. Its replacement is shadeFor() in src/lib/display/shades.ts — ONE implementation, never
+// two — which runs the ladder from the page colour itself down to a light end read off the board, in OKLCH,
+// and counts it from the CURRENT ownership backwards rather than from the oldest one forwards.
 
 /** §7.6 — the zero-km explanation, opened from the label. The duration is the invoice's own fact. */
 export function zeroKmExplanation(months_to_first_private: number): string {

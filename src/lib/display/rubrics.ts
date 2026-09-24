@@ -15,7 +15,7 @@
 // DARK — an annotation of a value that is not on screen would annotate nothing.
 
 import type { Check, ColorMismatch } from "@/lib/scoring/types";
-import { israelDay, km as kmText, num } from "./texts";
+import { duration, israelDay, num } from "./texts";
 
 /**
  * One rubric as the strip renders it: a big value over a small line, the small line grey or dark.
@@ -38,9 +38,41 @@ const UNVERIFIED_BY_SELLER = "לפי המוכר, לא אומת";
 
 const blank = (small: string | null): Rubric => ({ big: EMPTY, small, dark: false });
 
-/** "{d}.{m}.{yyyy}" — the test-date form of the km rubric's small line. */
-export function testDate(d: Date): string {
-  return `${d.getUTCDate()}.${d.getUTCMonth() + 1}.${d.getUTCFullYear()}`;
+// Run 9 §1.3 — testDate() ("{d}.{m}.{yyyy}") is gone with the small line it spelled. A buyer does not read a
+// date off a rubric and subtract it from today; the line says HOW LONG AGO the reading was taken, in the
+// axis's own duration words, and testLine() below is the one place that decides it.
+
+const MONTHS_PER_YEAR = 12;
+
+/**
+ * §1.3 — whole months from `from` to `to`, DAY-AWARE: a month completes on the same day of the next month,
+ * so 45 days is 1, 14 days is 0 and 400 days is 13. Never a division by an average month length.
+ */
+export function wholeMonthsBetween(from: Date, to: Date): number {
+  let n = (to.getUTCFullYear() - from.getUTCFullYear()) * MONTHS_PER_YEAR + (to.getUTCMonth() - from.getUTCMonth());
+  if (to.getUTCDate() < from.getUTCDate()) n -= 1;
+  return n;
+}
+
+/**
+ * §1.3 — the km cell's small line: the last test reading and how long ago it was taken.
+ *
+ *   no reading or no date   "עוד לא עבר טסט"
+ *   0 whole months          "בטסט החודש: {reading}"
+ *   1 or more               "בטסט לפני {duration}: {reading}"
+ *
+ * `{duration}` is the AXIS's own duration formatter (texts.ts) — called, never re-written — so the words on
+ * the rubric and the words on the ownership axis can never drift apart. `{reading}` carries the thousands
+ * separators and no unit, exactly as the km value above it does (§6.2).
+ *
+ * `today` IS A PARAMETER. This module reads no clock of its own: the page hands down the one "today" the
+ * ownership axis is already drawn against (§6.3), so the rubric and the axis cannot disagree about the date.
+ */
+export function testLine(reading: number | null, testDate: Date | null, today: Date): string {
+  if (reading === null || testDate === null) return NO_TEST_YET;
+  const elapsed = wholeMonthsBetween(testDate, today);
+  if (elapsed <= 0) return `בטסט החודש: ${num(reading)}`;
+  return `בטסט לפני ${duration(elapsed)}: ${num(reading)}`;
 }
 
 /** "{M}.{YYYY}" — the licence rubric's big value. */
@@ -63,6 +95,8 @@ export type KmInput = {
   test_readings: { test_date: Date; km: number }[];
   /** The km cross-check of the CURRENT invoice, exactly as the engine wrote it. null = no invoice. */
   km_check: Check | null;
+  /** §6.3 — the page's own "today", the very value the ownership axis is drawn against. Never a clock here. */
+  today: Date;
 };
 
 /**
@@ -86,9 +120,11 @@ export function kmRubric(input: KmInput): Rubric {
     if (counted !== undefined) shown = counted;
   }
 
-  const small = shown === null ? NO_TEST_YET : `בטסט ${testDate(shown.test_date)}: ${num(shown.km)}`;
+  // Run 9 §6.2 — the big value is the NUMBER ALONE: the "ק\"מ" unit is the cell's own header and was only
+  // ever repeated here. §6.3 — the small line is testLine(), always, against the page's today.
+  const small = testLine(shown?.km ?? null, shown?.test_date ?? null, input.today);
   if (input.km_declared === null) return blank(small);
-  return { big: kmText(input.km_declared), small, dark };
+  return { big: num(input.km_declared), small, dark };
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +138,10 @@ export type HandInput = {
 };
 
 /**
- * §7.5 + Run 7 §6 — big: "יד {hand_declared}"; an ad with no hand declaration shows the registry's hand.
+ * §7.5 + Run 7 §6 — big: the declared hand; an ad with no hand declaration shows the registry's hand.
+ *
+ * Run 9 §6.2 — THE NUMBER ALONE ("3", not "יד 3"): the "יד" is the cell's own header. The small line is
+ * unchanged and still spells it out, because "במשרד התחבורה: יד 3" is a sentence and not a bare value.
  *
  * Small, per §6's table: AGREEMENT → NO SMALL LINE AT ALL (the "{N} בעלויות" caption is gone — it only ever
  * restated the big value); declared ≠ registry → the existing dark "במשרד התחבורה: יד {N}".
@@ -118,19 +157,19 @@ export function handRubric(input: HandInput): Rubric {
   if (!input.has_registry_history) {
     // Nothing of the Ministry's to put in the small line but the fact that there is nothing.
     if (shown === null) return blank(UNVERIFIED_BY_SELLER);
-    return { big: `יד ${num(shown)}`, small: UNVERIFIED_BY_SELLER, dark: true };
+    return { big: num(shown), small: UNVERIFIED_BY_SELLER, dark: true };
   }
 
   const registry = input.registry_hand;
   if (registry === null) {
     // History rows exist but the registry hand itself is unknown: nothing of the Ministry's to annotate with.
     if (shown === null) return blank(UNVERIFIED_BY_SELLER);
-    return { big: `יד ${num(shown)}`, small: UNVERIFIED_BY_SELLER, dark: true };
+    return { big: num(shown), small: UNVERIFIED_BY_SELLER, dark: true };
   }
   if (shown === null) return blank(null);
   const mismatch = input.hand_declared !== null && input.hand_declared !== registry;
-  if (mismatch) return { big: `יד ${num(shown)}`, small: `${PER_MINISTRY} יד ${num(registry)}`, dark: true };
-  return { big: `יד ${num(shown)}`, small: null, dark: false }; // agreement — nothing to say
+  if (mismatch) return { big: num(shown), small: `${PER_MINISTRY} יד ${num(registry)}`, dark: true };
+  return { big: num(shown), small: null, dark: false }; // agreement — nothing to say
 }
 
 // ---------------------------------------------------------------------------

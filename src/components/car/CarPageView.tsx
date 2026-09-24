@@ -1,16 +1,30 @@
-// The car page (BRIEF Run 6b §7.2–§7.4) — board-accurate, and a RENDERER ONLY.
+// The car page (BRIEF Run 6b §7.2–§7.4; the top block rebuilt by Run 9 §3–§5) — board-accurate, and a
+// RENDERER ONLY.
 //
 // Every display decision arrives already made: the page colour, the label words and their colours, the
-// version line, the fair-number block, the seller line, the four rubrics and the ownership axis are all
-// computed by the pure functions of src/lib/display/** and tested there (§8). Nothing in this file decides
-// what a value means; it decides where it sits.
+// version line, the fair-number block, the four rubrics and the ownership axis are all computed by the pure
+// functions of src/lib/display/** and tested there (§8). Nothing in this file decides what a value means; it
+// decides where it sits.
 //
 // THE PAGE COLOUR (§7.2) paints exactly: the label/place line and its 40×3px bar, the section headings, the
-// contact button, the ownership-axis fills and the phone bottom-bar button. NOTHING ELSE IS COLOURED.
+// contact button, the ownership-axis fills, the phone bottom-bar button — and, from Run 9 §4.3, the region
+// line's pin and word. NOTHING ELSE IS COLOURED.
 //
-// Desktop: a 64px white header, then a two-column top block (content + a 360px image column), the rubric
-// strip, "למה", "היסטוריית בעלויות". Phone: two white bars, the image full width, the same blocks stacked,
-// the rubrics two by two, and a fixed 72px bottom bar that is always on screen.
+// Desktop: a 64px white header, then a two-column top block (the text column + a 536px image column), the
+// rubric strip, "למה", "היסטוריית בעלויות". Phone: two white bars, the image full width, the same blocks
+// stacked, the rubrics two by two, and a fixed 72px bottom bar that is always on screen.
+//
+// RUN 9, WHAT THE TOP BLOCK NOW IS:
+//   §3.2  the title and the version line are ONE group, 4px apart. The larger gap on the deployed site was
+//         never an h1 margin (Tailwind's preflight zeroes those and no stylesheet adds one back) — it was
+//         the text column's OWN 16px flex gap, which the two were simply siblings of. They are wrapped now.
+//   §4.1  the comparison sentence ("הושווה ל-…") is GONE — deleted here and in texts.ts, not hidden.
+//   §4.3  a region line is the LAST line of the price block: the pin and listings.region, in the page colour.
+//   §4.4  the seller line is GONE from both screens, with its business name, its "מגרש" and its region.
+//   §5.1  the photo is 536×357 and the text column ends level with it: 12px between its rows, a 357px
+//         minimum height, and the contact button pushed to the bottom by `margin-top: auto`.
+//   §5.2  the gap under the top block is gapAfterTopBlock(S) — one and a half section gaps, rounded up to a
+//         multiple of 4 — laid on as EXTRA bottom margin, so the section-to-section gap itself never moves.
 //
 // The contact button is WIRED TO NOTHING — it does nothing until the contact-window run. Nothing after the
 // ownership history exists in this run: "מפרט ואבזור" and the contact window each come in their own round.
@@ -18,12 +32,13 @@
 import Link from "next/link";
 import type { RubricStrip } from "@/lib/display/rubrics";
 import type { NoHistoryView, OwnershipAxis, PriceBlock } from "@/lib/display/texts";
-import { shekel } from "@/lib/display/texts";
+import { gapAfterTopBlock, shekel } from "@/lib/display/texts";
 import type { SearchFilters } from "@/lib/search/filters";
 import type { Category } from "@/lib/selection";
 import type { FilterName } from "@/app/actions/search";
 import QuestionRow from "@/components/search/QuestionRow";
 import { LinkPending } from "@/components/search/PickCards";
+import CarTitle from "./CarTitle";
 import OwnershipTimeline from "./OwnershipTimeline";
 import Rubrics from "./Rubrics";
 import WhySection from "./WhySection";
@@ -36,6 +51,23 @@ const CONTACT = "צור קשר עם המוכר";
 const CONTACT_SHORT = "צור קשר";
 const OWNERSHIP_HEADING = "היסטוריית בעלויות";
 const PHOTO_PLACEHOLDER = "[תמונת הרכב]";
+
+// §5.1 — the photo is 536×357 off the board «עמוד הרכב המלא — פריסה ב» (it was 360×236), and the text
+// column's minimum height is that same 357, which is what makes the two columns end on the same line. Both
+// numbers are written as literal Tailwind classes below (`w-[536px] h-[357px]`, `md:min-h-[357px]`) and not
+// as constants: a class name assembled at runtime is a class Tailwind never sees and never emits.
+
+// §5.2 — S, the page's OWN section gap, as <main> below spells it: `gap-4` (16px) on the phone and
+// `md:gap-7` (28px) from `md` up. S itself does not change; the top block simply carries the DIFFERENCE
+// between gapAfterTopBlock(S) and S as extra bottom margin, so every other section-to-section gap is
+// untouched. 28 → 44 (extra 16) on the desktop, 16 → 24 (extra 8) on the phone.
+const SECTION_GAP_PHONE = 16;
+const SECTION_GAP_DESKTOP = 28;
+
+const topBlockGap: React.CSSProperties & Record<string, string> = {
+  "--top-extra-phone": `${gapAfterTopBlock(SECTION_GAP_PHONE) - SECTION_GAP_PHONE}px`,
+  "--top-extra-desktop": `${gapAfterTopBlock(SECTION_GAP_DESKTOP) - SECTION_GAP_DESKTOP}px`,
+};
 
 /**
  * The question behind the page, when there is one. Absent = a black page with no question row (§7.1).
@@ -63,14 +95,17 @@ export type CarPageData = {
   /** "מקום {N}", or "ביטול סופי" for a cancelled car; null when the page carries neither. */
   placeWord: string | null;
   rank: number | null;
-  title: string;
+  /** §3.1 — the title's two parts, never a joined string: CarTitle puts the gap between them, not a comma. */
+  model: string;
+  year: number | null;
   versionLine: string;
   /** The photo by licence plate; null → the placeholder box. */
   imageSrc: string | null;
   price: number;
   percentOfNew: string | null;
   priceBlock: PriceBlock;
-  sellerLine: string;
+  /** §4.3 — listings.region, the very field the drawer's region chips read. Empty/null → no line at all. */
+  region: string | null;
   strip: RubricStrip;
   axis: OwnershipAxis | null;
   noHistory: NoHistoryView | null;
@@ -129,6 +164,45 @@ function VerdictLine({ data, size }: { data: CarPageData; size: "phone" | "deskt
   );
 }
 
+/**
+ * §4.3 — THE REGION LINE, the last line of the price block: the pin and listings.region, in the page colour
+ * (black on a black page). An empty or missing region renders NOTHING — not an empty line, no element at
+ * all — so a listing without a region simply ends its price block at the line above.
+ *
+ * The seller line this replaces (§4.4) is gone from both screens; this is the only place the car page says
+ * where the car is, and it says it from the LISTING's own field, never from the dealer's.
+ */
+function RegionLine({ region, color, size }: { region: string | null; color: string; size: "phone" | "desktop" }) {
+  if (region === null || region.trim() === "") return null;
+  const phone = size === "phone";
+  const icon = phone ? 17 : 18;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: phone ? 5 : 6, fontSize: phone ? 15 : 16, fontWeight: 700, lineHeight: 1.3, color }}>
+      <svg
+        width={icon}
+        height={icon}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        style={{ flexShrink: 0 }}
+      >
+        <path d="M12 21c-4-4.2-7-7.8-7-11.2a7 7 0 0 1 14 0c0 3.4-3 7-7 11.2z" />
+        <circle cx="12" cy="9.8" r="2.5" />
+      </svg>
+      <span>{region}</span>
+    </div>
+  );
+}
+
+/**
+ * §5.1 — the price block: a 4px column. The price row as it was, then the fair number ALONE (§4.1 — the
+ * grey "הושווה ל-…" line that used to share its baseline row is deleted, so the fair number is a line of
+ * its own and no longer wraps against anything), or the thin-cell sentence, and last the region line.
+ */
 function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "desktop" }) {
   const b = data.priceBlock;
   return (
@@ -143,24 +217,19 @@ function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "de
           </span>
         )}
       </div>
-      {/* Run 7 §3 — ONE wrapping baseline row (gap: 2px 12px) carrying BOTH the "{Y} ₪ מתחת/מעל…" line
-          (16px/700) and the grey "הושווה ל-…" line (13px). They share a row and wrap only when the width
-          truly runs out — never by default at desktop widths, which is what the 1280px container restores. */}
       {b !== null && "fair" in b && (
-        <div className="flex flex-wrap items-baseline" style={{ gap: "2px 12px" }}>
-          <span className={`font-bold tabular-nums ${size === "phone" ? "text-[15px]" : "text-[16px]"}`} style={{ color: DARK }}>
-            {b.fair}
-          </span>
-          <span className={size === "phone" ? "text-[12px]" : "text-[13px]"} style={{ color: GREY }}>
-            {b.compared}
-          </span>
-        </div>
+        <span className={`font-bold tabular-nums ${size === "phone" ? "text-[15px]" : "text-[16px]"}`} style={{ color: DARK }}>
+          {b.fair}
+        </span>
       )}
       {b !== null && "thin" in b && (
         <span className={size === "phone" ? "text-[12px]" : "text-[13px]"} style={{ color: GREY }}>
           {b.thin}
         </span>
       )}
+      {/* §4.3 — always the LAST line of the block: after the fair number, after the thin-cell sentence, and
+          directly after the price row on a cancelled car, which has neither. */}
+      <RegionLine region={data.region} color={data.color} size={size} />
     </div>
   );
 }
@@ -192,6 +261,19 @@ export default function CarPageView({ data }: { data: CarPageData }) {
   // FilterPanel and no search bar; "חזרה" is the only way to change the question, on the results screen.
   const questionRow = (q: PageQuestion) => <QuestionRow readOnly modelDisplay={q.modelDisplay} filters={q.filters} active={q.active} />;
 
+  // §3.2 — the title group: the h1 and the version line, 4px apart, wrapped so the text column's own row gap
+  // cannot open between them. The h1 carries `margin: 0` explicitly, so the group's 4px is the only spacing.
+  const titleGroup = (
+    <div className="flex flex-col gap-1">
+      <h1 className="text-[26px] font-bold md:text-[34px]" style={{ color: DARK, margin: 0 }}>
+        <CarTitle model={data.model} year={data.year} />
+      </h1>
+      <p className="text-[14px] md:text-[15px]" style={{ color: GREY }}>
+        {data.versionLine}
+      </p>
+    </div>
+  );
+
   return (
     <div className="min-h-screen" style={{ background: "#eeece8" }}>
       {/* ---------------------------------------------------------------- header */}
@@ -222,16 +304,21 @@ export default function CarPageView({ data }: { data: CarPageData }) {
       {/* ---------------------------------------------------------------- phone image */}
       <Photo src={data.imageSrc} className="block h-[200px] w-full md:hidden" />
 
-      {/* Run 7 §3 — the page container: max-width 1280px, centred; main padding 36px 48px 40px; 28px between
-          sections. Below 1280px the paddings hold and the grid shrinks fluidly (the columns are minmax(0,1fr)
-          and a fixed 360px, so it is the flexible column that gives). The phone column is untouched by §3. */}
+      {/* Run 7 §3 — the page container: max-width 1280px, centred; main padding 36px 48px 40px. S, the gap
+          BETWEEN sections, is this element's own `gap-4` / `md:gap-7` and Run 9 §5.2 does not touch it. */}
       <main className="mx-auto flex max-w-[1280px] flex-col gap-4 px-4 pt-4 pb-[88px] md:gap-7 md:px-12 md:pt-9 md:pb-10">
         {/* ------------------------------------------------------------ top block */}
-        {/* §3 — grid minmax(0, 1fr) 360px, gap 32px: RTL puts the first column on the RIGHT, so the flexible
-            info column is on the right and the 360px photo column on the left, per the board. `items-start`
-            is what keeps the dead band from opening under the photo: neither column stretches. */}
-        <section className="flex flex-col gap-4 md:grid md:grid-cols-[minmax(0,1fr)_360px] md:items-start md:gap-8">
-          <div className="flex flex-col gap-4">
+        {/* §5.1 — grid minmax(0, 1fr) 536px, gap 32px: RTL puts the first column on the RIGHT, so the
+            flexible text column is on the right and the 536px photo column on the left, per the board.
+            `items-start` is what keeps the dead band from opening under the photo: neither column stretches.
+            §5.2 — the extra bottom margin is gapAfterTopBlock(S) − S, from the one function that decides it. */}
+        <section
+          className="mb-[var(--top-extra-phone)] flex flex-col gap-4 md:mb-[var(--top-extra-desktop)] md:grid md:grid-cols-[minmax(0,1fr)_536px] md:items-start md:gap-8"
+          style={topBlockGap}
+        >
+          {/* §5.1 — the text column: 12px between its rows (it was 16) and at least as tall as the photo, so
+              the contact button pushed down by `mt-auto` lands on the photo's bottom line. */}
+          <div className="flex flex-col gap-4 md:min-h-[357px] md:gap-3">
             <div className="md:hidden">
               <VerdictLine data={data} size="phone" />
             </div>
@@ -239,39 +326,28 @@ export default function CarPageView({ data }: { data: CarPageData }) {
               <VerdictLine data={data} size="desktop" />
             </div>
 
-            <h1 className="text-[26px] font-bold md:text-[34px]" style={{ color: DARK }}>
-              {data.title}
-            </h1>
-            <p className="text-[14px] md:text-[15px]" style={{ color: GREY }}>
-              {data.versionLine}
-            </p>
+            {titleGroup}
 
-            {/* the price row: the numbers, and at its end the contact button with the seller line under it */}
-            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between md:gap-8">
-              <div className="md:hidden">
-                <PriceBlockView data={data} size="phone" />
-              </div>
-              <div className="hidden md:block">
-                <PriceBlockView data={data} size="desktop" />
-              </div>
-
-              {/* §3 — the contact button: height 48px, padding 0 32px, radius 8, the page colour; at the
-                  row's far side with the seller line beneath it. */}
-              <div className="hidden shrink-0 flex-col items-stretch gap-2 md:flex">
-                <button type="button" className="h-12 rounded-lg px-8 text-[16px] font-semibold text-white" style={{ background: data.color }}>
-                  {CONTACT}
-                </button>
-                <span className="text-[13px]" style={{ color: GREY }}>
-                  {data.sellerLine}
-                </span>
-              </div>
+            <div className="md:hidden">
+              <PriceBlockView data={data} size="phone" />
+            </div>
+            <div className="hidden md:block">
+              <PriceBlockView data={data} size="desktop" />
             </div>
 
             <Rubrics strip={data.strip} />
+
+            {/* §5.1 — the contact button: height 48px, padding 0 32px, radius 8, the page colour, at the
+                BOTTOM of the text column. The phone does not show it here — the fixed bar holds it. */}
+            <div className="mt-auto hidden md:block">
+              <button type="button" className="h-12 rounded-lg px-8 text-[16px] font-semibold text-white" style={{ background: data.color }}>
+                {CONTACT}
+              </button>
+            </div>
           </div>
 
-          {/* §3 — the photo box: 236px tall, radius 8, object-cover, filling its 360px column. */}
-          <Photo src={data.imageSrc} className="hidden h-[236px] w-full rounded-lg md:block" />
+          {/* §5.1 — the photo box: 536×357, radius 8, object-cover. */}
+          <Photo src={data.imageSrc} className="hidden h-[357px] w-[536px] rounded-lg md:block" />
         </section>
 
         {/* ------------------------------------------------- למה (between the rubrics and the history) */}
@@ -297,7 +373,8 @@ export default function CarPageView({ data }: { data: CarPageData }) {
       {/* ------------------------------------------------------------ phone bottom bar (§7.4, Run 7 §5) */}
       {/* §5 — the price element is GONE from this bar (the price is already on the page, a few centimetres
           above it). The contact button is the bar's only content, horizontally centred. The bar's height and
-          background are unchanged, and it has no scroll-aware behaviour of any kind. */}
+          background are unchanged, and it has no scroll-aware behaviour of any kind. Run 9 §4.4: the region
+          does NOT enter this bar either. */}
       <div className="fixed inset-x-0 bottom-0 z-20 flex h-[72px] items-center justify-center border-t border-[#d8d3cb] bg-white px-4 md:hidden">
         <button type="button" className="h-[46px] shrink-0 rounded-lg px-7 text-[15px] font-semibold text-white" style={{ background: data.color }}>
           {CONTACT_SHORT}

@@ -32,7 +32,6 @@ import {
   percentOfNewLine,
   placeWord,
   priceBlock,
-  sellerLine,
   zeroKmExplanation,
   type NoHistoryView,
   type OwnershipAxis,
@@ -158,6 +157,13 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
   const color = cancelled ? BLACK : pageColor(shownLabels);
 
   // ---- the display decisions (all of them made in src/lib/display) --------
+
+  // Run 9 §6.3 — ONE "today" FOR THE WHOLE RENDER. The ownership axis is drawn against it ("היום" and the
+  // current ownership's duration), the km rubric's test line counts its months to it, and the licence rubric
+  // takes its day in Israel from it. Read once, here: two `new Date()` calls a few lines apart could fall on
+  // either side of midnight and let the axis and the rubric disagree about the date.
+  const now = new Date();
+
   const history = Array.isArray(car.ownership_history) ? (car.ownership_history as { ym: string; type: string }[]) : [];
   let axis: OwnershipAxis | null = null;
   let noHistory: NoHistoryView | null = null;
@@ -165,7 +171,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     axis = ownershipAxis({
       history,
       first_registration: car.first_registration,
-      now: new Date(),
+      now,
       zero_km_deal: historyRaw.zero_km_deal === true, // the INVOICE's fact; never recomputed
     });
   } else {
@@ -173,7 +179,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
   }
 
   const strip: RubricStrip = rubricStrip({
-    km: { km_declared: listing.km_declared, test_readings: car.test_readings, km_check: kmCheck },
+    km: { km_declared: listing.km_declared, test_readings: car.test_readings, km_check: kmCheck, today: now },
     hand: { hand_declared: listing.hand_declared, registry_hand: car.hand, has_registry_history: history.length > 0 },
     color: {
       color: car.color,
@@ -181,7 +187,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
       color_mismatch: cancelled ? undefined : invoice.facts?.color_mismatch,
       color_changed_reported: !cancelled && invoice.facts?.color_changed_reported === true,
     },
-    licence: { test_expiry: car.test_expiry, now: new Date() },
+    licence: { test_expiry: car.test_expiry, now },
   });
 
   const newPrice = item.candidate.new_price;
@@ -195,7 +201,10 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     labels: shownLabels,
     placeWord: cancelled ? CANCELLED_WORD : shownRank === null ? null : placeWord(shownRank),
     rank: shownRank,
-    title: `${car.model.model ?? ""}, ${car.year}`,
+    // Run 9 §3.1 — THE TWO PARTS, never a joined string: CarTitle puts a 0.4em gap between them and the
+    // comma is gone. The model spelling itself is unchanged — it is the same `models.model` as before.
+    model: car.model.model ?? "",
+    year: car.year,
     versionLine: versionLine({
       model: car.model.model,
       body_type: car.model.body_type,
@@ -215,12 +224,10 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
       sample_size: norm?.sample_size ?? null,
       window_days: norm?.window_days ?? null,
     }),
-    sellerLine: sellerLine({
-      dealer_type: listing.dealer.dealer_type,
-      dealer_name: listing.dealer.name,
-      listing_region: listing.region,
-      dealer_region: listing.dealer.region,
-    }),
+    // Run 9 §4.3 — the region line reads THE LISTING's own region, the very field the drawer's region chips
+    // read; §4.4 — the seller line, which used to carry the dealer's name, word and region, is gone. The
+    // dealer row itself is still selected above and still read by everything else that reads it.
+    region: listing.region,
     strip,
     axis,
     noHistory,
