@@ -1,11 +1,12 @@
 "use client";
 
-// The ownership axis (BRIEF Run 6b §7.6; corrected by Run 7 §2) — "היסטוריית בעלויות".
+// The ownership axis (BRIEF Run 6b §7.6; corrected by Run 7 §2, then by Run 8 §4) — "היסטוריית בעלויות".
 //
 // STILL A DUMB RENDERER: the segments, their widths, the hand numbers, the year ticks, the legend lines, the
-// zero-km marker and the no-history wording are all decided by the pure functions of
-// src/lib/display/texts.ts (ownershipAxis, scaleLayout, shadeRamp, legendHead/legendTail, zeroKmExplanation,
-// noHistoryView) and tested there. Nothing here computes a duration, reads an invoice or picks a colour.
+// 0-km phrase and the no-history wording are all decided by the pure functions of
+// src/lib/display/texts.ts (ownershipAxis, scaleLayout, shadeRamp, legendHead/legendHeadParts/legendTail,
+// zeroKmExplanation, noHistoryView) and tested there. Nothing here computes a duration, reads an invoice or
+// picks a colour.
 //
 // IT IS A CLIENT COMPONENT FOR ONE REASON (§2.3): the collision rule is "a year label is drawn only if it
 // clears every already-drawn label by >= 12px, at any card width", and a width is a measured thing. The row
@@ -14,8 +15,8 @@
 // — the correct answer for a row whose width is not yet known — so the first client render matches the
 // server's and the ticks appear on the same frame as hydration.
 //
-// ONE RIGHT-TO-LEFT GEOMETRY (§2.1). On-the-road is the RIGHT edge, today is the LEFT edge. The bar, the
-// 0-km row and the scale row are three rows of ONE column template, so they cannot drift apart.
+// ONE RIGHT-TO-LEFT GEOMETRY (§2.1). On-the-road is the RIGHT edge, today is the LEFT edge. The bar and the
+// scale row are two rows of ONE column template, so they cannot drift apart.
 //
 // THE RULE FOR THE SCALE ROW (Run 7c §11.1): PHYSICAL INSETS — `right` and `left` — NEVER `insetInline*`.
 // The axis is a right-to-left drawing regardless of writing direction. layout.tsx sets `dir="rtl"` on
@@ -23,20 +24,23 @@
 // `insetInlineEnd` resolves to `left` and `insetInlineStart` to `right`. That is why the scale came out
 // mirrored against its own bar on the deployed build — "עלייה לכביש" at the left, "היום" at the right —
 // while the bar, a CSS grid whose first column is the right one under RTL, was correct all along.
-// The 0-km row is the one place logical properties are right and they stay: its inline start IS the right
-// side, which is the side its marker line belongs on.
 //
 //   private / institutional   a fill from the page colour's ramp, in ownership order (§2.5)
 //   dealer                    hollow — white with a 1px dashed border, NO hand number, and (§2.2) NO label
 //                             above the axis at all: a dealer is its segment and its legend row, nothing else
 //
-// The 0-km deal carries its own row above the bar, anchored to its segment's start, and the explanation opens
-// from the label: hover or focus on desktop, a tap on the phone — one <details>, which gives both without a
-// line of script. That mechanism and its text are Run 6b's and are unchanged.
+// RUN 8 §4.3 — NOTHING SITS ABOVE THE BAR ANY MORE. Run 7 §2.4's 0-km row — the 2px line and the words
+// "עסקת 0 ק"מ" over the leasing segment, its grid row and the height it reserved — is removed entirely and
+// the bar moves up; the card's other measurements are unchanged. The fact itself did not go anywhere: it is
+// now a WORD IN THE FIRST HAND'S LEGEND LABEL, in place of the ownership-type word (texts.ts decides that),
+// and that phrase ALONE is a real <button> — styled as text, with a thin dotted underline — which opens the
+// same explanation popover with the same text, anchored to the phrase instead of to the marker. It is a
+// button and not a <summary> because §4.3 asks for `aria-expanded` and for Enter and Space to open it,
+// which a button gives and a <details> does not.
 
 import { useEffect, useRef, useState } from "react";
 import type { AxisSegment, NoHistoryView, OwnershipAxis } from "@/lib/display/texts";
-import { legendHead, legendTail, scaleLayout, shadeRamp, ZERO_KM_MARKER } from "@/lib/display/texts";
+import { legendHeadParts, legendTail, scaleLayout, shadeRamp } from "@/lib/display/texts";
 
 const DASHED = "#c9c3b9";
 const GREY = "#665f58";
@@ -75,6 +79,10 @@ export default function OwnershipTimeline({
   // §2.3 — the scale row's measured width. 0 until it has been measured, which is also the server's answer.
   const scaleRef = useRef<HTMLDivElement>(null);
   const [scaleWidth, setScaleWidth] = useState(0);
+
+  // §4.3 — the explanation popover, opened from the 0-km phrase in the first hand's label. Its mechanics are
+  // the ones the <details> gave: the control toggles it, and nothing else closes it.
+  const [zeroKmOpen, setZeroKmOpen] = useState(false);
 
   // useEffect, not useLayoutEffect: this component is server-rendered too, and useLayoutEffect does nothing
   // there but warn. The server HTML has already painted its two end labels by then, so measuring one paint
@@ -125,47 +133,19 @@ export default function OwnershipTimeline({
   let owner = 0;
   const fills = axis.segments.map((s) => (s.kind === "dealer" ? null : (ramp[owner++] ?? null)));
 
-  // §2.4 — the bar and the 0-km row are the SAME column template, so the marker cannot drift off its segment.
+  // §2.4 — the bar and the scale row are the SAME column template, so they cannot drift apart.
   const template = axis.segments.map((s) => `${s.share}fr`).join(" ");
-  const zeroIndex = axis.segments.findIndex((s) => s.zero_km);
 
   const labels = scaleLayout(axis, scaleWidth);
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-[#d8d3cb] bg-white p-4 md:px-6 md:py-5">
-      {/* ------------------------------------------------------- the 0-km row (§2.4) */}
-      {/* ONE element on ONE row, in the leasing segment's own column, anchored to that segment's START (the
-          right edge, RTL): a 2px line as the label's inline-start border and the words immediately to its
-          LEFT on the same row. The row exists only when there is a 0-km deal — §2.2 removed the only other
-          thing that ever sat above the bar. */}
-      {zeroIndex !== -1 && (
-        <div className="grid" style={{ gridTemplateColumns: template, columnGap: SEGMENT_GAP }}>
-          <details
-            className="relative min-w-0"
-            // Spanning to the end of the row leaves the label the whole card to grow leftward into, and
-            // max-width clamps it inside the card's padding if it ever ran out (§2.4). It cannot in
-            // practice: ownershipAxis() only ever marks the FIRST segment, which starts at the card's edge.
-            style={{ gridColumn: `${zeroIndex + 1} / -1`, justifySelf: "start", maxWidth: "100%" }}
-          >
-            <summary
-              className="cursor-pointer list-none whitespace-nowrap text-[12px] font-bold"
-              style={{ color: DARK, borderInlineStart: `2px solid ${DARK}`, paddingInlineStart: 6 }}
-            >
-              {ZERO_KM_MARKER}
-            </summary>
-            {zeroKmExplanation !== null && (
-              <p className="absolute z-10 mt-1 w-64 rounded-lg border border-[#d8d3cb] bg-white p-3 text-[13px] font-normal shadow-lg" style={{ color: DARK }}>
-                {zeroKmExplanation}
-              </p>
-            )}
-          </details>
-        </div>
-      )}
-
       {/* ------------------------------------------------------------------ the bar */}
+      {/* §4.3 — the bar is the FIRST row of the card now: the 0-km row that used to sit above it is gone,
+          and no height is reserved for it. */}
       {/* A grid, not a flex row of percentages: with `fr` the 2px gaps come out of the track sizes instead of
           being added to a width that already totalled 100%, so the bar is exactly as wide as its card and
-          every column lines up with the same column in the 0-km row above it. */}
+          every segment keeps the share ownershipAxis() gave it. */}
       <div className="grid" style={{ gridTemplateColumns: template, columnGap: SEGMENT_GAP, height: BAR_HEIGHT }}>
         {axis.segments.map((s, i) => (
           <span
@@ -227,17 +207,57 @@ export default function OwnershipTimeline({
       </div>
 
       {/* --------------------------------------------- the legend, one line per ownership (§2.6) */}
+      {/* Run 8 §4.3 — the 0-km deal lives HERE now, as the first hand's own word, with the phrase alone
+          clickable. The same row, the same phrase and the same popover on the computer and on the phone. */}
       <ul className="flex flex-col gap-1 pt-2">
-        {axis.segments.map((s, i) => (
-          <li key={i} className="flex items-center gap-2 text-[15px]" style={{ color: s.kind === "dealer" ? GREY : DARK }}>
-            {/* §2.5 — the swatch is the segment's own fill, so the legend and the bar can never disagree */}
-            <span aria-hidden className="inline-block shrink-0" style={{ width: 14, height: 14, borderRadius: 3, ...segmentStyle(s, fills[i]) }} />
-            <span>
-              <strong className="font-bold">{legendHead(s)}</strong>
-              {legendTail(s)}
-            </span>
-          </li>
-        ))}
+        {axis.segments.map((s, i) => {
+          const head = legendHeadParts(s);
+          return (
+            <li key={i} className="flex items-center gap-2 text-[15px]" style={{ color: s.kind === "dealer" ? GREY : DARK }}>
+              {/* §2.5 — the swatch is the segment's own fill, so the legend and the bar can never disagree */}
+              <span aria-hidden className="inline-block shrink-0" style={{ width: 14, height: 14, borderRadius: 3, ...segmentStyle(s, fills[i]) }} />
+              <span>
+                <strong className="font-bold">
+                  {head.before}
+                  {head.phrase !== null && (
+                    <span className="relative inline-block">
+                      {/* §4.3 — a real button STYLED AS TEXT: the font, size, weight and colour are the
+                          label's own (inherited), and the only mark it carries is the thin dotted underline.
+                          The rest of the label carries none. Click / Enter / Space all open it, which is what
+                          a button gives and a <summary> did not, and `aria-expanded` says which way it is. */}
+                      <button
+                        type="button"
+                        aria-expanded={zeroKmOpen}
+                        onClick={() => setZeroKmOpen((open) => !open)}
+                        className="cursor-pointer border-0 bg-transparent p-0"
+                        style={{
+                          font: "inherit",
+                          color: "inherit",
+                          textDecoration: "underline dotted",
+                          textDecorationThickness: 1,
+                          textUnderlineOffset: 3,
+                          textDecorationColor: "currentColor",
+                        }}
+                      >
+                        {head.phrase}
+                      </button>
+                      {/* the explanation, unchanged in text and in look — only its anchor moved (§4.3) */}
+                      {zeroKmOpen && zeroKmExplanation !== null && (
+                        <p
+                          className="absolute z-10 mt-1 w-64 rounded-lg border border-[#d8d3cb] bg-white p-3 text-[13px] font-normal shadow-lg"
+                          style={{ color: DARK, top: "100%", insetInlineStart: 0 }}
+                        >
+                          {zeroKmExplanation}
+                        </p>
+                      )}
+                    </span>
+                  )}
+                </strong>
+                {legendTail(s)}
+              </span>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

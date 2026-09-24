@@ -318,7 +318,7 @@ export type AxisScaleTick = { year: number; share_from_start: number };
 export type OwnershipAxis = {
   segments: AxisSegment[];
   ticks: AxisScaleTick[]; // one per calendar year inside the axis (desktop only; the phone shows the ends)
-  start_label: string; // the right end (RTL): "עלייה לכביש · {M.YYYY}"
+  start_label: string; // Run 8 §4.1 — the right end (RTL): "{M.YYYY} · עלייה לכביש", the DATE FIRST
   end_label: string; // the left end: "היום"
   total_months: number;
 };
@@ -386,21 +386,35 @@ export function ownershipAxis(input: {
   return {
     segments,
     ticks,
-    start_label: input.first_registration === null ? ON_THE_ROAD : `${ON_THE_ROAD} · ${monthYear(input.first_registration)}`,
+    // Run 8 §4.1 — THE DATE FIRST: the date sits next to its own tick (the right edge, RTL) and the caption
+    // trails inward. Decision 7 of DECISIONS-day19-fixes.md, 23/09. Anchoring, size, colour and the flush
+    // placement do not change — no geometry moved; only the order of the two parts did.
+    start_label: input.first_registration === null ? ON_THE_ROAD : `${monthYear(input.first_registration)} · ${ON_THE_ROAD}`,
     end_label: TODAY_WORD,
     total_months: total,
   };
 }
 
+/**
+ * Run 8 §4.3 — THE 0-KM DEAL IS A WORD IN THE FIRST HAND'S LABEL, not a marker above the bar. When the
+ * segment carries the invoice's flag (`zero_km`, set by ownershipAxis above under the existing rule and the
+ * existing ZERO_KM_WINDOW_MONTHS — no new rule and no new constant), "עסקת 0 ק"מ" stands IN PLACE OF the
+ * ownership-type word: "יד 1 · עסקת 0 ק"מ · {משך}". Without the flag the line is today's, "יד 1 · ליסינג ·
+ * {משך}". The duration, the rest of the row and the last row's " · הבעלות הנוכחית" suffix are unchanged.
+ */
+function ownershipWordOf(s: AxisSegment): string {
+  return s.zero_km ? ZERO_KM_LABEL : s.word;
+}
+
 /** §7.6 — one legend line per ownership. A dealer line is grey and says it is not counted as a hand. */
 export function legendLine(s: AxisSegment): string {
   if (s.kind === "dealer") return `${OWNERSHIP_WORD.dealer} · ${duration(s.months)} · ${NOT_A_HAND}`;
-  return `יד ${num(s.hand as number)} · ${s.word} · ${duration(s.months)}${s.current ? ` · ${CURRENT_OWNERSHIP}` : ""}`;
+  return `יד ${num(s.hand as number)} · ${ownershipWordOf(s)} · ${duration(s.months)}${s.current ? ` · ${CURRENT_OWNERSHIP}` : ""}`;
 }
 
 /** §7.6 — the bold head of a legend line, so the component can weight it without splitting the string itself. */
 export function legendHead(s: AxisSegment): string {
-  return s.kind === "dealer" ? OWNERSHIP_WORD.dealer : `יד ${num(s.hand as number)} · ${s.word}`;
+  return s.kind === "dealer" ? OWNERSHIP_WORD.dealer : `יד ${num(s.hand as number)} · ${ownershipWordOf(s)}`;
 }
 
 export function legendTail(s: AxisSegment): string {
@@ -408,6 +422,22 @@ export function legendTail(s: AxisSegment): string {
   return ` · ${duration(s.months)}${s.current ? ` · ${CURRENT_OWNERSHIP}` : ""}`;
 }
 
+/**
+ * Run 8 §4.3 — the head split so that ONLY the 0-km phrase is a control. `before + (phrase ?? "")` is always
+ * exactly legendHead(s); the component makes `phrase` a <button> with the dotted underline and hangs the
+ * explanation popover off it, and renders `before` as plain text. The decision of what is clickable is made
+ * here, not there.
+ */
+export function legendHeadParts(s: AxisSegment): { before: string; phrase: string | null } {
+  if (s.kind === "dealer" || !s.zero_km) return { before: legendHead(s), phrase: null };
+  return { before: `יד ${num(s.hand as number)} · `, phrase: ZERO_KM_LABEL };
+}
+
+/**
+ * The 0-km phrase's exact characters — the quote mark in ק"מ included. Run 7's marker above the bar used
+ * this same constant and is gone (§4.3); the phrase in the first hand's label is its one home now, and the
+ * explanation text (zeroKmExplanation below) is built from it too, so the three can never drift apart.
+ */
 export const ZERO_KM_MARKER = ZERO_KM_LABEL;
 
 // ---------------------------------------------------------------------------
@@ -441,15 +471,36 @@ export const SCALE_LABEL_GAP_PX = 12;
 
 /**
  * The width of a 12px scale label, estimated rather than measured: this is a pure function and there is no
- * DOM here. 0.6em per character is a DELIBERATE OVER-ESTIMATE for Assistant at 12px (its digits run ~0.55em
- * and its Hebrew letters ~0.52em), because over-estimating can only drop a tick that would have fitted,
- * while under-estimating would let two labels touch — and §2.3 forbids the second, not the first.
+ * DOM here.
+ *
+ * RUN 8 §4.2 — PER CHARACTER CLASS, not a flat rate. Run 7's flat 0.6em per character was a deliberate
+ * over-estimate, but on the deployed build it cost a tick that had room: at 12px the twenty-character end
+ * label "1.2022 · עלייה לכביש" was estimated at 144px while Assistant renders it at roughly 110px, and those
+ * ~34px of phantom width ate the gap to the 2023 label — which cleared by about 45px in reality and by under
+ * 12px on paper, so the rule skipped it. The classes below are Assistant 400 at the row's 12px; they are
+ * still a slight over-estimate and never an under-estimate, which is what §2.3 requires (over-estimating can
+ * only drop a tick that would have fitted; under-estimating would let two labels touch).
+ *
+ * The rule itself is untouched: ≥ 12px clearance, both end labels always, then the years in order, and a
+ * skipped year loses its tick and its label together.
  */
-export const SCALE_CHAR_EM = 0.6;
+export const SCALE_CHAR_EM_HEBREW = 0.5; // a Hebrew letter
+export const SCALE_CHAR_EM_ALNUM = 0.58; // a digit or a Latin letter
+export const SCALE_CHAR_EM_NARROW = 0.3; // a space, a middle dot, a period
 const SCALE_FONT_PX = 12;
 
+/** Which of the three classes one character falls in. Anything unlisted takes the widest, never the narrowest. */
+function charEm(ch: string): number {
+  if (ch === " " || ch === "·" || ch === ".") return SCALE_CHAR_EM_NARROW;
+  if (/[0-9A-Za-z]/.test(ch)) return SCALE_CHAR_EM_ALNUM;
+  if (/[\u0590-\u05FF]/.test(ch)) return SCALE_CHAR_EM_HEBREW;
+  return SCALE_CHAR_EM_ALNUM;
+}
+
 export function scaleLabelWidth(text: string): number {
-  return text.length * SCALE_CHAR_EM * SCALE_FONT_PX;
+  let em = 0;
+  for (const ch of text) em += charEm(ch);
+  return em * SCALE_FONT_PX;
 }
 
 /** A label's footprint on the axis, as [near, far] distances from the RIGHT edge, in px. */

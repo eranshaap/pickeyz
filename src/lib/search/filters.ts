@@ -69,3 +69,34 @@ export function activeFilterNames(f: SearchFilters): string[] {
   if (regionsActive(f)) names.push("regions");
   return names;
 }
+
+// ---------------------------------------------------------------------------
+// Run 8 §1.3 — THE CANONICAL SHAPE, and the one deep-equal built on it
+// ---------------------------------------------------------------------------
+//
+// It lived in FilterPanel.tsx (`normalize`) and was compared by JSON.stringify in two client files. It is a
+// rule about what a filters object MEANS — "no year chosen" and "every year chosen" are the same question,
+// and the order chips were tapped in is not part of it — so it belongs beside the predicate that reads the
+// same fields. isUnchanged() (chip-state.ts), the screen's dim test and Run 7 §1.3's "apply with no change
+// = cancel" now all compare through this ONE function, which is what §2.3's belt and braces means.
+
+/** Arrays sorted, empty groups dropped, keys in a fixed order — two equal questions normalise identically. */
+export function normalizeFilters(f: SearchFilters): SearchFilters {
+  const out: SearchFilters = {};
+  if (f.priceMin !== undefined) out.priceMin = f.priceMin;
+  if (f.priceMax !== undefined) out.priceMax = f.priceMax;
+  if (yearsActive(f)) out.years = [...(f.years as number[])].sort((a, b) => a - b);
+  if (f.kmMax !== undefined) out.kmMax = f.kmMax;
+  if (regionsActive(f)) out.regions = [...(f.regions as string[])].sort((a, b) => a.localeCompare(b));
+  return out;
+}
+
+/** The deep-equal of two questions. JSON.stringify is exact here because normalizeFilters fixes key order. */
+export function sameFilters(a: SearchFilters, b: SearchFilters): boolean {
+  return JSON.stringify(normalizeFilters(a)) === JSON.stringify(normalizeFilters(b));
+}
+
+/** No filter at all — what the actions turn into `undefined` so `searches.filters` is null, not `{}`. */
+export function noFilters(f: SearchFilters): boolean {
+  return Object.keys(normalizeFilters(f)).length === 0;
+}

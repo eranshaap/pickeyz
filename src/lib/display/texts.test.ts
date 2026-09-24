@@ -14,6 +14,8 @@ import {
   fairLine,
   hexToHsl,
   hslToHex,
+  legendHead,
+  legendHeadParts,
   legendLine,
   months,
   noHistoryView,
@@ -35,6 +37,7 @@ import {
   whyHeading,
   years,
   zeroKmExplanation,
+  ZERO_KM_MARKER,
 } from "./texts";
 import { OWNERSHIP_CODES } from "@/lib/mot/translator";
 
@@ -272,15 +275,21 @@ describe("the ownership axis (§7.6)", () => {
     assert.deepEqual(axis.segments.map((s) => s.current), [false, false, true]);
   });
 
-  it("the ends: עלייה לכביש with the first registration, and היום", () => {
+  // Run 8 §4.1 — THE DATE FIRST. Was: "עלייה לכביש · 1.2021"; is: "1.2021 · עלייה לכביש".
+  it("the ends (§4.1): the DATE first, then עלייה לכביש — and היום", () => {
     const axis = ownershipAxis({
       history: [{ ym: "2021-01", type: "private" }],
       first_registration: new Date(Date.UTC(2021, 0, 15)),
       now,
       zero_km_deal: false,
     });
-    assert.equal(axis.start_label, "עלייה לכביש · 1.2021");
+    assert.equal(axis.start_label, "1.2021 · עלייה לכביש");
     assert.equal(axis.end_label, "היום");
+  });
+
+  it("the ends (§4.1): no first registration keeps the caption alone", () => {
+    const axis = ownershipAxis({ history: [{ ym: "2021-01", type: "private" }], first_registration: null, now, zero_km_deal: false });
+    assert.equal(axis.start_label, "עלייה לכביש");
   });
 
   it("one tick per calendar year inside the axis", () => {
@@ -326,6 +335,47 @@ describe("the ownership axis (§7.6)", () => {
 
   it("a malformed ym is a stop", () => {
     assert.throws(() => ownershipAxis({ history: [{ ym: "2021", type: "private" }], first_registration: null, now, zero_km_deal: false }), /YYYY-MM/);
+  });
+});
+
+describe("the 0-km deal in the first hand's label (Run 8 §4.3)", () => {
+  const now = new Date(Date.UTC(2026, 8, 22));
+  const history = [
+    { ym: "2021-01", type: "leasing" },
+    { ym: "2024-01", type: "private" },
+  ];
+  const withFlag = ownershipAxis({ history, first_registration: new Date(Date.UTC(2021, 0, 15)), now, zero_km_deal: true });
+  const withoutFlag = ownershipAxis({ history, first_registration: new Date(Date.UTC(2021, 0, 15)), now, zero_km_deal: false });
+
+  it("with the flag: the phrase stands IN PLACE OF the ownership-type word", () => {
+    assert.equal(legendLine(withFlag.segments[0]), 'יד 1 · עסקת 0 ק"מ · 3 שנים');
+    assert.equal(legendHead(withFlag.segments[0]), 'יד 1 · עסקת 0 ק"מ');
+  });
+
+  it("without the flag: today's label, unchanged", () => {
+    assert.equal(legendLine(withoutFlag.segments[0]), "יד 1 · ליסינג · 3 שנים");
+    assert.equal(legendHead(withoutFlag.segments[0]), "יד 1 · ליסינג");
+  });
+
+  it("only the FIRST hand carries it; the rest of the row and the current suffix are untouched", () => {
+    assert.equal(legendLine(withFlag.segments[1]), "יד 2 · פרטית · שנתיים ו-8 חודשים · הבעלות הנוכחית");
+    assert.equal(legendLine(withFlag.segments[1]), legendLine(withoutFlag.segments[1]));
+  });
+
+  it("the head splits so that ONLY the phrase is a control, and the split loses nothing", () => {
+    const parts = legendHeadParts(withFlag.segments[0]);
+    assert.equal(parts.before, "יד 1 · ");
+    assert.equal(parts.phrase, 'עסקת 0 ק"מ');
+    assert.equal(parts.before + parts.phrase, legendHead(withFlag.segments[0]));
+
+    const plain = legendHeadParts(withoutFlag.segments[0]);
+    assert.equal(plain.phrase, null); // nothing is clickable without the flag
+    assert.equal(plain.before, legendHead(withoutFlag.segments[0]));
+  });
+
+  it("the phrase's characters are the marker's own — the quote mark in ק\"מ included", () => {
+    assert.equal(legendHeadParts(withFlag.segments[0]).phrase, ZERO_KM_MARKER);
+    assert.ok(zeroKmExplanation(4).startsWith(ZERO_KM_MARKER));
   });
 });
 
@@ -418,7 +468,7 @@ describe("the scale layout (Run 7 §2.3)", () => {
     const drawn = scaleLayout(axis, 1136);
     const start = drawn.find((l) => l.kind === "start");
     const end = drawn.find((l) => l.kind === "end");
-    assert.equal(start?.text, "עלייה לכביש · 1.2021");
+    assert.equal(start?.text, "1.2021 · עלייה לכביש"); // §4.1 — the date first
     assert.equal(start?.share_from_start, 0); // the RIGHT edge
     assert.equal(end?.text, "היום");
     assert.equal(end?.share_from_start, 1); // the LEFT edge
@@ -463,6 +513,75 @@ describe("the scale layout (Run 7 §2.3)", () => {
       assert.equal(l.text, String(l.year));
     }
     assert.ok(drawnYears.length < axis.ticks.length, "some year must have been skipped at phone width");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run 8 §4.2 — the label-width estimate, and the 2023 tick the old one ate
+// ---------------------------------------------------------------------------
+
+describe("the scale label's estimated width (Run 8 §4.2)", () => {
+  const END_LABEL = "1.2022 · עלייה לכביש";
+
+  it("per character class, not a flat rate: the end label goes 144px -> 112.8px", () => {
+    // five digits at 0.58em, one period + three spaces + one middle dot at 0.3em, ten Hebrew letters at
+    // 0.5em => 9.4em at 12px. The flat 0.6em rate of Run 7 made the same twenty characters 144px.
+    assert.equal(END_LABEL.length, 20);
+    assert.equal(Math.round(scaleLabelWidth(END_LABEL) * 10) / 10, 112.8);
+    assert.equal(END_LABEL.length * 0.6 * 12, 144); // what it used to be
+  });
+
+  it("a four-digit year and היום: digits 0.58em, Hebrew letters 0.5em", () => {
+    assert.equal(Math.round(scaleLabelWidth("2023") * 100) / 100, 27.84);
+    assert.equal(scaleLabelWidth("היום"), 24);
+  });
+
+  it("never an under-estimate: every class is at least Assistant's real advance at 12px", () => {
+    // the real widths this replaces (Assistant 400 @ 12px, measured on the deployed build): a Hebrew letter
+    // ~0.46em, a digit ~0.55em, a space ~0.26em. The estimate sits above each of them.
+    assert.ok(scaleLabelWidth("א") >= 0.46 * 12);
+    assert.ok(scaleLabelWidth("5") >= 0.55 * 12);
+    assert.ok(scaleLabelWidth(" ") >= 0.26 * 12);
+  });
+});
+
+describe("the deployed example: on-the-road 1.2022, today 23/09/2026 (Run 8 §4.2)", () => {
+  const axis = ownershipAxis({
+    history: [{ ym: "2022-01", type: "private" }],
+    first_registration: new Date(Date.UTC(2022, 0, 1)),
+    now: new Date(Date.UTC(2026, 8, 23)),
+    zero_km_deal: false,
+  });
+
+  it("the axis is the deployed one: 1.2022 to היום, with 2023..2026 on the scale", () => {
+    assert.equal(axis.start_label, "1.2022 · עלייה לכביש");
+    assert.deepEqual(axis.ticks.map((t) => t.year), [2023, 2024, 2025, 2026]);
+  });
+
+  it("the desktop card draws EVERY year: 2023, 2024, 2025 and 2026", () => {
+    // 1136px — the scale row's width at a 1280px viewport, per the board's layout: the page container's
+    // 1280px less the main's 2x48px padding less the ownership card's 2x24px. The code does not take the
+    // number from the layout: OwnershipTimeline measures the row (ResizeObserver) and hands the measurement
+    // to scaleLayout, so 1136 is what that measurement comes to at that width.
+    const years = scaleLayout(axis, 1136).filter((l) => l.kind === "year").map((l) => l.year);
+    assert.deepEqual(years, [2023, 2024, 2025, 2026]);
+  });
+
+  it("the narrower window the bug was seen in: 2023 was skipped, and is drawn now", () => {
+    // The deployed screenshot's clearance (~45px of real space between the two labels) puts the scale row at
+    // about 790px, not at a maximised 1280px window. There the old flat estimate left 2023 with 10.9px of
+    // estimated clearance — under the 12px rule — and the rule dropped it, tick and label together.
+    const drawn = scaleLayout(axis, 790);
+    const years = drawn.filter((l) => l.kind === "year").map((l) => l.year);
+    assert.deepEqual(years, [2023, 2024, 2025, 2026]);
+
+    // the clearance itself, in the geometry §2.1 fixes: 2023's near edge minus the end label's far edge
+    const tick2023 = axis.ticks.find((t) => t.year === 2023) as { share_from_start: number };
+    const x = tick2023.share_from_start * 790;
+    const clearanceNow = x - scaleLabelWidth("2023") / 2 - scaleLabelWidth(axis.start_label);
+    const clearanceBefore = x - (4 * 0.6 * 12) / 2 - 20 * 0.6 * 12;
+    assert.ok(clearanceBefore < SCALE_LABEL_GAP_PX, `the old estimate should have skipped 2023, it left ${clearanceBefore.toFixed(1)}px`);
+    assert.ok(clearanceNow >= SCALE_LABEL_GAP_PX, `the new estimate must draw 2023, it leaves ${clearanceNow.toFixed(1)}px`);
   });
 });
 

@@ -43,10 +43,16 @@ export default async function Home(props: PageProps<"/">) {
   // §5 — no `s`, or one that cannot be a public id, is the opening screen. No redirect, no error.
   if (s === null || !isPublicId(s)) return <SearchScreen models={models} />;
 
-  const loaded = await loadForAddress(s, await viewerFromCookies());
+  // Run 8 §3.1 — THE DRAWER RIDES IN THIS REQUEST. loadForAddress assembles the model's live pool and builds
+  // the shelf concurrently with the stored-results load (the seam sits inside the loader, right after the
+  // question row is read, so the response is delayed by the slower of the two and not by their sum), and
+  // resolves the drawer of the stored question's own filters. The screen seeds its state from what comes
+  // back and fetches nothing on mount — no blank drawer, no numberless chips, on any arrival.
+  const loaded = await loadForAddress(s, await viewerFromCookies(), { drawer: true });
   if (loaded === null) return <SearchScreen models={models} />; // nothing exists behind that name
 
-  const { question, run, results } = loaded;
+  const { question, run, results, drawer } = loaded;
+  if (drawer === null) throw new Error(`/?s=${s}: the drawer was asked for and did not come back`);
 
   // §9 — the picks come from the STORED run: the rows that carry a recommendation, in category order.
   const byCategory = new Map<Category, (typeof results)[number]>();
@@ -117,5 +123,5 @@ export default async function Home(props: PageProps<"/">) {
 
   // The key is the address: the browser's back and forward land on a different question, and the screen
   // starts from that question's stored answer rather than from the one it happened to be holding.
-  return <SearchScreen key={question.public_id} models={models} initial={answer} />;
+  return <SearchScreen key={question.public_id} models={models} initial={answer} drawer={drawer} />;
 }

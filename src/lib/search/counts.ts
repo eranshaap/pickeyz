@@ -129,10 +129,14 @@ async function loadKmAnchors(make: string, model: string): Promise<{ anchors: nu
   };
 }
 
-/** §5 — the drawer's shelf for one model: the years with stock, the regions present, the km anchors. */
-export async function filterShelf(model: string): Promise<ShelfView> {
-  const pool = await loadModelPool(model);
-  const km = await loadKmAnchors(pool.make, pool.display);
+/**
+ * The shelf off an already-loaded pool. Pure arithmetic.
+ *
+ * Run 8 §3.2 — filterShelf(), the fetch-the-shelf-on-its-own entry point, is GONE with the shelf() action it
+ * served: the shelf is per model and cannot change within one question, so it now travels with the chips it
+ * belongs to (drawerInput below) and is never asked for alone. Nothing this file prints has changed.
+ */
+function shelfOf(pool: ModelPool, km: { anchors: number[] | null; note: string | null }): ShelfView {
   return {
     model: pool.display,
     model_key: pool.key,
@@ -142,6 +146,19 @@ export async function filterShelf(model: string): Promise<ShelfView> {
     km_anchors: km.anchors,
     km_note: km.note,
   };
+}
+
+/**
+ * Run 8 §3.1 — the two things resolveDrawer() needs, in ONE fetch of the model's live listings: the pool it
+ * counts over and the shelf whose chips it resolves. The page assembles it with the stored-results load
+ * (load.ts) and the resolve action assembles it per settled edit; neither computes anything about a chip.
+ *
+ * The rows are the counters' own rows — the same `Filterable` the search cuts with — so the drawer's numbers
+ * and the search's pool can never be measured differently.
+ */
+export async function drawerInput(model: string): Promise<{ pool: Filterable[]; shelf: ShelfView }> {
+  const loaded = await loadModelPool(model);
+  return { pool: loaded.rows, shelf: shelfOf(loaded, await loadKmAnchors(loaded.make, loaded.display)) };
 }
 
 export async function filterCounts(input: { model: string; draft?: SearchFilters }): Promise<FilterCountsView> {

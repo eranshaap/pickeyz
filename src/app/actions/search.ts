@@ -1,11 +1,16 @@
 "use server";
 
-// The screen's server actions (BRIEF Days 15–16, Run 2b §6). Four of them, and nothing else crosses the wire.
+// The screen's server actions (BRIEF Days 15–16, Run 2b §6). Three of them, and nothing else crosses the wire.
 //
 //   ask()         one question -> one `searches` row (+ its `search_results` rows) -> the three raw picks
-//   counts()      the drawer's grey numbers, one call per draft change (§0.8)
-//   shelf()       the options of one model — years with stock, regions, km anchors; fixed while the draft moves
+//   drawer()      Run 8 §3.3 — THE RESOLVE CALL: one draft in, the whole drawer out (every chip's state and
+//                 count, the effective filters, the button's number). It replaces counts(), which returned
+//                 numbers alone, and it absorbs shelf(), which is gone: the shelf comes back with the chips
+//                 it belongs to, in the same round trip. One call per settled edit, as the counts call was.
 //   liveModels()  the model bar's list; called on the SERVER in page.tsx, and available to the client for a retry
+//
+// Run 8 §3.2 — THE RESULTS SCREEN NEVER CALLS drawer() ON MOUNT: the page's own request carries the drawer
+// (load.ts, §3.1). This action answers the edits that follow, and the opening screen's first model pick.
 //
 // NO FILTER LOGIC LIVES HERE. src/lib/search/filters.ts is the single source (§0.8): these actions pass a
 // SearchFilters through and never decide what it means. Nor is anything re-scored or re-ranked — every verdict
@@ -20,8 +25,10 @@
 // one plain line under the bar.
 
 import { db } from "@/lib/db";
-import { filterCounts, filterShelf, type FilterCountsView, type ShelfView } from "@/lib/search/counts";
+import { draftFromQuestion, resolveDrawer } from "@/lib/search/chip-state";
+import { drawerInput, filterCounts } from "@/lib/search/counts";
 import { activeFilterNames, type SearchFilters } from "@/lib/search/filters";
+import type { DrawerPayload } from "@/lib/search/load";
 import { liveModels as loadLiveModels, type LiveModel } from "@/lib/search/models";
 import { runSearch } from "@/lib/search/run";
 import { searchIdentity } from "@/lib/search/visitor";
@@ -152,14 +159,17 @@ export async function reliefFor(model: string, filters: SearchFilters): Promise<
   return best;
 }
 
-/** §0.8 — the counters. One call per draft change; the price block's number settles, it does not stream. */
-export async function counts(input: { model: string; filters?: SearchFilters }): Promise<FilterCountsView> {
-  return filterCounts({ model: input.model, draft: input.filters });
-}
-
-/** §5 — the shelf of one model. It does not change with the draft, so the screen asks for it once. */
-export async function shelf(model: string): Promise<ShelfView> {
-  return filterShelf(model);
+/**
+ * Run 8 §3.3 — THE RESOLVE CALL. The draft goes out, the whole drawer comes back: every chip with its state
+ * and its count, the effective filters, `total` and `emptyCombination`. One round trip per settled edit, as
+ * the counts call was; the browser never computes a state itself.
+ *
+ * It calls the same drawerInput() + resolveDrawer() pair the page calls (load.ts §3.1), so the drawer on
+ * arrival and the drawer after an edit come out of one piece of code.
+ */
+export async function drawer(input: { model: string; draft?: SearchFilters }): Promise<DrawerPayload> {
+  const { pool, shelf } = await drawerInput(input.model);
+  return { shelf, resolved: resolveDrawer(pool, shelf, draftFromQuestion(input.draft ?? {})) };
 }
 
 /** §5 — the model bar's list: LIVE models only, never the catalog. */
