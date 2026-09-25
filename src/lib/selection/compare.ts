@@ -34,7 +34,7 @@ export type PickChange = {
 export type RunnerUpRead =
   | { state: "no_pick"; reason: string | null }
   | { state: "not_evaluated"; reason: string | null; triggered: boolean }
-  | { state: "recorded"; listing_id: number; gap: number | null; triggered: boolean; price_over_pct: number | null; also_won: Category[] };
+  | { state: "recorded"; listing_id: number; gap: number | null; triggered: boolean; price_over_pct: number | null };
 
 export type RunnerUpChange = { before: RunnerUpRead; after: RunnerUpRead; changed: boolean };
 
@@ -88,7 +88,6 @@ export function readRunnerUp(res: SelectionResult): RunnerUpRead {
     gap: typeof e.value === "number" ? e.value : null,
     triggered: e.triggered,
     price_over_pct: typeof e.context.price_over_pct === "number" ? e.context.price_over_pct : null,
-    also_won: (e.context.also_won as Category[] | undefined) ?? [],
   };
 }
 
@@ -99,7 +98,7 @@ export function readRunnerUp(res: SelectionResult): RunnerUpRead {
 // inside the whole-object comparison, and a runner-up that appeared or disappeared must never be hidden.
 function runnerUpIdentity(r: RunnerUpRead): Record<string, unknown> {
   if (r.state !== "recorded") return { ...r }; // no_pick / not_evaluated: state, reason, and triggered where it exists
-  return { state: r.state, listing_id: r.listing_id, triggered: r.triggered, price_over_pct: r.price_over_pct, also_won: r.also_won };
+  return { state: r.state, listing_id: r.listing_id, triggered: r.triggered, price_over_pct: r.price_over_pct };
 }
 const sameRunnerUp = (a: RunnerUpRead, b: RunnerUpRead): boolean =>
   JSON.stringify(runnerUpIdentity(a)) === JSON.stringify(runnerUpIdentity(b));

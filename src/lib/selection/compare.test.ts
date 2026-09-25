@@ -46,18 +46,35 @@ const listing = (over: Partial<ListingResult> & { listing_id: number }): Listing
   ...over,
 });
 
+/**
+ * rules v7 (§1.4) — the crowning gate's record, as index.ts writes it on the rank-1 row. A hand-built side
+ * needs it: the finish test reads it, and a side without it is not a v7 result.
+ */
+const crowningTrace = (eligible: number, with_comparison: number, threshold = 0): RuleTrace => ({
+  rule: "crowning_threshold",
+  type: "portfolio",
+  value: eligible,
+  threshold,
+  triggered: eligible < threshold,
+  effect: "none",
+  context: { eligible, with_comparison },
+});
+
 /** Three shown listings ranked 1..3; best_value 1, peace_of_mind 2, cheapest 3, runner-up recorded on 3. */
 function side(over: { picks?: Partial<SelectionResult["picks"]>; results?: ListingResult[]; runnerUp?: number } = {}): SelectionResult {
   const ru = over.runnerUp ?? 1;
   const results = over.results ?? [
-    listing({ listing_id: 1, rank: 1, stage_a_place: 1, categories: ["best_value"] }),
+    listing({ listing_id: 1, rank: 1, stage_a_place: 1, categories: ["best_value"], trace: [crowningTrace(3, 3)] }),
     listing({ listing_id: 2, rank: 2, stage_a_place: 2, categories: ["peace_of_mind"] }),
     listing({ listing_id: 3, rank: 3, stage_a_place: 3, categories: ["cheapest"], trace: [runnerUpTrace(ru, 4)] }),
   ];
   return {
-    rules_version: 6,
+    rules_version: 7,
     picks: { best_value: 1, peace_of_mind: 2, cheapest: 3, ...over.picks },
     missing: {},
+    // rules v7 (§1.7): the gate's own numbers ride on the result. These are hand-built sides, so they are
+    // stated, not measured — this file compares two finished results and runs no selection.
+    crowning: { eligible: 3, with_comparison: 3, threshold: 0, crowned: true },
     runner_ups: { cheapest: { listing_id: ru, gap: 4, price_over_pct: 3, triggered: true } },
     results,
   };
@@ -190,7 +207,8 @@ describe("compareSelections — a listing on one side only", () => {
 describe("readRunnerUp — select-three.ts's reading", () => {
   it("the recorded entry: the runner-up listing, its gap and whether it triggered", () => {
     assert.deepEqual(readRunnerUp(side({ runnerUp: 2 })), {
-      state: "recorded", listing_id: 2, gap: 4, triggered: true, price_over_pct: 3, also_won: [],
+      // rules v7 (§1.5): also_won is gone from the record — a pick is never a candidate for the runner-up.
+      state: "recorded", listing_id: 2, gap: 4, triggered: true, price_over_pct: 3,
     });
   });
 

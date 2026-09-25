@@ -38,6 +38,7 @@ import {
   type Category,
   type FinishCheck,
   type ListingResult,
+  type MissingReason,
 } from "@/lib/selection";
 import { assemblePool } from "./assemble";
 import { passes, type SearchFilters } from "./filters";
@@ -82,6 +83,12 @@ export type RunnerUpView = {
   gap: number;
   price_over_pct: number;
   triggered: boolean;
+  /**
+   * The categories the runner-up's own listing won in this search — read off ITS result, not off the record.
+   * Days 20–21 rules v7 (§1.5) makes a pick ineligible to be the runner-up, so this is always empty now; it is
+   * kept because it is a statement about the listing on the screen, not the selection record's vanished
+   * `also_won`, and scripts/oneoff/verify-search-layer.ts prints it.
+   */
   also_won: Category[];
 };
 
@@ -125,7 +132,9 @@ export type SearchView = {
   pool_cut: number; // what survived the filters and entered selectThree — stored as searches.pool_count
   results_count: number; // what got a rank — stored as searches.results_count
   picks: Record<Category, PickView | null>;
-  missing: Partial<Record<Category, "no_candidate">>;
+  // Days 20–21 rules v7 (§1.4): `below_crowning_threshold` joins `no_candidate` in MissingReason — a search
+  // below the crowning threshold empties all three categories at once.
+  missing: Partial<Record<Category, MissingReason>>;
   runner_up: RunnerUpView | null;
   blocked_first: BlockedFirstView[];
   ranked: ListingView[]; // shown and carrying a deal score, rank ascending
@@ -216,7 +225,11 @@ export async function runSearch(input: {
   const runner_up: RunnerUpView | null =
     ru === null
       ? null
-      : { listing: view(resultFor(ru.listing_id)), gap: ru.gap, price_over_pct: ru.price_over_pct, triggered: ru.triggered, also_won: ru.also_won ?? [] };
+      : (() => {
+          const r = resultFor(ru.listing_id);
+          // rules v7 (§1.5): a pick is never a candidate, so `r.categories` is empty — read, not assumed.
+          return { listing: view(r), gap: ru.gap, price_over_pct: ru.price_over_pct, triggered: ru.triggered, also_won: r.categories };
+        })();
 
   const blocked_first: BlockedFirstView[] = [];
   for (const r of res.results) {

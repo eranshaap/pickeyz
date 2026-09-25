@@ -96,7 +96,7 @@ import { ENGINE_VERSION, KM_BELOW_THRESHOLD, KM_IMPLAUSIBLE_PER_MONTH, MIN_SAMPL
 import { tallyCheckKinds } from "@/lib/scoring/check-kinds";
 import { DAYS_PER_MONTH, testReadingAfter, testReadingAt } from "@/lib/scoring/checks";
 import { assemblePoolPreview, type PoolScore } from "@/lib/search/assemble";
-import { selectThree } from "@/lib/selection";
+import { crowningLine, selectThree } from "@/lib/selection";
 import { compareSelections, TOP_N } from "@/lib/selection/compare";
 import {
   atRunClock, classify, fmt, storedRowValue, storedSums, versionExpectation,
@@ -905,6 +905,9 @@ async function main() {
         : r.state === "not_evaluated" ? `not evaluated (${r.reason ?? "-"})`
         : `${P(r.listing_id)} (listing ${r.listing_id}), gap ${fmt(r.gap)}, triggered ${r.triggered ? "YES" : "no"}`;
       log(`runner-up | stored: ${ruText(cmp.runner_up.before)} | fresh: ${ruText(cmp.runner_up.after)} | ${cmp.runner_up.changed ? "CHANGED" : "same"}`);
+      // §7.3 (Days 20–21 rules v7) — the crowning gate on BOTH sides, from each side's own result.crowning.
+      log(`stored ${crowningLine(before.crowning)}`);
+      log(`fresh  ${crowningLine(after.crowning)}`);
       log(`finish test: stored ${cmp.finish.before.pass ? "PASS" : "FAIL"} · fresh ${cmp.finish.after.pass ? "PASS" : "FAIL"}`);
       if (!cmp.finish.after.pass) {
         log(`  *** FINISH TEST FAILED ON THE FRESH SIDE ***`);

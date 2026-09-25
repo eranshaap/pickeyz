@@ -64,7 +64,7 @@ function contiguous(ranks: number[]): boolean {
 
 describe("1. gate (§4.1)", () => {
   it("strong -> excluded, sold_strong, rank and stage_a_place null, empty trace", () => {
-    const res = selectThree({ listings: [cand({ id: 1, sold: "strong" }), cand({ id: 2 })] });
+    const res = selectThree({ listings: [cand({ id: 1, sold: "strong" }), cand({ id: 2 })] }, { crowningThreshold: 0 });
     const r = byId(res, 1);
     assert.equal(r.status, "excluded");
     assert.equal(r.excluded_by, "sold_strong");
@@ -76,12 +76,12 @@ describe("1. gate (§4.1)", () => {
   });
 
   it("medium -> shown with verify_availability", () => {
-    const res = selectThree({ listings: [cand({ id: 1, sold: "medium" })] });
+    const res = selectThree({ listings: [cand({ id: 1, sold: "medium" })] }, { crowningThreshold: 0 });
     const r = byId(res, 1);
     assert.equal(r.status, "shown");
     assert.equal(r.verify_availability, true);
     assert.equal(r.rank, 1);
-    assert.equal(byId(selectThree({ listings: [cand({ id: 2 })] }), 2).verify_availability, false);
+    assert.equal(byId(selectThree({ listings: [cand({ id: 2 })] }, { crowningThreshold: 0 }), 2).verify_availability, false);
   });
 });
 
@@ -89,7 +89,7 @@ describe("2. eligibility (§2)", () => {
   it("deal_score null -> not best_value; peace_of_mind stays (part 4 §1: condition alone), its overpriced entry not evaluated; one no_deal_score reason", () => {
     const l = cand({ id: 1, history: 2 });
     l.breakdown.deal_score = null;
-    const r = byId(selectThree({ listings: [l] }), 1);
+    const r = byId(selectThree({ listings: [l] }, { crowningThreshold: 0 }), 1);
     const e = r.eligibility;
     assert.equal(e.best_value, false);
     assert.equal(e.peace_of_mind, true);
@@ -103,7 +103,7 @@ describe("2. eligibility (§2)", () => {
   it("under { peace_of_mind_floor_effect: 'excluded' } a null deal_score is not eligible for peace_of_mind (part 3 §2c restored), no overpriced entry", () => {
     const l = cand({ id: 1, history: 2 });
     l.breakdown.deal_score = null;
-    const r = byId(selectThree({ listings: [l] }, { peace_of_mind_floor_effect: "excluded" }), 1);
+    const r = byId(selectThree({ listings: [l] }, { crowningThreshold: 0, peace_of_mind_floor_effect: "excluded" }), 1);
     assert.equal(r.eligibility.peace_of_mind, false);
     assert.deepEqual(r.eligibility.reasons, ["no_deal_score"]);
     assert.equal(entries(r, "overpriced").length, 0);
@@ -112,7 +112,7 @@ describe("2. eligibility (§2)", () => {
   it("condition_by_reality null -> not peace_of_mind", () => {
     const l = cand({ id: 1, history: 2 });
     l.breakdown.condition_by_reality = null;
-    const e = byId(selectThree({ listings: [l] }), 1).eligibility;
+    const e = byId(selectThree({ listings: [l] }, { crowningThreshold: 0 }), 1).eligibility;
     assert.equal(e.best_value, true);
     assert.equal(e.peace_of_mind, false);
     assert.deepEqual(e.reasons, ["no_condition_by_reality"]);
@@ -121,20 +121,20 @@ describe("2. eligibility (§2)", () => {
   it("condition_vs_typical null -> not cheapest", () => {
     const l = cand({ id: 1, history: 2 });
     l.breakdown.condition_vs_typical = null;
-    const e = byId(selectThree({ listings: [l] }), 1).eligibility;
+    const e = byId(selectThree({ listings: [l] }, { crowningThreshold: 0 }), 1).eligibility;
     assert.equal(e.cheapest, false);
     assert.deepEqual(e.reasons, ["no_condition_vs_typical"]);
   });
 
   it("history unavailable -> none of the three, all three reasons — and rules v5 adds unverified_history: an unavailable row is not a registry reading", () => {
-    const e = byId(selectThree({ listings: [cand({ id: 1, history: null })] }), 1).eligibility;
+    const e = byId(selectThree({ listings: [cand({ id: 1, history: null })] }, { crowningThreshold: 0 }), 1).eligibility;
     assert.deepEqual(e, elig(false, false, false, ["no_deal_score", "no_condition_by_reality", "no_condition_vs_typical", "unverified_history"]));
   });
 
   it("thin cell -> none of the three, reason thin_cell, even with a non-null condition_by_reality", () => {
     const l = cand({ id: 1, thin: true, history: 5 });
     assert.equal(l.breakdown.condition_by_reality, 5);
-    const res = selectThree({ listings: [l] });
+    const res = selectThree({ listings: [l] }, { crowningThreshold: 0 });
     const r = byId(res, 1);
     assert.deepEqual(r.eligibility, elig(false, false, false, ["thin_cell"]));
     assert.equal(r.status, "shown"); // still ranked, just never picked
@@ -152,7 +152,7 @@ describe("2c. peace_of_mind deal floor, tracking only (part 3 §2c, part 4 §1)"
   it("the best reality condition has deal_score -12 -> eligible, overpriced recorded (triggered, effect none), and it wins peace_of_mind", () => {
     assert.equal(PEACE_OF_MIND_DEAL_FLOOR, -10);
     assert.equal(PEACE_OF_MIND_FLOOR_EFFECT, "none");
-    const res = selectThree({ listings: pool() });
+    const res = selectThree({ listings: pool() }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     assert.equal(a.eligibility.peace_of_mind, true);
     assert.deepEqual(a.eligibility.reasons, []);
@@ -172,7 +172,7 @@ describe("2c. peace_of_mind deal floor, tracking only (part 3 §2c, part 4 §1)"
   });
 
   it("with { peace_of_mind_floor_effect: 'excluded' } the part-3 behaviour: -12 is not eligible (overpriced), no entry on it, the next wins; exactly -10 is eligible", () => {
-    const res = selectThree({ listings: pool() }, { peace_of_mind_floor_effect: "excluded" });
+    const res = selectThree({ listings: pool() }, { crowningThreshold: 0, peace_of_mind_floor_effect: "excluded" });
     const a = byId(res, 1);
     assert.equal(a.eligibility.peace_of_mind, false);
     assert.deepEqual(a.eligibility.reasons, ["overpriced"]);
@@ -189,12 +189,12 @@ describe("2c. peace_of_mind deal floor, tracking only (part 3 §2c, part 4 §1)"
   });
 
   it("thin cell: eligible for nothing, so no overpriced entry; sold_strong: no rules run, no entry", () => {
-    const res = selectThree({ listings: [cand({ id: 1, thin: true, history: 5 }), cand({ id: 2, sold: "strong", history: 5 }), cand({ id: 3, history: 1 })] });
+    const res = selectThree({ listings: [cand({ id: 1, thin: true, history: 5 }), cand({ id: 2, sold: "strong", history: 5 }), cand({ id: 3, history: 1 })] }, { crowningThreshold: 0 });
     assert.equal(entries(byId(res, 1), "overpriced").length, 0);
     assert.deepEqual(byId(res, 2).trace, []);
     assert.equal(entries(byId(res, 3), "overpriced").length, 1);
     assert.equal(res.rules_version, RULES_VERSION);
-    assert.equal(RULES_VERSION, 6);
+    assert.equal(RULES_VERSION, 7); // §1.1 — the crowning gate and the runner-up rule
   });
 });
 
@@ -208,7 +208,7 @@ describe("3. Stage A order (§4.2, §11.2)", () => {
       cand({ id: 5, price: 99000, history: 4 }), // price_v 1.0 + cvt 4 = deal 5, condition 4: behind 1 on condition although cheaper
     ];
     assert.equal(listings[4].breakdown.deal_score, 5);
-    const res = selectThree({ listings });
+    const res = selectThree({ listings }, { crowningThreshold: 0 });
     const order = res.results.map((r) => r.listing_id);
     assert.deepEqual(order, [2, 1, 5, 3, 4]);
     assert.deepEqual(
@@ -225,7 +225,7 @@ describe("3. Stage A order (§4.2, §11.2)", () => {
       cand({ id: 1, price: 100000, history: 5, first_seen: "2026-08-02T00:00:00.000Z" }),
       cand({ id: 4, price: 99000, price_v: 0, history: 5 }), // same deal and condition, lower price
     ];
-    const res = selectThree({ listings });
+    const res = selectThree({ listings }, { crowningThreshold: 0 });
     assert.deepEqual(res.results.map((r) => r.listing_id), [4, 1, 2, 3]);
   });
 });
@@ -259,13 +259,13 @@ describe("16. invariant (§0.5): the best_value pick is the first eligible listi
       [cand({ id: 1, price: 100000, new_price: 100000, history: 9 }), cand({ id: 2, price: 99000, new_price: 100000, history: 0 })], // the top of Stage A is excluded by the ceiling (part 5)
       [cand({ id: 1, car: 1, price: 100000, new_price: 100000, history: 9 }), cand({ id: 2, car: 1, price: 95000, new_price: 100000, history: 9 }), cand({ id: 3, car: 2, price: 97000, new_price: null, history: 0 })], // a car shown through its listing under the ceiling
     ];
-    for (const listings of pools) bestValueIsFirstEligible(selectThree({ listings }));
-    for (const listings of pools) bestValueIsFirstEligible(selectThree({ listings }, { too_similar_effect: "excluded" }));
-    for (const listings of pools) bestValueIsFirstEligible(selectThree({ listings }, { above_new_price_effect: "none" }));
+    for (const listings of pools) bestValueIsFirstEligible(selectThree({ listings }, { crowningThreshold: 0 }));
+    for (const listings of pools) bestValueIsFirstEligible(selectThree({ listings }, { crowningThreshold: 0, too_similar_effect: "excluded" }));
+    for (const listings of pools) bestValueIsFirstEligible(selectThree({ listings }, { crowningThreshold: 0, above_new_price_effect: "none" }));
   });
 
   it("no deal_score anywhere -> best_value null and rank 1 is still defined; rules v5 orders the tail by price, not condition", () => {
-    const res = selectThree({ listings: [cand({ id: 1, median: null, history: 3 }), cand({ id: 2, median: null, history: 5 })] });
+    const res = selectThree({ listings: [cand({ id: 1, median: null, history: 3 }), cand({ id: 2, median: null, history: 5 })] }, { crowningThreshold: 0 });
     bestValueIsFirstEligible(res);
     // Both are price 100,000 and first_seen 2026-08-01, so the tie falls through to listing_id. Under rules v4 the tail
     // was ordered by condition_score desc and listing 2 (condition 5) was rank 1; NO_DEAL_ORDER = price_asc ends that.
@@ -278,7 +278,7 @@ describe("4. below_threshold (§4.3)", () => {
   it("median 100,000: 49,900 -> 49.9, triggered, excluded; 50,000 -> 50.0, not triggered; median null -> not evaluated", () => {
     const res = selectThree({
       listings: [cand({ id: 1, price: 49900, median: 100000 }), cand({ id: 2, price: 50000, median: 100000 }), cand({ id: 3, median: null })],
-    });
+    }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     const [ta] = entries(a, "below_threshold");
     assert.equal(ta.value, 49.9);
@@ -312,7 +312,7 @@ describe("5. dealer_not_visible (§4.4)", () => {
   it("the invisible listing at stage_a_place 2 -> excluded with value 2; shown ranks contiguous", () => {
     const res = selectThree({
       listings: [cand({ id: 1, history: 10 }), cand({ id: 2, history: 8, visible: false }), cand({ id: 3, history: 6 })],
-    });
+    }, { crowningThreshold: 0 });
     const r = byId(res, 2);
     assert.equal(r.stage_a_place, 2);
     assert.equal(r.status, "excluded");
@@ -342,7 +342,7 @@ describe("6. duplicate (§4.5)", () => {
         cand({ id: 2, car: 7, price: 96000, median: 100000 }),
         cand({ id: 3, car: 7, price: 97000, median: 100000 }),
       ],
-    });
+    }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     assert.equal(a.status, "excluded");
     assert.equal(a.excluded_by, "below_threshold");
@@ -376,7 +376,7 @@ describe("6. duplicate (§4.5)", () => {
         cand({ id: 10, car: 7, price: 90000, first_seen: "2026-08-05T00:00:00.000Z" }),
         cand({ id: 11, car: 7, price: 90000, first_seen: "2026-08-02T00:00:00.000Z" }),
       ],
-    });
+    }, { crowningThreshold: 0 });
     assert.equal(byId(res, 11).status, "shown");
     assert.equal(byId(res, 10).status, "merged");
     assert.deepEqual(entries(byId(res, 10), "duplicate")[0].context, { merged_into: 11 });
@@ -391,7 +391,7 @@ describe("7. picks, basic (§4.7)", () => {
       cand({ id: 3, price: 85000, history: -10 }), // deal 5, cvt -10 -> not eligible for cheapest (below_floor, part 3 §2a)
       cand({ id: 4, price: 89000, history: -4 }), // deal 7, reality -4, cvt -4: within the -5 floor, and cheaper than car 1
     ];
-    const res = selectThree({ listings });
+    const res = selectThree({ listings }, { crowningThreshold: 0 });
     assert.deepEqual(res.picks, { best_value: 1, peace_of_mind: 2, cheapest: 4 });
     assert.deepEqual(res.missing, {});
     const cars = new Set(Object.values(res.picks).map((id) => byId(res, id as number).car_id));
@@ -412,7 +412,7 @@ describe("8. double_winner (§4.7, part 3 §1)", () => {
   ];
 
   it("the best deal is also the best reality condition -> wins both; the entry is recorded with effect none", () => {
-    const res = selectThree({ listings: pool() });
+    const res = selectThree({ listings: pool() }, { crowningThreshold: 0 });
     assert.deepEqual(res.picks, { best_value: 1, peace_of_mind: 1, cheapest: 2 });
     assert.equal(res.picks.best_value, res.picks.peace_of_mind);
     const w = byId(res, 1);
@@ -438,7 +438,7 @@ describe("8. double_winner (§4.7, part 3 §1)", () => {
   });
 
   it("with { double_winner_effect: 'recategorized' } the next candidate wins peace_of_mind", () => {
-    const res = selectThree({ listings: pool() }, { double_winner_effect: "recategorized" });
+    const res = selectThree({ listings: pool() }, { crowningThreshold: 0, double_winner_effect: "recategorized" });
     assert.deepEqual(res.picks, { best_value: 1, peace_of_mind: 2, cheapest: 3 });
     const w = byId(res, 1);
     assert.deepEqual(w.categories, ["best_value"]);
@@ -460,7 +460,7 @@ describe("9. reality reading (§2)", () => {
     assert.equal(priv.breakdown.condition_by_reality, 3);
     // the point of the field: by paper condition the private car is ahead
     assert.ok((priv.breakdown.condition_score as number) > (zeroKm.breakdown.condition_score as number));
-    const res = selectThree({ listings: [zeroKm, priv] });
+    const res = selectThree({ listings: [zeroKm, priv] }, { crowningThreshold: 0 });
     assert.equal(res.picks.peace_of_mind, 1);
     assert.equal(res.picks.best_value, 2);
   });
@@ -475,7 +475,7 @@ describe("10. cheapest (§2, §11.3, part 3 §2a)", () => {
         cand({ id: 2, price: 90000, history: -5 }), // cvt -5 exactly, deal 5, reality -5
         cand({ id: 3, price: 100000, history: 6 }), // cvt +6, deal 6, reality 6
       ],
-    });
+    }, { crowningThreshold: 0 });
     assert.deepEqual(res.picks, { best_value: 1, peace_of_mind: 3, cheapest: 2 });
     const e = byId(res, 1).eligibility;
     assert.equal(e.cheapest, false);
@@ -489,7 +489,7 @@ describe("10. cheapest (§2, §11.3, part 3 §2a)", () => {
   });
 
   it("condition_vs_typical exactly 0 -> eligible for cheapest; alone in the pool it wins all three", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 100000, history: 0 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 100000, history: 0 })] }, { crowningThreshold: 0 });
     assert.equal(byId(res, 1).eligibility.cheapest, true);
     assert.deepEqual(res.picks, { best_value: 1, peace_of_mind: 1, cheapest: 1 }); // part 3 §1: a car may win more than one category
     assert.deepEqual(byId(res, 1).categories, ["best_value", "peace_of_mind", "cheapest"]);
@@ -509,7 +509,7 @@ describe("11. too_similar, tracking (§4.7, §4.8)", () => {
   const RECAT = { double_winner_effect: "recategorized" } as const;
 
   it("same cell at distance 3.13: the entry is recorded, triggered, effect none — and the candidate is still picked", () => {
-    const res = selectThree({ listings: [P(), Q(), R()] }, RECAT);
+    const res = selectThree({ listings: [P(), Q(), R()] }, { ...RECAT, crowningThreshold: 0 });
     assert.equal(res.picks.best_value, 1);
     assert.equal(res.picks.peace_of_mind, 2);
     const [t] = entries(byId(res, 2), "too_similar");
@@ -525,7 +525,7 @@ describe("11. too_similar, tracking (§4.7, §4.8)", () => {
   });
 
   it("with { too_similar_effect: 'excluded' } the same input skips it and the next candidate wins", () => {
-    const res = selectThree({ listings: [P(), Q(), R()] }, { ...RECAT, too_similar_effect: "excluded" });
+    const res = selectThree({ listings: [P(), Q(), R()] }, { crowningThreshold: 0, ...RECAT, too_similar_effect: "excluded" });
     assert.equal(res.picks.best_value, 1);
     assert.equal(res.picks.peace_of_mind, 3);
     const [tq] = entries(byId(res, 2), "too_similar");
@@ -541,7 +541,7 @@ describe("11. too_similar, tracking (§4.7, §4.8)", () => {
   it("cross-cell pair -> value null, triggered false, same_cell false", () => {
     const q = Q();
     q.comparison_group = "H";
-    const res = selectThree({ listings: [P(), q, R()] }, { ...RECAT, too_similar_effect: "excluded" });
+    const res = selectThree({ listings: [P(), q, R()] }, { crowningThreshold: 0, ...RECAT, too_similar_effect: "excluded" });
     assert.equal(res.picks.peace_of_mind, 2);
     const [t] = entries(byId(res, 2), "too_similar");
     assert.equal(t.value, null);
@@ -567,19 +567,19 @@ function finishPool(): CandidateListing[] {
 
 describe("13. determinism", () => {
   it("shuffled input order -> identical picks and identical results", () => {
-    const base = selectThree({ listings: finishPool() });
-    const reversed = selectThree({ listings: finishPool().reverse() });
+    const base = selectThree({ listings: finishPool() }, { crowningThreshold: 0 });
+    const reversed = selectThree({ listings: finishPool().reverse() }, { crowningThreshold: 0 });
     const rotated = (() => {
       const p = finishPool();
-      return selectThree({ listings: [...p.slice(4), ...p.slice(0, 4)] });
+      return selectThree({ listings: [...p.slice(4), ...p.slice(0, 4)] }, { crowningThreshold: 0 });
     })();
     // part 5: the same three orders over a pool with new prices (one listing at the ceiling, one without a price)
     const priced = () => finishPool().map((l, i) => ({ ...l, new_price: i === 8 ? l.price : i === 4 ? null : 200000 }));
-    const pBase = selectThree({ listings: priced() });
-    const pReversed = selectThree({ listings: priced().reverse() });
+    const pBase = selectThree({ listings: priced() }, { crowningThreshold: 0 });
+    const pReversed = selectThree({ listings: priced().reverse() }, { crowningThreshold: 0 });
     const pRotated = (() => {
       const p = priced();
-      return selectThree({ listings: [...p.slice(4), ...p.slice(0, 4)] });
+      return selectThree({ listings: [...p.slice(4), ...p.slice(0, 4)] }, { crowningThreshold: 0 });
     })();
     const sorted = (r: SelectionResult) => [...r.results].sort((a, b) => a.listing_id - b.listing_id);
     for (const other of [reversed, rotated]) {
@@ -599,7 +599,7 @@ describe("13. determinism", () => {
 
 describe("14. finish test, synthetic (part 3 §3: a double win is reported, not a failure)", () => {
   it("three picks, the cheapest is also the best deal (two distinct cars), ranks contiguous, rank 1 is best_value, invisible and thin never picked", () => {
-    const res = selectThree({ listings: finishPool() });
+    const res = selectThree({ listings: finishPool() }, { crowningThreshold: 0 });
     assert.deepEqual(res.picks, { best_value: 1, peace_of_mind: 9, cheapest: 1 });
     assert.deepEqual(res.missing, {});
     const pickedIds = Object.values(res.picks) as number[];
@@ -629,7 +629,7 @@ describe("15. missing category", () => {
   it("no car with condition_vs_typical >= -5 -> cheapest null, no_candidate, the other two picks unaffected", () => {
     const res = selectThree({
       listings: [cand({ id: 1, price: 90000, history: -6 }), cand({ id: 2, price: 100000, history: -7 }), cand({ id: 3, price: 95000, history: -8 })],
-    });
+    }, { crowningThreshold: 0 });
     assert.equal(res.picks.cheapest, null);
     assert.deepEqual(res.missing, { cheapest: "no_candidate" });
     assert.equal(res.picks.best_value, 1); // deal 4
@@ -660,7 +660,7 @@ describe("17. cheapest_runner_up (part 3 §2b)", () => {
         ru(2, 93000, 5), // price_v 7 + cvt 5 = deal 12: 3.3% over C, gap 2
         ru(3, 96000, 15), // deal 19, reality 15: best_value and peace_of_mind; 6.7% over C, outside the band
       ],
-    });
+    }, { crowningThreshold: 0 });
     assert.deepEqual(res.picks, { best_value: 3, peace_of_mind: 3, cheapest: 1 });
     assert.deepEqual(ruEntry(res), {
       rule: "cheapest_runner_up",
@@ -676,17 +676,21 @@ describe("17. cheapest_runner_up (part 3 §2b)", () => {
     assert.equal(entries(byId(res, 2), "cheapest_runner_up").length, 0); // recorded on C only
   });
 
-  it("(b) gap 1.4 -> recorded, not triggered", () => {
-    const res = selectThree({ listings: [C(), ru(2, 93000, 4.4)] }); // deal 11.4
+  // rules v7 (§1.5): listing 2's deal 11.4 beats C's 10 and its reality 4.4 beats C's 0, so it wins best_value
+  // and peace_of_mind — and a pick is no longer a candidate. The band then holds nobody.
+  it("(b) the only candidate in the band is itself a pick -> no runner-up at all (rules v7)", () => {
+    const res = selectThree({ listings: [C(), ru(2, 93000, 4.4)] }, { crowningThreshold: 0 }); // deal 11.4
     assert.equal(res.picks.cheapest, 1);
+    assert.deepEqual(byId(res, 2).categories, ["best_value", "peace_of_mind"]);
     const e = ruEntry(res);
-    assert.equal(e.value, 1.4);
+    assert.equal(e.value, null);
     assert.equal(e.triggered, false);
-    assert.deepEqual(res.runner_ups.cheapest, { listing_id: 2, gap: 1.4, price_over_pct: 3.3, triggered: false, also_won: ["best_value", "peace_of_mind"] });
+    assert.equal(e.context.reason, "no_candidate_in_band");
+    assert.equal(res.runner_ups.cheapest, null);
   });
 
   it("(c) the only pricier eligible car is 6% above C -> evaluated false, no_candidate_in_band, runner_ups.cheapest null", () => {
-    const res = selectThree({ listings: [C(), ru(2, 95400, 5)] }); // 6.0% over
+    const res = selectThree({ listings: [C(), ru(2, 95400, 5)] }, { crowningThreshold: 0 }); // 6.0% over
     assert.equal(res.picks.cheapest, 1);
     assert.deepEqual(ruEntry(res), {
       rule: "cheapest_runner_up",
@@ -701,38 +705,50 @@ describe("17. cheapest_runner_up (part 3 §2b)", () => {
   });
 
   it("(d) no cheapest pick -> no entry anywhere", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: -6 }), cand({ id: 2, price: 93000, history: -7 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: -6 }), cand({ id: 2, price: 93000, history: -7 })] }, { crowningThreshold: 0 });
     assert.equal(res.picks.cheapest, null);
     assert.equal(res.runner_ups.cheapest, null);
     assert.equal(res.results.flatMap((r) => entries(r, "cheapest_runner_up")).length, 0);
   });
 
-  it("(e) two candidates in the band -> the higher deal_score; equal -> the lower price", () => {
-    const higher = selectThree({ listings: [C(), ru(2, 93000, 5), ru(3, 94000, 7)] }); // deals 12 and 13
+  it("(e) two candidates in the band -> the higher deal_score of those that are NOT picks; equal -> the lower price", () => {
+    const higher = selectThree({ listings: [C(), ru(2, 93000, 5), ru(3, 94000, 7)] }, { crowningThreshold: 0 }); // deals 12 and 13
     assert.equal(higher.picks.cheapest, 1);
-    assert.deepEqual(higher.runner_ups.cheapest, { listing_id: 3, gap: 3, price_over_pct: 4.4, triggered: true, also_won: ["best_value", "peace_of_mind"] });
-    const tie = selectThree({ listings: [C(), ru(2, 93000, 5), ru(3, 94000, 6)] }); // deals 12 and 12
-    // the deal tie breaks on condition_score, so listing 3 wins the other two categories and listing 2 wins nothing:
-    // no also_won on the runner-up (P1: present only when non-empty)
+    // rules v7 (§1.5): listing 3 has the higher deal and wins best_value + peace_of_mind, so it is out of the
+    // candidate set; the band's best candidate outside the picks is listing 2.
+    assert.deepEqual(byId(higher, 3).categories, ["best_value", "peace_of_mind"]);
+    assert.deepEqual(higher.runner_ups.cheapest, { listing_id: 2, gap: 2, price_over_pct: 3.3, triggered: true });
+    const tie = selectThree({ listings: [C(), ru(2, 93000, 5), ru(3, 94000, 6)] }, { crowningThreshold: 0 }); // deals 12 and 12
+    // the deal tie breaks on condition_score, so listing 3 wins the other two categories and listing 2 wins nothing
     assert.deepEqual(tie.runner_ups.cheapest, { listing_id: 2, gap: 2, price_over_pct: 3.3, triggered: true });
     assert.equal(ruEntry(tie).context.runner_up, 2);
   });
 
-  it("(f) the runner-up may be the best_value / peace_of_mind pick -> recorded as is, with P1's also_won", () => {
-    const res = selectThree({ listings: [C(), ru(2, 93000, 8)] }); // deal 15, reality 8: wins both other categories
+  // rules v7 (§1.5) replaces P1: the runner-up is never one of the picks. A band holding only picks records no
+  // runner-up, and nothing on the screen is named twice.
+  it("(f) the runner-up is NEVER the best_value / peace_of_mind pick -> no runner-up when the band holds only picks", () => {
+    const res = selectThree({ listings: [C(), ru(2, 93000, 8)] }, { crowningThreshold: 0 }); // deal 15, reality 8: wins both other categories
     assert.deepEqual(res.picks, { best_value: 2, peace_of_mind: 2, cheapest: 1 });
-    assert.deepEqual(res.runner_ups.cheapest, { listing_id: 2, gap: 5, price_over_pct: 3.3, triggered: true, also_won: ["best_value", "peace_of_mind"] });
-    assert.equal(res.runner_ups.cheapest?.listing_id, res.picks.best_value);
-    // P1: recorded on C's entry too, so the trace carries it without a second lookup
-    const e = res.results.flatMap((r) => entries(r, "cheapest_runner_up"))[0];
-    assert.deepEqual(e.context.also_won, ["best_value", "peace_of_mind"]);
+    assert.equal(res.runner_ups.cheapest, null);
+    // the rule is still recorded on C, as "not evaluated": the band had no candidate outside the picks
+    const e = res.results.flatMap((r) => entries(r, "cheapest_runner_up"));
+    assert.equal(e.length, 1);
+    assert.equal(e[0].context.evaluated, false);
+    assert.equal(e[0].context.reason, "no_candidate_in_band");
   });
 
   it("C's own car is never its runner-up: a second, pricier listing of C's car (merged into C) is not a candidate", () => {
-    const res = selectThree({ listings: [C(), cand({ id: 5, car: 1, price: 92000, history: 9 }), ru(2, 93000, 5)] });
+    const res = selectThree({ listings: [C(), cand({ id: 5, car: 1, price: 92000, history: 9 }), ru(2, 93000, 5)] }, { crowningThreshold: 0 });
     assert.equal(byId(res, 5).status, "merged");
     assert.equal(res.picks.cheapest, 1);
-    assert.equal(res.runner_ups.cheapest?.listing_id, 2);
+    // rules v7 (§1.5): listing 2 (deal 12, reality 5) wins best_value and peace_of_mind, so it is no candidate
+    // either — the band is empty of non-picks and nothing is recorded as a runner-up. Listing 5 was never a
+    // candidate (it is C's own car, and merged), and no record names it.
+    assert.deepEqual(byId(res, 2).categories, ["best_value", "peace_of_mind"]);
+    assert.equal(res.runner_ups.cheapest, null);
+    const e = res.results.flatMap((r) => entries(r, "cheapest_runner_up"));
+    assert.equal(e.length, 1);
+    assert.equal(e[0].context.evaluated, false);
   });
 });
 
@@ -746,7 +762,7 @@ describe("18. above_new_price (part 5 §3)", () => {
   it("100.0 -> triggered, excluded by above_new_price, rank null; stage_a_place kept; the rest still ranked contiguously", () => {
     assert.equal(PRICE_VS_NEW_CEILING_PCT, 100);
     assert.equal(ABOVE_NEW_PRICE_EFFECT, "excluded");
-    const res = selectThree({ listings: [cand({ id: 1, price: 100000, new_price: 100000, history: 20 }), cand({ id: 2, price: 90000, new_price: 100000, history: 0 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 100000, new_price: 100000, history: 20 }), cand({ id: 2, price: 90000, new_price: 100000, history: 0 })] }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     assert.deepEqual(ABOVE(a), {
       rule: "above_new_price",
@@ -769,11 +785,11 @@ describe("18. above_new_price (part 5 §3)", () => {
     assert.equal(b.rank, 1);
     assert.deepEqual(shownRanks(res), [1]);
     assert.deepEqual(res.picks, { best_value: 2, peace_of_mind: 2, cheapest: 2 });
-    assert.equal(res.rules_version, 6);
+    assert.equal(res.rules_version, 7); // §1.1
   });
 
   it("99.9 -> recorded, not triggered, shown; 120.0 -> triggered", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 99900, new_price: 100000 }), cand({ id: 2, price: 120000, new_price: 100000 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 99900, new_price: 100000 }), cand({ id: 2, price: 120000, new_price: 100000 })] }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     assert.equal(ABOVE(a).value, 99.9);
     assert.equal(ABOVE(a).triggered, false);
@@ -787,7 +803,7 @@ describe("18. above_new_price (part 5 §3)", () => {
   });
 
   it("new_price null -> not evaluated (no_new_price), value null, not triggered, shown", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 500000, new_price: null })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 500000, new_price: null })] }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     assert.deepEqual(ABOVE(a), {
       rule: "above_new_price",
@@ -807,7 +823,7 @@ describe("18. above_new_price (part 5 §3)", () => {
   it("with { above_new_price_effect: 'none' } the entry is recorded (triggered, effect none) and the listing stays in, wins even", () => {
     const res = selectThree(
       { listings: [cand({ id: 1, price: 100000, new_price: 100000, history: 20 }), cand({ id: 2, price: 90000, new_price: 100000, history: 0 })] },
-      { above_new_price_effect: "none" },
+      { crowningThreshold: 0, above_new_price_effect: "none" },
     );
     const a = byId(res, 1);
     assert.equal(ABOVE(a).value, 100);
@@ -826,7 +842,7 @@ describe("18. above_new_price (part 5 §3)", () => {
         cand({ id: 2, car: 7, price: 96000, new_price: 100000 }), // 96.0 -> the car's only surviving listing
         cand({ id: 3, car: 8, price: 97000, new_price: 100000 }),
       ],
-    });
+    }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     assert.equal(a.status, "excluded");
     assert.equal(a.excluded_by, "above_new_price");
@@ -840,7 +856,7 @@ describe("18. above_new_price (part 5 §3)", () => {
   });
 
   it("a listing excluded by below_threshold keeps that reason and still carries its above_new_price entry (both rules run on everyone)", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 40000, median: 100000, new_price: 30000 }), cand({ id: 2, price: 100000, median: 100000, new_price: 200000 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 40000, median: 100000, new_price: 30000 }), cand({ id: 2, price: 100000, median: 100000, new_price: 200000 })] }, { crowningThreshold: 0 });
     const a = byId(res, 1);
     assert.equal(a.excluded_by, "below_threshold"); // the first rule of the pass decides excluded_by
     assert.equal(ABOVE(a).value, 133.3);
@@ -856,7 +872,7 @@ describe("18. above_new_price (part 5 §3)", () => {
 
 describe("19a. unverified_history: the rule (§0.1)", () => {
   it("history source 'typical' -> ineligible for all three, the record carries the value and the effect", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: 4, history_source: "typical" })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: 4, history_source: "typical" })] }, { crowningThreshold: 0 });
     const r = byId(res, 1);
     assert.deepEqual(r.eligibility, elig(false, false, false, ["unverified_history"], [true, true, true]));
     assert.deepEqual(unv(r), {
@@ -879,7 +895,7 @@ describe("19a. unverified_history: the rule (§0.1)", () => {
   });
 
   it("history source 'mot' -> eligible; the record is untriggered and its effect is none", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: 4 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: 4 })] }, { crowningThreshold: 0 });
     const r = byId(res, 1);
     assert.deepEqual(r.eligibility, elig(true, true, true, []));
     assert.equal(unv(r).value, "mot");
@@ -900,7 +916,7 @@ describe("19b. blocked_first (§0.2)", () => {
     ].map((l) => (l.listing_id === unverifiedId ? cand({ id: l.listing_id, car: l.car_id, price: l.price, history: 4, history_source: "typical" }) : l));
 
   it("unverified at the top of the deal order -> the winner is the next eligible, at rank 2, and the unverified carries blocked_first", () => {
-    const res = selectThree({ listings: pool(1) });
+    const res = selectThree({ listings: pool(1) }, { crowningThreshold: 0 });
     assert.equal(res.picks.best_value, 2);
     assert.equal(byId(res, 1).rank, 1); // it keeps its rank
     assert.equal(byId(res, 2).rank, 2); // the winner sits at rank 2
@@ -913,7 +929,7 @@ describe("19b. blocked_first (§0.2)", () => {
   });
 
   it("unverified below the winner -> no blocked_first anywhere", () => {
-    const res = selectThree({ listings: [...pool(4)] });
+    const res = selectThree({ listings: [...pool(4)] }, { crowningThreshold: 0 });
     assert.equal(res.picks.best_value, 1);
     assert.equal(byId(res, 4).rank, 4);
     assert.equal(unv(byId(res, 4)).triggered, true);
@@ -924,7 +940,7 @@ describe("19b. blocked_first (§0.2)", () => {
 
 describe("19c. the gate bars all three and the runner-up (§0.4)", () => {
   it("a thin cell at the top of the peace_of_mind order is not picked, and the reason is recorded", () => {
-    const res = selectThree({ listings: [cand({ id: 1, car: 1, thin: true, history: 20 }), cand({ id: 2, car: 2, price: 95000, history: 3 })] });
+    const res = selectThree({ listings: [cand({ id: 1, car: 1, thin: true, history: 20 }), cand({ id: 2, car: 2, price: 95000, history: 3 })] }, { crowningThreshold: 0 });
     assert.equal(byId(res, 1).eligibility.peace_of_mind, false);
     assert.deepEqual(byId(res, 1).eligibility.reasons, ["thin_cell"]);
     assert.equal(res.picks.peace_of_mind, 2); // although reality 20 > 3
@@ -932,7 +948,7 @@ describe("19c. the gate bars all three and the runner-up (§0.4)", () => {
   });
 
   it("an all-thin pool -> three empty categories, each with a reason, and the finish test passes", () => {
-    const res = selectThree({ listings: [cand({ id: 1, thin: true, history: 5 }), cand({ id: 2, thin: true, history: 9 })] });
+    const res = selectThree({ listings: [cand({ id: 1, thin: true, history: 5 }), cand({ id: 2, thin: true, history: 9 })] }, { crowningThreshold: 0 });
     assert.deepEqual(res.picks, { best_value: null, peace_of_mind: null, cheapest: null });
     assert.deepEqual(res.missing, { best_value: "no_candidate", peace_of_mind: "no_candidate", cheapest: "no_candidate" });
     for (const r of res.results) assert.deepEqual(r.eligibility.reasons, ["thin_cell"]);
@@ -944,7 +960,7 @@ describe("19c. the gate bars all three and the runner-up (§0.4)", () => {
 
 describe("19d. cheapest with every candidate below the floor (§5.10d)", () => {
   it("empty, with the reason recorded on every listing and on the search result", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: -6 }), cand({ id: 2, price: 95000, history: -9 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 90000, history: -6 }), cand({ id: 2, price: 95000, history: -9 })] }, { crowningThreshold: 0 });
     assert.equal(res.picks.cheapest, null);
     assert.equal(res.missing.cheapest, "no_candidate");
     for (const r of res.results) assert.ok(r.eligibility.reasons.includes("below_floor"));
@@ -960,15 +976,17 @@ describe("19e. the runner-up is filtered by full pick eligibility (§5.5, P1)", 
   it("an unverified listing inside the band with the gap is skipped; the next eligible one is taken", () => {
     const res = selectThree({
       listings: [C(), cand({ id: 2, car: 2, price: 93000, price_v: 10, history: 8, history_source: "typical" }), cand({ id: 3, car: 3, price: 94000, price_v: 10, history: 5 })],
-    });
+    }, { crowningThreshold: 0 });
     assert.equal(res.picks.cheapest, 1);
-    assert.equal(byId(res, 2).eligibility.cheapest, false);
-    assert.equal(res.runner_ups.cheapest?.listing_id, 3); // 2 has the bigger gap but cannot be the runner-up
-    assert.deepEqual(res.runner_ups.cheapest, { listing_id: 3, gap: 5, price_over_pct: 4.4, triggered: true, also_won: ["best_value", "peace_of_mind"] });
+    assert.equal(byId(res, 2).eligibility.cheapest, false); // unverified: never a candidate
+    // rules v7 (§1.5): listing 3, the next eligible one, wins best_value and peace_of_mind — so it is no
+    // candidate either, and the band is left with nobody outside the picks.
+    assert.deepEqual(byId(res, 3).categories, ["best_value", "peace_of_mind"]);
+    assert.equal(res.runner_ups.cheapest, null);
   });
 
   it("the only candidate in the band is unverified -> no runner-up at all", () => {
-    const res = selectThree({ listings: [C(), cand({ id: 2, car: 2, price: 93000, price_v: 10, history: 8, history_source: "typical" })] });
+    const res = selectThree({ listings: [C(), cand({ id: 2, car: 2, price: 93000, price_v: 10, history: 8, history_source: "typical" })] }, { crowningThreshold: 0 });
     assert.equal(res.picks.cheapest, 1);
     assert.equal(res.runner_ups.cheapest, null);
     const e = res.results.flatMap((r) => entries(r, "cheapest_runner_up"));
@@ -976,11 +994,14 @@ describe("19e. the runner-up is filtered by full pick eligibility (§5.5, P1)", 
     assert.equal(e[0].context.reason, "no_candidate_in_band");
   });
 
-  it("a runner-up that is a category winner keeps the runner-up place and records also_won", () => {
-    const res = selectThree({ listings: [C(), cand({ id: 2, car: 2, price: 93000, price_v: 10, history: 8 })] });
+  // rules v7 (§1.5): the case P1 recorded cannot occur any more — a category winner is no candidate at all.
+  it("a category winner is NOT the runner-up: the band holds only the pick -> no runner-up", () => {
+    const res = selectThree({ listings: [C(), cand({ id: 2, car: 2, price: 93000, price_v: 10, history: 8 })] }, { crowningThreshold: 0 });
     assert.equal(res.picks.best_value, 2);
-    assert.equal(res.runner_ups.cheapest?.listing_id, 2);
-    assert.deepEqual(res.runner_ups.cheapest?.also_won, ["best_value", "peace_of_mind"]);
+    assert.equal(res.runner_ups.cheapest, null);
+    const e = res.results.flatMap((r) => entries(r, "cheapest_runner_up"));
+    assert.equal(e.length, 1);
+    assert.equal(e[0].context.reason, "no_candidate_in_band");
   });
 });
 
@@ -994,7 +1015,7 @@ describe("19f. the no-deal tail (§0.3, NO_DEAL_ORDER = price_asc)", () => {
         cand({ id: 5, median: null, price: 95000, history: 2, first_seen: "2026-08-02T00:00:00.000Z" }), // tie on price with 2 and 4, oldest
         cand({ id: 4, median: null, price: 95000, history: 3, first_seen: "2026-08-02T00:00:00.000Z" }), // tie on price AND first_seen with 5 -> lower id first
       ],
-    });
+    }, { crowningThreshold: 0 });
     assert.deepEqual(
       res.results.filter((r) => r.status === "shown").map((r) => r.listing_id),
       [1, 3, 4, 5, 2],
@@ -1007,7 +1028,7 @@ describe("19f. the no-deal tail (§0.3, NO_DEAL_ORDER = price_asc)", () => {
 });
 
 describe("19g. the finish test's claims (§0.5)", () => {
-  const base = (): SelectionResult => selectThree({ listings: [cand({ id: 1, price: 90000, history: 4 })] });
+  const base = (): SelectionResult => selectThree({ listings: [cand({ id: 1, price: 90000, history: 4 })] }, { crowningThreshold: 0 });
 
   it("negative: an empty category without a recorded reason fails", () => {
     const res = base();
@@ -1029,7 +1050,7 @@ describe("19g. the finish test's claims (§0.5)", () => {
   });
 
   it("negative: a listing ranked above the winner with no recorded ineligibility fails", () => {
-    const res = selectThree({ listings: [cand({ id: 1, car: 1, price: 90000, history: 4, history_source: "typical" }), cand({ id: 2, car: 2, price: 93000, history: 4 })] });
+    const res = selectThree({ listings: [cand({ id: 1, car: 1, price: 90000, history: 4, history_source: "typical" }), cand({ id: 2, car: 2, price: 93000, history: 4 })] }, { crowningThreshold: 0 });
     assert.equal(finishTest(res).pass, true); // as selected: rank 1 is ineligible, with its reason
     res.results[0].eligibility.reasons = []; // the reason disappears
     const ft = finishTest(res);
@@ -1037,12 +1058,15 @@ describe("19g. the finish test's claims (§0.5)", () => {
     assert.equal(ft.checks.find((c) => c.claim.startsWith("best_value winner"))?.ok, false);
   });
 
-  it("positive: the synthetic finish pool passes all four claims", () => {
-    const ft = finishTest(selectThree({ listings: finishPool() }));
+  it("positive: the synthetic finish pool passes all six claims", () => {
+    const ft = finishTest(selectThree({ listings: finishPool() }, { crowningThreshold: 0 }));
     assert.equal(ft.pass, true, JSON.stringify(ft.checks));
     assert.deepEqual(
       ft.checks.map((c) => c.claim),
       [
+        // §1.6 — the crowning gate's two claims, first, before the four of rules v5
+        "the crowning gate is recorded on the rank-1 row, once, and its counts survive a recount",
+        "nothing is crowned below the threshold: no pick, no runner-up, no pick-loop record",
         "every category is filled, or empty with a recorded reason",
         "every winner is eligible for the category it won",
         "best_value winner is the first eligible listing in the list order; every listing above it is recorded ineligible with a reason",
@@ -1061,7 +1085,7 @@ describe("20. cancelled (Day 18, rules v6 §8)", () => {
   };
 
   it("a cancelled invoice -> ineligible for all three, reason cancelled, the record carries the date and the effect", () => {
-    const res = selectThree({ listings: [cand({ id: 1, price: 80000, cancelled: CANCEL }), cand({ id: 2, price: 95000, history: 2 })] });
+    const res = selectThree({ listings: [cand({ id: 1, price: 80000, cancelled: CANCEL }), cand({ id: 2, price: 95000, history: 2 })] }, { crowningThreshold: 0 });
     const r = byId(res, 1);
     assert.deepEqual(r.eligibility, elig(false, false, false, ["cancelled"], [false, false, false]));
     assert.deepEqual(cancelledEntry(r), {
@@ -1089,7 +1113,7 @@ describe("20. cancelled (Day 18, rules v6 §8)", () => {
         cand({ id: 2, price: 100000, history: 5 }), // ranked
         cand({ id: 3, median: null, price: 90000, history: 1 }), // no deal, 90,000
       ],
-    });
+    }, { crowningThreshold: 0 });
     const r = byId(res, 1);
     assert.equal(r.status, "shown");
     assert.deepEqual(res.results.filter((x) => x.status === "shown").map((x) => x.listing_id), [2, 1, 3]);
@@ -1099,13 +1123,13 @@ describe("20. cancelled (Day 18, rules v6 §8)", () => {
   it("cannot be the cheapest runner-up, even inside the band with the biggest gap", () => {
     const res = selectThree({
       listings: [cand({ id: 1, car: 1, price: 90000, price_v: 10, history: 0 }), cand({ id: 2, car: 2, price: 93000, cancelled: CANCEL })],
-    });
+    }, { crowningThreshold: 0 });
     assert.equal(res.picks.cheapest, 1);
     assert.equal(res.runner_ups.cheapest, null);
   });
 
   it("an all-cancelled pool -> three empty categories with a reason; the finish test passes", () => {
-    const res = selectThree({ listings: [cand({ id: 1, cancelled: CANCEL }), cand({ id: 2, cancelled: CANCEL })] });
+    const res = selectThree({ listings: [cand({ id: 1, cancelled: CANCEL }), cand({ id: 2, cancelled: CANCEL })] }, { crowningThreshold: 0 });
     assert.deepEqual(res.picks, { best_value: null, peace_of_mind: null, cheapest: null });
     for (const r of res.results) assert.deepEqual(r.eligibility.reasons, ["cancelled"]);
     const ft = finishTest(res);
@@ -1113,7 +1137,7 @@ describe("20. cancelled (Day 18, rules v6 §8)", () => {
   });
 
   it("a cancelled listing in the synthetic finish pool leaves the finish test passing", () => {
-    const ft = finishTest(selectThree({ listings: [...finishPool(), cand({ id: 999, car: 999, price: 50000, cancelled: CANCEL })] }));
+    const ft = finishTest(selectThree({ listings: [...finishPool(), cand({ id: 999, car: 999, price: 50000, cancelled: CANCEL })] }, { crowningThreshold: 0 }));
     assert.equal(ft.pass, true, JSON.stringify(ft.checks));
   });
 });

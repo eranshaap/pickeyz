@@ -16,22 +16,28 @@
 //   4.4 rule      dealer_not_visible
 //   4.5 merge     duplicate — one representative per car among the survivors
 //   4.6 rank      representatives in the Stage A order -> rank 1..n, status shown
+//   4.6b gate     THE CROWNING GATE (Days 20–21 rules v7 §1.3): the ranks are final, and the rows eligible to win
+//                 are counted. Fewer than CROWNING_THRESHOLD of them -> no pick in any category, no runner-up and
+//                 none of the tracking rules that need a pick; every rank and every status stay as they are.
 //   4.7 picks     best_value -> peace_of_mind -> cheapest, with double_winner and too_similar traced; a car may win
 //                 more than one category (part 3 §1); then blocked_first (§0.2) and cheapest_runner_up recorded on the
-//                 cheapest pick (part 3 §2b, with P1's also_won)
+//                 cheapest pick (part 3 §2b)
 //
-// Module split: gate.ts (4.1, the overpriced measurement) · order.ts (the comparators of 4.2, 4.6, §2 and 4.5) · rules.ts (4.3–4.5) ·
+// Module split: gate.ts (4.1, the overpriced measurement) · order.ts (the comparators of 4.2, 4.6, §2 and 4.5) · rules.ts (4.3–4.5) · crowning.ts (4.6b) ·
 // picks.ts (4.7, runner-up, blocked_first) · similarity.ts (distance, 4.8) · finish.ts (the finish test's claims) ·
 // constants.ts (§5) · types.ts (§3) · util.ts (helpers).
 
-import { ABOVE_NEW_PRICE_EFFECT, CATEGORY_PRIORITY, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
+import { ABOVE_NEW_PRICE_EFFECT, CATEGORY_PRIORITY, CROWNING_THRESHOLD, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
+import { crowningCounts, crowningOf, isGated } from "./crowning";
 import { cancelled, eligibility, isSoldMedium, isSoldStrong, overpriced, unverifiedHistory } from "./gate";
 import { stageAOrder } from "./order";
 import { pick } from "./picks";
 import { aboveNewPrice, belowThreshold, dealerNotVisible, mergeByCar, type Work } from "./rules";
-import type { CandidateListing, ListingResult, PeaceOfMindFloorEffect, SelectionInput, SelectionOptions, SelectionResult } from "./types";
+import type { Category, CandidateListing, ListingResult, MissingReason, PeaceOfMindFloorEffect, SelectionInput, SelectionOptions, SelectionResult } from "./types";
+import { RULE_TYPE } from "./types";
 import { cmpNullsLast } from "./util";
 
+export { crowningCounts, crowningLine, crowningOf, hasComparison, isEligibleToWin, isGated } from "./crowning";
 export { distance } from "./similarity";
 export { finishTest, type FinishCheck, type FinishTest } from "./finish";
 export { hasVerifiedHistory, historySource, isCancelled, isThinCell } from "./gate";
@@ -41,11 +47,13 @@ export type {
   AboveNewPriceEffect,
   CandidateListing,
   Category,
+  Crowning,
   DoubleWinnerEffect,
   Eligibility,
   ExcludedBy,
   ListingResult,
   ListingStatus,
+  MissingReason,
   PeaceOfMindFloorEffect,
   RuleEffect,
   RuleName,
@@ -74,11 +82,25 @@ function emptyResult(l: CandidateListing, floorEffect: PeaceOfMindFloorEffect): 
   };
 }
 
+/**
+ * §1.3 / §1.4 — what the pick loop returns when the gate triggered: nothing was picked, nothing was evaluated,
+ * and every category carries the gate's own reason. No rule record is written by this — the gate's record is
+ * the one on the rank-1 row, and `cheapest_runner_up` is not written at all (it has no pick row to live on).
+ */
+function gatedPicks(): Pick<SelectionResult, "picks" | "missing" | "runner_ups"> {
+  const picks: Record<Category, number | null> = { best_value: null, peace_of_mind: null, cheapest: null };
+  const missing: Partial<Record<Category, MissingReason>> = {};
+  for (const c of CATEGORY_PRIORITY) missing[c] = "below_crowning_threshold";
+  return { picks, missing, runner_ups: { cheapest: null } };
+}
+
 export function selectThree(input: SelectionInput, options: SelectionOptions = {}): SelectionResult {
   const tooSimilarEffect = options.too_similar_effect ?? TOO_SIMILAR_EFFECT;
   const doubleWinnerEffect = options.double_winner_effect ?? DOUBLE_WINNER_EFFECT;
   const floorEffect = options.peace_of_mind_floor_effect ?? PEACE_OF_MIND_FLOOR_EFFECT;
   const aboveNewPriceEffect = options.above_new_price_effect ?? ABOVE_NEW_PRICE_EFFECT;
+  // §1.8 — test-only; undefined is the constant.
+  const crowningThreshold = options.crowningThreshold ?? CROWNING_THRESHOLD;
 
   const seen = new Set<number>();
   for (const l of input.listings) {
@@ -125,8 +147,28 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
     w.result.rank = i + 1;
   });
 
-  // 4.7 picks, then the cheapest runner-up (part 3 §2b)
-  const { picks, missing, runner_ups } = pick(representatives, tooSimilarEffect, doubleWinnerEffect);
+  // 4.6b THE CROWNING GATE (Days 20–21 rules v7, §1.3–§1.4) — the ranks are final and nothing below moves a row.
+  const counts = crowningCounts(representatives);
+  const gated = isGated(counts.eligible, crowningThreshold);
+
+  // §1.4 — the record, on the rank-1 row and on no other. There is always one when any row is shown (the tail
+  // is ranked too); zero shown rows → no record, because there is nothing to write it on.
+  const rankOne = representatives.find((w) => w.result.rank === 1);
+  if (rankOne !== undefined) {
+    rankOne.result.trace.push({
+      rule: "crowning_threshold",
+      type: RULE_TYPE.crowning_threshold,
+      value: counts.eligible,
+      threshold: crowningThreshold,
+      triggered: gated,
+      effect: "none", // the rule moves no row
+      context: { eligible: counts.eligible, with_comparison: counts.with_comparison },
+    });
+  }
+
+  // 4.7 picks, then the cheapest runner-up (part 3 §2b) — skipped whole when the gate triggered: no pick, no
+  // runner-up record (it has no pick row to live on) and none of the tracking rules that need a pick.
+  const { picks, missing, runner_ups } = gated ? gatedPicks() : pick(representatives, tooSimilarEffect, doubleWinnerEffect);
 
   // results: ranked first (by rank), then the rest (by stage_a_place, nulls last, then listing_id)
   const results = all
@@ -135,8 +177,8 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
 
   // every category answered, one way or the other
   for (const c of CATEGORY_PRIORITY) {
-    if (picks[c] === null && missing[c] !== "no_candidate") throw new Error(`selectThree: category ${c} has no pick and no missing reason`);
+    if (picks[c] === null && missing[c] === undefined) throw new Error(`selectThree: category ${c} has no pick and no missing reason`);
   }
 
-  return { rules_version: RULES_VERSION, picks, missing, runner_ups, results };
+  return { rules_version: RULES_VERSION, picks, missing, crowning: crowningOf(counts, crowningThreshold), runner_ups, results };
 }

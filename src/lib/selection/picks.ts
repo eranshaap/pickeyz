@@ -14,7 +14,7 @@ import {
 import { categoryOrder } from "./order";
 import type { Work } from "./rules";
 import { distance } from "./similarity";
-import type { Category, DoubleWinnerEffect, SelectionResult, TooSimilarEffect } from "./types";
+import type { Category, DoubleWinnerEffect, MissingReason, SelectionResult, TooSimilarEffect } from "./types";
 import { RULE_TYPE } from "./types";
 import { cmpNullsLast, parseIso, round } from "./util";
 
@@ -30,7 +30,7 @@ export function pick(
   doubleWinnerEffect: DoubleWinnerEffect,
 ): Pick<SelectionResult, "picks" | "missing" | "runner_ups"> {
   const picks: Record<Category, number | null> = { best_value: null, peace_of_mind: null, cheapest: null };
-  const missing: Partial<Record<Category, "no_candidate">> = {};
+  const missing: Partial<Record<Category, MissingReason>> = {};
   const picked: { work: Work; category: Category }[] = []; // in category order
 
   for (const category of CATEGORY_PRIORITY) {
@@ -109,7 +109,10 @@ function blockedFirst(shown: Work[], picks: Record<Category, number | null>): vo
 
 // part 3 §2b — the runner-up of the cheapest pick C: among the shown listings eligible for cheapest, other than C's car,
 // which since Day 14 rules v5 means fully pick-eligible — the thin-cell gate and unverified_history are both part of
-// eligibility.cheapest (§5.5). Nothing else about the selection changed; P1 adds also_won to what is recorded.
+// eligibility.cheapest (§5.5),
+// AND — Days 20–21 rules v7 (§1.5) — OTHER THAN A ROW THAT WON A CATEGORY: a listing that is on the screen as a
+// pick (any of the three; a double winner is one row) is never a candidate. With no candidate outside the picks
+// the outcome is the same as an empty band. P1's also_won is gone with it — the case it recorded cannot occur.
 // priced in (C.price, C.price * (1 + band/100)], the one with the highest deal_score (ties → lower price → earlier
 // first_seen_at → lower listing_id). Recorded on C; value = its deal_score − C's, threshold RUNNER_UP_DEAL_GAP. Never acts.
 function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionResult["runner_ups"]["cheapest"] {
@@ -123,7 +126,14 @@ function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionRe
   };
   const ceiling = C.input.price * (1 + RUNNER_UP_PRICE_BAND_PCT / 100);
   const candidates = shown
-    .filter((w) => w.result.eligibility.cheapest && w.input.car_id !== C.input.car_id && w.input.price > C.input.price && w.input.price <= ceiling)
+    .filter(
+      (w) =>
+        w.result.eligibility.cheapest &&
+        w.result.categories.length === 0 && // §1.5 — a pick is never its own runner-up, in any category
+        w.input.car_id !== C.input.car_id &&
+        w.input.price > C.input.price &&
+        w.input.price <= ceiling,
+    )
     .sort(
       (a, b) =>
         cmpNullsLast(dealOf(a), dealOf(b), "desc") ||
@@ -147,8 +157,6 @@ function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionRe
   const gap = round(dealOf(ru) - dealOf(C), RUNNER_UP_ROUND_DECIMALS);
   const price_over_pct = round(((ru.input.price - C.input.price) / C.input.price) * 100, RUNNER_UP_ROUND_DECIMALS);
   const triggered = gap >= RUNNER_UP_DEAL_GAP;
-  // P1: the categories this same listing won in this search. The pick loop has finished, so this is final.
-  const also_won = [...ru.result.categories];
   C.result.trace.push({
     rule: "cheapest_runner_up",
     type: RULE_TYPE.cheapest_runner_up,
@@ -156,7 +164,7 @@ function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionRe
     threshold: RUNNER_UP_DEAL_GAP,
     triggered,
     effect: "none",
-    context: { runner_up: ru.input.listing_id, price_over_pct, band_pct: RUNNER_UP_PRICE_BAND_PCT, ...(also_won.length ? { also_won } : {}) },
+    context: { runner_up: ru.input.listing_id, price_over_pct, band_pct: RUNNER_UP_PRICE_BAND_PCT },
   });
-  return { listing_id: ru.input.listing_id, gap, price_over_pct, triggered, ...(also_won.length ? { also_won } : {}) };
+  return { listing_id: ru.input.listing_id, gap, price_over_pct, triggered };
 }

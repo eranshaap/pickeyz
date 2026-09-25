@@ -37,7 +37,6 @@ import { RUBRIC_HEADINGS } from "@/lib/display/rubrics";
 import CarTitle from "@/components/car/CarTitle";
 import Photo from "@/components/car/Photo";
 
-const EMPTY_POOL = "אין רכבים שעונים על ההגבלות";
 const TO_CAR_PAGE = "לעמוד הרכב";
 
 const CARD_BG = "#ffffff";
@@ -252,8 +251,10 @@ function PickCard({ card, runnerUp, questionPublicId }: { card: Card; runnerUp: 
 }
 
 export default function PickCards({ answer }: { answer: AskResult }) {
-  // §8 — the zero-results screen is Run 2's; its text and layout stay exactly as they are today.
-  if (answer.pool_count === 0) return <p className="px-4 py-10 text-center text-lg text-neutral-700">{EMPTY_POOL}</p>;
+  // Run 2 §7.1 — the Day 15 line that stood here for an empty pool is GONE from this file: the zero-results
+  // screen is its own component now (ZeroResults.tsx), the string lives once in src/lib/display/edge-screens.ts
+  // (NO_CARS_AT_ALL), and SearchScreen decides by `answer.state` which screen to draw. This component is only
+  // ever reached on a `crowned` search, so it has nothing to test for and no early return.
 
   // §3.0 — the row: centred, stretched to one height, 24px apart, and every card at the THREE-card width
   // whether there are three, two or one (the boards «זוכה כפול» and «זוכה משולש» — the cards keep their width

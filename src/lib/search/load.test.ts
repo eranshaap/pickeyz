@@ -7,9 +7,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  drawnListingIds,
   isShownRow,
   isUpdate,
   latestRun,
+  resultsCounts,
+  resultsState,
   resultsViewFrom,
   storedFilters,
   storedRunnerUpListing,
@@ -21,7 +24,8 @@ import {
 } from "./load";
 import { handRubric } from "@/lib/display/rubrics";
 import { MULTI_COLOR } from "@/lib/display/cards";
-import { RULE_TYPE, type RuleTrace } from "@/lib/selection";
+import { groupHead, noComparisonLine, uncrownedHead, zeroScoredHead } from "@/lib/display/edge-screens";
+import { CROWNING_THRESHOLD, RULE_TYPE, type RuleTrace } from "@/lib/selection";
 import type { Prisma } from "@/generated/prisma/client";
 
 const CURRENT: CurrentVersions = { engineVersion: 5, rulesVersion: 6 };
@@ -425,13 +429,20 @@ describe("resultsViewFrom() — the cards (§2.1, §2.4)", () => {
     const v = resultsViewFrom({
       question_public_id: QUESTION_ID,
       rows: [resultRow({ listing_id: 50, rank: 1 }), resultRow({ listing_id: 60, rank: null })],
-      facts: new Map(),
+      // Run 2 §3.1: rows with no crowning record and no category read as `uncrowned`, so the shown row is
+      // DRAWN — as a place card — and its facts are needed. Before version 7 nothing was drawn here.
+      facts: new Map([[50, listingFacts({ public_id: "eeeeeeeeee", car_id: 4 })]]),
       car_id_of,
       new_price_of,
     });
     assert.deepEqual(v.cards, []);
     assert.equal(v.runner_up, null);
     assert.equal(v.cars_shown, 1);
+    assert.equal(v.state, "uncrowned");
+    assert.deepEqual(
+      v.places.map((p) => [p.place, p.public_id]),
+      [[1, "eeeeeeeeee"]],
+    );
   });
 
   it("a row pointing at a listing that is not in `listings` is a stop, not a skipped card", () => {
@@ -484,5 +495,258 @@ describe("resultsViewFrom() — the cards (§2.1, §2.4)", () => {
       // rows 10, 20, 30, 40 and 50 are shown (50 is a second ad of car 4); row 60 was merged away
       assert.equal(view.cars_shown, 4);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BRIEF Days 20–21, Run 2 §3.7 — THE SEARCH ANSWER'S STATE, COUNTS, HEAD, PLACES AND ROWS.
+// Still no database: resultsViewFrom() is the whole rule, on literal rows.
+// ---------------------------------------------------------------------------
+
+/** rules v7 §1.4 — the crowning gate's record, as index.ts writes it on the rank-1 row. */
+const crowningRecord = (eligible: number, with_comparison: number, threshold = CROWNING_THRESHOLD): Prisma.JsonValue =>
+  trace({
+    rule: "crowning_threshold",
+    value: eligible,
+    threshold,
+    triggered: eligible < threshold,
+    effect: "none",
+    context: { eligible, with_comparison },
+  });
+
+/** The `unverified_history` record as gate.ts writes it when the rule bars a listing. */
+const unverifiedRecord = (): Prisma.JsonValue =>
+  trace({ rule: "unverified_history", value: "typical", effect: "ineligible", context: { evaluated: true, history_row_status: "scored" } });
+
+/** The `cancelled` record as gate.ts writes it on a car finally cancelled at the registry. */
+const cancelledRecord = (): Prisma.JsonValue => trace({ rule: "cancelled", value: "2026-09-10", effect: "ineligible", context: { evaluated: true } });
+
+/** A scored, eligible shown row at `rank`. */
+const scoredRow = (listing_id: number, rank: number, over: Partial<ResultRow> = {}): ResultRow =>
+  resultRow({ listing_id, rank, total_score: 10 - rank, ...over });
+
+/** A shown row with no price comparison: the no-deal tail. */
+const tailRow = (listing_id: number, rank: number, over: Partial<ResultRow> = {}): ResultRow =>
+  resultRow({ listing_id, rank, total_score: null, ...over });
+
+const factsFor = (ids: number[]): Map<number, ListingFacts> =>
+  new Map(ids.map((id) => [id, listingFacts({ public_id: `p${String(id).padStart(9, "0")}`, car_id: id })]));
+
+const carsFor = (ids: number[]): Map<number, number> => new Map(ids.map((id) => [id, id]));
+
+function viewOf(rows: ResultRow[], over: { facts?: Map<number, ListingFacts> } = {}) {
+  const ids = rows.map((r) => r.listing_id);
+  return resultsViewFrom({
+    question_public_id: QUESTION_ID,
+    rows,
+    facts: over.facts ?? factsFor(ids),
+    car_id_of: carsFor(ids),
+    new_price_of: new Map(),
+  });
+}
+
+describe("resultsState() — the four screens, in §3.1's order", () => {
+  it("no shown row -> zero_results", () => {
+    const rows = [resultRow({ listing_id: 1, rank: null }), resultRow({ listing_id: 2, rank: null })];
+    assert.equal(resultsState(rows, { with_comparison: 0 }), "zero_results");
+    assert.equal(viewOf(rows).state, "zero_results");
+  });
+
+  it("shown rows, none with a price comparison -> zero_scored", () => {
+    const rows = [tailRow(1, 1), tailRow(2, 2)];
+    assert.equal(viewOf(rows).state, "zero_scored");
+  });
+
+  it("the rank-1 row's crowning record, triggered -> uncrowned", () => {
+    const rows = [scoredRow(1, 1, { stage_b_trace: [crowningRecord(6, 6)] }), scoredRow(2, 2)];
+    assert.equal(viewOf(rows).state, "uncrowned");
+  });
+
+  it("the rank-1 row's crowning record, not triggered -> crowned", () => {
+    const rows = [scoredRow(1, 1, { recommendation_categories: ["best_value"], stage_b_trace: [crowningRecord(9, 9)] }), scoredRow(2, 2)];
+    assert.equal(viewOf(rows).state, "crowned");
+  });
+
+  it("rows written before version 7 (no record): with categories -> crowned, without -> uncrowned", () => {
+    assert.equal(viewOf([scoredRow(1, 1, { recommendation_categories: ["best_value"] }), scoredRow(2, 2)]).state, "crowned");
+    assert.equal(viewOf([scoredRow(1, 1), scoredRow(2, 2)]).state, "uncrowned");
+  });
+
+  it("two crowning records on one row is a contradiction, not a choice", () => {
+    assert.throws(() => viewOf([scoredRow(1, 1, { stage_b_trace: [crowningRecord(6, 6), crowningRecord(7, 7)] })]), /measured once/);
+  });
+});
+
+describe("resultsCounts() — the record and the recount agree (§3.2)", () => {
+  // 4 shown rows with a comparison, of which 2 are barred from winning; one tail row; one removed row.
+  const rows = [
+    scoredRow(1, 1),
+    scoredRow(2, 2, { stage_b_trace: [unverifiedRecord()] }),
+    scoredRow(3, 3, { stage_b_trace: [unverifiedRecord()] }),
+    scoredRow(4, 4),
+    tailRow(5, 5),
+    resultRow({ listing_id: 6, rank: null }),
+  ];
+  const cars = carsFor([1, 2, 3, 4, 5, 6]);
+
+  it("from a recount when no row carries the record", () => {
+    assert.deepEqual(resultsCounts(rows, cars), { cars: 5, with_comparison: 4, eligible: 2, threshold: CROWNING_THRESHOLD, source: "recount" });
+  });
+
+  it("from the record when the rank-1 row carries it — the same numbers, on the same fixture", () => {
+    const withRecord = rows.map((r) => (r.rank === 1 ? { ...r, stage_b_trace: [crowningRecord(2, 4)] } : r));
+    const fromRecord = resultsCounts(withRecord, cars);
+    assert.deepEqual(fromRecord, { cars: 5, with_comparison: 4, eligible: 2, threshold: CROWNING_THRESHOLD, source: "record" });
+    const fromRecount = resultsCounts(rows, cars);
+    assert.equal(fromRecord.with_comparison, fromRecount.with_comparison);
+    assert.equal(fromRecord.eligible, fromRecount.eligible);
+  });
+
+  it("a cancelled row has no comparison and is counted as a car all the same", () => {
+    const withCancelled = [...rows, tailRow(7, 6, { stage_b_trace: [cancelledRecord()] })];
+    const c = resultsCounts(withCancelled, carsFor([1, 2, 3, 4, 5, 6, 7]));
+    assert.equal(c.cars, 6);
+    assert.equal(c.with_comparison, 4);
+  });
+});
+
+describe("resultsViewFrom() — the places, the rows and the group (§3.5)", () => {
+  const rows = [
+    scoredRow(10, 1, { stage_b_trace: [crowningRecord(3, 3)] }),
+    scoredRow(20, 2),
+    scoredRow(30, 3),
+    tailRow(40, 4),
+    tailRow(50, 5),
+    tailRow(60, 6, { stage_b_trace: [cancelledRecord()] }), // §3.5 — drawn on neither edge screen
+    resultRow({ listing_id: 70, rank: null }), // removed by Stage B
+  ];
+  const view = viewOf(rows);
+
+  it("uncrowned, with the head of §2.1's reason A", () => {
+    assert.equal(view.state, "uncrowned");
+    assert.deepEqual(view.head, uncrownedHead({ with_comparison: 3, eligible: 3, threshold: CROWNING_THRESHOLD }));
+  });
+
+  it("places: the shown rows with a comparison, in rank order, each labelled by its rank", () => {
+    assert.deepEqual(
+      view.places.map((p) => [p.place, p.public_id]),
+      [
+        [1, "p000000010"],
+        [2, "p000000020"],
+        [3, "p000000030"],
+      ],
+    );
+  });
+
+  it("a place card carries the same fields a pick card does — one mapping (§3.4)", () => {
+    const p = view.places[0];
+    assert.deepEqual(Object.keys(p).sort(), [
+      "hand",
+      "image",
+      "km",
+      "model",
+      "new_price_pct",
+      "ownership_type",
+      "place",
+      "price",
+      "public_id",
+      "sentence",
+      "year",
+    ]);
+    assert.equal(p.km, 34000);
+    assert.equal(p.hand, 2);
+    assert.equal(p.ownership_type, "private");
+    assert.equal(p.sentence, null);
+  });
+
+  it("unscored: the shown rows with no comparison, in their stored order, the cancelled one left out", () => {
+    assert.deepEqual(
+      view.unscored.map((r) => r.public_id),
+      ["p000000040", "p000000050"],
+    );
+    assert.equal(view.counts.cars, 6); // the cancelled car IS a car the screen displays
+  });
+
+  it("the group object is groupHead() over the drawn rows", () => {
+    assert.deepEqual(view.group, groupHead(2));
+    assert.equal(view.group?.line, noComparisonLine(2));
+  });
+
+  it("no unscored row -> no group object", () => {
+    const v = viewOf([scoredRow(10, 1, { stage_b_trace: [crowningRecord(2, 2)] }), scoredRow(20, 2)]);
+    assert.equal(v.unscored.length, 0);
+    assert.equal(v.group, null);
+  });
+
+  it("zero_scored: the head says it, so there is no group object and no place", () => {
+    const v = viewOf([tailRow(10, 1), tailRow(20, 2), tailRow(30, 3, { stage_b_trace: [cancelledRecord()] })]);
+    assert.equal(v.state, "zero_scored");
+    assert.deepEqual(v.head, zeroScoredHead(2)); // the cancelled row is not drawn and not named in the head
+    assert.equal(v.group, null);
+    assert.deepEqual(v.places, []);
+    assert.equal(v.unscored.length, 2);
+  });
+
+  it("zero_results: no head, no place, no row, and the count is nought", () => {
+    const v = viewOf([resultRow({ listing_id: 10, rank: null })]);
+    assert.deepEqual(v, {
+      public_id: QUESTION_ID,
+      state: "zero_results",
+      counts: { cars: 0, with_comparison: 0, eligible: 0, threshold: CROWNING_THRESHOLD, source: "recount" },
+      head: null,
+      cards: [],
+      runner_up: null,
+      places: [],
+      unscored: [],
+      group: null,
+      cars_shown: 0,
+    });
+  });
+
+  it("crowned: no head, no place and no row — those belong to the two edge screens", () => {
+    const v = viewOf([
+      scoredRow(10, 1, { recommendation_categories: ["best_value"], stage_b_trace: [crowningRecord(9, 9)] }),
+      scoredRow(20, 2),
+      tailRow(30, 3),
+    ]);
+    assert.equal(v.state, "crowned");
+    assert.equal(v.head, null);
+    assert.deepEqual(v.places, []);
+    assert.deepEqual(v.unscored, []);
+    assert.equal(v.group, null);
+    assert.equal(v.cards.length, 1);
+  });
+});
+
+describe("drawnListingIds() — one query for every drawn row (§3.5)", () => {
+  it("crowned: the picks and the runner-up, exactly Run 1's set", () => {
+    const rows = [
+      scoredRow(10, 1, { recommendation_categories: ["best_value"], stage_b_trace: [crowningRecord(9, 9)] }),
+      scoredRow(20, 2, { recommendation_categories: ["cheapest"], stage_b_trace: [runnerUpRecord(30)] }),
+      scoredRow(30, 3),
+      tailRow(40, 4),
+    ];
+    assert.deepEqual(
+      drawnListingIds(rows).sort((a, b) => a - b),
+      [10, 20, 30],
+    );
+  });
+
+  it("uncrowned: every drawn row, and not the cancelled one nor a removed one", () => {
+    const rows = [
+      scoredRow(10, 1, { stage_b_trace: [crowningRecord(2, 2)] }),
+      scoredRow(20, 2),
+      tailRow(30, 3),
+      tailRow(40, 4, { stage_b_trace: [cancelledRecord()] }),
+      resultRow({ listing_id: 50, rank: null }),
+    ];
+    assert.deepEqual(
+      drawnListingIds(rows).sort((a, b) => a - b),
+      [10, 20, 30],
+    );
+  });
+
+  it("zero_results: nothing at all", () => {
+    assert.deepEqual(drawnListingIds([resultRow({ listing_id: 10, rank: null })]), []);
   });
 });

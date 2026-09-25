@@ -77,6 +77,8 @@ import ModelBar from "./ModelBar";
 import PickCards from "./PickCards";
 import PickCardsSkeleton from "./PickCardsSkeleton";
 import QuestionRow, { type ScreenNav } from "./QuestionRow";
+import UncrownedResults from "./UncrownedResults";
+import ZeroResults from "./ZeroResults";
 import { useScreenHistory } from "./useHistory";
 import { FILTER_LABEL, num } from "./labels";
 import { countLine } from "@/lib/display/cards";
@@ -296,6 +298,35 @@ export default function SearchScreen({
   }
 
   const dim = answered && (editingModel || !same(draft, asked.filters));
+
+  /**
+   * §6.1 — THE RELIEF CONTROL, unchanged. It was rendered under the row of cards and it is now handed to
+   * <ZeroResults>, which centres it under the Day 15 headline: the same markup, the same handler, the same
+   * look. `relief` is never set when the cut pool is not empty, so it only ever reaches the zero-results
+   * screen; when the action computed no relief the headline stands alone.
+   */
+  const reliefControl =
+    answered && answer.relief !== null ? (
+      <div>
+        <button
+          type="button"
+          className="w-full rounded-2xl border border-neutral-900 px-4 py-3 text-neutral-900 hover:bg-neutral-100"
+          onClick={() => {
+            const next: SearchFilters = { ...asked.filters };
+            const name = answer.relief?.filter;
+            if (name === "price") {
+              delete next.priceMin;
+              delete next.priceMax;
+            } else if (name === "years") delete next.years;
+            else if (name === "kmMax") delete next.kmMax;
+            else if (name === "regions") delete next.regions;
+            doAsk(next);
+          }}
+        >
+          {`הסרת ${FILTER_LABEL[answer.relief.filter]} תחזיר ${num(answer.relief.count)} רכבים`}
+        </button>
+      </div>
+    ) : null;
   // §1.4 — the button's number is the pool under the draft as it stands. Before a model is chosen on the
   // opening screen there is none, and the button carries no number at all, exactly as it did before.
   const poolNow = resolved?.total ?? answer?.pool_count ?? null;
@@ -392,55 +423,34 @@ export default function SearchScreen({
             {error !== null && <p className="px-4 py-2 text-sm text-neutral-600">{error}</p>}
 
             <div className={`transition-opacity duration-200 ease-out motion-reduce:transition-none ${dim ? "pointer-events-none select-none opacity-25" : "opacity-100"}`} aria-hidden={dim}>
-              {/* Run 1 (Days 20–21) §4.2 — THE RESULTS REGION: the site's 1280 container, centred, with the
-                  48px sides and `padding: 32px 48px 40px`; the content is therefore 1184 wide, as on the car
-                  page. The phone's is `24px 16px` (§5). The white bar above stays OUTSIDE it and keeps running
-                  the full width of the column, exactly as it does today (§4.4).
-                  §4.1 — the count line, then 20px, then the row. NOTHING ELSE, and nothing at all under the
-                  row: the headline and the institute sentence are gone (§4.3) and the bottom list is
-                  Days 24–25. */}
-              <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-4 pt-6 pb-10 md:px-12 md:pt-8">
-                {/* §4.1 / §5 — "נבחרו מתוך X רכבים." and no headline above it. */}
-                <p className="m-0 text-[14px] md:text-[16px]" style={{ color: "#665f58" }}>
-                  {countLine(answer.cars_shown)}
-                </p>
-
-                {/* §11.3 — the recommendations area, and ONLY it, goes to the placeholders while a navigation
-                    this screen started is in flight. The relief button goes with the cards: it belongs to the
-                    answer being replaced, and it is a second navigation waiting to be clicked. */}
-                {pending ? (
+              {/* RUN 2 (Days 20–21) §7.1 — THE RESULTS REGION RENDERS BY `answer.state`, and that is the whole
+                  of the change here. The three grey placeholders still show during every wait, whatever screen
+                  is on its way (§7.1), so the skeleton sits above the fork.
+                    crowned                  the count line and <PickCards>, exactly as Run 1 left them, in
+                                             Run 1's own container (§4.2: 1280, 48px sides, content 1184)
+                    uncrowned / zero_scored  <UncrownedResults>, which brings its own padding and gap (§5)
+                    zero_results             <ZeroResults>, centred in the window's remaining height (§6)
+                  The question row, the drawer, the filters, the dimming rule and the whole "עדכן" machinery are
+                  untouched; the white bar above stays OUTSIDE the region and keeps running the full width. */}
+              {pending ? (
+                <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-4 pt-6 pb-10 md:px-12 md:pt-8">
                   <PickCardsSkeleton />
-                ) : (
-                  <>
-                    <PickCards answer={answer} />
-
-                    {/* §0.5 — one relief suggestion, and only when the pool came back empty. §8 — the
-                        zero-results screen is Run 2's and stays exactly as it is; `relief` is never set when
-                        the cut pool is not empty, so nothing renders under the row of a search with cards. */}
-                    {answer.relief !== null && (
-                      <div>
-                        <button
-                          type="button"
-                          className="w-full rounded-2xl border border-neutral-900 px-4 py-3 text-neutral-900 hover:bg-neutral-100"
-                          onClick={() => {
-                            const next: SearchFilters = { ...asked.filters };
-                            const name = answer.relief?.filter;
-                            if (name === "price") {
-                              delete next.priceMin;
-                              delete next.priceMax;
-                            } else if (name === "years") delete next.years;
-                            else if (name === "kmMax") delete next.kmMax;
-                            else if (name === "regions") delete next.regions;
-                            doAsk(next);
-                          }}
-                        >
-                          {`הסרת ${FILTER_LABEL[answer.relief.filter]} תחזיר ${num(answer.relief.count)} רכבים`}
-                        </button>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
+                </div>
+              ) : answer.state === "zero_results" ? (
+                // §6.1 — the relief control exactly as it exists today: its markup, its handler and its look
+                // untouched, only moved into the centred block. Nothing else is in the region — no count line.
+                <ZeroResults relief={reliefControl} />
+              ) : answer.state === "crowned" ? (
+                <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-4 pt-6 pb-10 md:px-12 md:pt-8">
+                  {/* §3.3 — the count line belongs to the crowned screen alone. */}
+                  <p className="m-0 text-[14px] md:text-[16px]" style={{ color: "#665f58" }}>
+                    {countLine(answer.cars_shown)}
+                  </p>
+                  <PickCards answer={answer} />
+                </div>
+              ) : (
+                <UncrownedResults answer={answer} />
+              )}
             </div>
           </>
         )}

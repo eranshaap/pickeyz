@@ -15,3 +15,4 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Writes need an explicit instruction. Run scripts with --dry-run unless the instruction says to write. Never run migrations, deletes, or bulk updates on your own initiative.
 - Never discard working-tree changes. Do not run `git checkout --`, `git restore`, `git reset --hard`, `git clean` or `git stash drop`; if the tree looks wrong, stop and report.
 - A script you write yourself — a checker, a parser, a one-off query, anything the brief does not name — never runs unseen. Save it as a file outside the project folder, print it in full, and run it only after it is approved. In auto mode nothing gets approved: put it in REPORT.md and stop. Read-only is not an exemption, and an inline command (-e) is not a file.
+- Never open a file outside the project folder. Documents a brief names as sources are provenance, not reading material: the run reads only AGENTS.md, BRIEF.md and the repository.

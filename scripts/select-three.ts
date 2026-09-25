@@ -39,7 +39,7 @@
 // Rules v5 (Day 14 run B, §0.1–§0.4, P5): a pick requires registry ownership history — a listing whose invoice
 // history row is not sourced 'mot' stays listed and keeps its rank, wins nothing, and cannot be the runner-up. This
 // script adds: UNVERIFIED HISTORY (who the rule barred, and every blocked_first fact — the counterfactual winner the
-// rule kept out of a category), the runner-up's also_won, and the NO-DEAL TAIL in its new order (NO_DEAL_ORDER =
+// rule kept out of a category) and the NO-DEAL TAIL in its new order (NO_DEAL_ORDER =
 // price_asc, ties first_seen_at then listing_id). The reader is unchanged: it never selected listings.condition_score
 // or listings.confidence — Stage B has always read the sums out of the invoice.
 // Rules v4 (part 5 §3–§4): each listing gets new_price = the latest published_at row of new_car_prices on the car's key. Since part 6
@@ -62,6 +62,7 @@ import {
   ABOVE_NEW_PRICE_EFFECT,
   CATEGORY_PRIORITY,
   CHEAPEST_CONDITION_FLOOR,
+  CROWNING_THRESHOLD,
   DOUBLE_WINNER_EFFECT,
   PEACE_OF_MIND_DEAL_FLOOR,
   PEACE_OF_MIND_FLOOR_EFFECT,
@@ -74,6 +75,7 @@ import {
   TOO_SIMILAR_EFFECT,
   UNVERIFIED_HISTORY_EFFECT,
   categoryOrder,
+  crowningLine,
   distance,
   finishTest,
   selectThree,
@@ -207,7 +209,7 @@ async function main() {
     `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}, peace_of_mind_floor_effect = ${PEACE_OF_MIND_FLOOR_EFFECT}, above_new_price_effect = ${ABOVE_NEW_PRICE_EFFECT}, unverified_history_effect = ${UNVERIFIED_HISTORY_EFFECT}, no_deal_order = ${NO_DEAL_ORDER}`,
   );
   log(
-    `constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}`,
+    `constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}, CROWNING_THRESHOLD = ${CROWNING_THRESHOLD}`,
   );
   log(`model: ${modelDisplay}${MODEL === null ? " (the only model live; --model not given)" : ` (--model=${MODEL})`} — ${modelListings} live listing(s) of this model`);
   log(`filters: ${filters}; live listings: ${rowsLength}; pool after filters: ${pool.length}`);
@@ -246,6 +248,8 @@ async function main() {
     cheapest: (id) => `price ${P(id).candidate.price} (condition_vs_typical ${fmt(bd(id).condition_vs_typical)})`,
   };
   log(`\n===== THE THREE =====`);
+  // §7.3 (Days 20–21 rules v7) — the crowning gate's own line, one per model, from result.crowning.
+  log(crowningLine(res.crowning));
   for (const c of CATEGORY_PRIORITY) {
     const id = res.picks[c];
     log(`\n--- ${c}`);
@@ -394,15 +398,15 @@ async function main() {
       log(`  recorded: value null | threshold ${ru.threshold} | triggered ${ru.triggered} | not evaluated: ${ru.context.reason} (band ${ru.context.band_pct}%)`);
     } else {
       const rp = P(ru.context.runner_up as number);
-      const alsoWonRec = (ru.context.also_won as Category[] | undefined) ?? [];
       log(
-        `  recorded: value (gap) ${fmt(typeof ru.value === "number" ? ru.value : null)} | threshold ${ru.threshold} | triggered ${ru.triggered ? "YES" : "no"} | runner-up ${rp.plate} (listing ${rp.candidate.listing_id}) | price_over_pct ${ru.context.price_over_pct}${alsoWonRec.length ? ` | also_won ${alsoWonRec.join(" + ")}` : ""}`,
+        `  recorded: value (gap) ${fmt(typeof ru.value === "number" ? ru.value : null)} | threshold ${ru.threshold} | triggered ${ru.triggered ? "YES" : "no"} | runner-up ${rp.plate} (listing ${rp.candidate.listing_id}) | price_over_pct ${ru.context.price_over_pct}`,
       );
     }
     const summary = res.runner_ups.cheapest;
-    // P1: a runner-up that is a category winner is recorded, never skipped — also_won says which categories.
+    // rules v7 (§1.5): a runner-up is never one of the picks — a candidate that won a category is skipped, and
+    // a band holding only picks records no runner-up at all.
     log(
-      `  runner_ups.cheapest: ${summary ? `listing ${summary.listing_id} (${P(summary.listing_id).plate}), gap ${fmt(summary.gap)}, price_over_pct ${summary.price_over_pct}, triggered ${summary.triggered}, also_won ${summary.also_won?.join(" + ") ?? "-"}` : "null"}`,
+      `  runner_ups.cheapest: ${summary ? `listing ${summary.listing_id} (${P(summary.listing_id).plate}), gap ${fmt(summary.gap)}, price_over_pct ${summary.price_over_pct}, triggered ${summary.triggered}` : "null"}`,
     );
     // tuning: every shown listing eligible for cheapest priced above C by up to RUNNER_UP_TUNING_WINDOW_PCT
     const window = shown
