@@ -16,8 +16,12 @@
 // offset: Israel moves between UTC+2 and UTC+3 and a fixed offset is wrong for half of every year. The one
 // definition of a day lives in src/lib/display/texts.ts and the licence rubric uses the same one.
 
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type { Prisma } from "@/generated/prisma/client";
-import { israelDay } from "@/lib/display/texts";
+import { currentOwnershipType, groupCards, shownCarsCount } from "@/lib/display/cards";
+import { israelDay, percentOfNewLine } from "@/lib/display/texts";
+import type { Category, RuleTrace } from "@/lib/selection";
 import type { ModelRows } from "./chip-state";
 import type { SearchFilters } from "./filters";
 
@@ -41,7 +45,14 @@ export type SearchRow = {
   pool_count: number | null;
 };
 
-/** One row of the displayed run's ranking — what the results screen and the car page read. */
+/**
+ * One row of the displayed run's ranking — what the results screen and the car page read.
+ *
+ * Run 1 §2.3 — two columns were added to the read for the recommendations screen, and nothing else about
+ * these files changed: `new_car_price_id`, the new-price row this search measured the ceiling against (the
+ * card's "X% ממחיר החדש" is the page's own function over it), and `stage_b_trace`, which is where the
+ * cheapest pick's `cheapest_runner_up` record lives (§0.3c). Both are read-only.
+ */
 export type ResultRow = {
   listing_id: number;
   rank: number | null;
@@ -52,6 +63,9 @@ export type ResultRow = {
   km_snapshot: number | null;
   market_stats_id: number | null;
   listing_scores_id: number | null;
+  new_car_price_id: number | null;
+  /** The rule records of this row, as `results.ts` truncated them. A recommended row carries its full set. */
+  stage_b_trace: Prisma.JsonValue;
 };
 
 /** The two ids a re-run records for the viewer whose load triggered it. Either may be absent (§4). */
@@ -123,6 +137,235 @@ export function storedFilters(filters: Prisma.JsonValue): SearchFilters {
 }
 
 // ---------------------------------------------------------------------------
+// Run 1 §2 — THE SEARCH ANSWER: one view, both paths
+// ---------------------------------------------------------------------------
+//
+// §2.1 — resultsView() is the ONE builder that turns a search's stored rows into what the recommendations
+// screen draws, and both paths go through it FROM THE SAME ROWS: the load-by-id (`/?s=`) hands it the rows it
+// just read, and the fresh search hands it the rows runSearch() has just written and read back. Before this
+// run the two paths each assembled their own card payload — one in the route file, one in the action — which
+// is exactly how a fresh answer and the answer at its own address come to differ.
+//
+// §2.2 — NOTHING IS STORED. No schema change, no new column, no write: the view is derived at load and at
+// search time from `search_results` + `listings` + `cars` + the new-price row the search measured against.
+// This run changes no version, so no stored search re-runs on account of it.
+//
+// The decision is pure and the fetching is not, split the way the rest of this file is split:
+// resultsViewFrom() below is the whole rule and is tested on literal rows, and resultsView() at the bottom is
+// the query that feeds it.
+
+/** One card of the recommendations screen: the listing, and every value the card prints. */
+export type ViewCard = {
+  /** The listing the card is about — its page is `/listing/{public_id}?s={the question's public_id}`. */
+  public_id: string;
+  /** Exactly the string CarTitle receives on this listing's page: `models.model`. */
+  model: string;
+  year: number | null;
+  price: number;
+  /** The car page's own percentOfNewLine(); null when the search's key had no new-price row. */
+  new_price_pct: string | null;
+  /** `listings.km_declared` — the ad's km (findCar-now.md, "הערכים", 25/09). null → the page's "—". */
+  km: number | null;
+  /** The יד rubric's big value: the ad's hand, else the registry's. null → the page's "—". */
+  hand: number | null;
+  /** The CODE of the ownership the car page's legend marks `הבעלות הנוכחית`. null → the page's "—". */
+  ownership_type: string | null;
+  /** The page's photo source. null → the page's placeholder. */
+  image: string | null;
+  /** Every label this card carries, in CATEGORY_ORDER. */
+  categories: Category[];
+  color: string;
+  /** Days 22–23: the justification generator fills this. Until then the card draws no sentence line at all. */
+  sentence: string | null;
+};
+
+/** The runner-up strip's data — only ever set when the cheapest pick recorded one. */
+export type ViewRunnerUp = {
+  public_id: string;
+  model: string;
+  year: number | null;
+  /** The runner-up's snapshot price less the cheapest pick's (§2.1). Positive by rule. */
+  amount: number;
+  /** Days 22–23: the justification generator fills this. */
+  fact: string | null;
+};
+
+export type ResultsView = {
+  /** The question's public_id — the `?s=` every link on the screen carries. */
+  public_id: string;
+  cards: ViewCard[];
+  runner_up: ViewRunnerUp | null;
+  /** X of "נבחרו מתוך X רכבים." */
+  cars_shown: number;
+};
+
+/**
+ * The per-listing facts the view needs beside the row: what `listings` and `cars` say now, which is what the
+ * car page says. Supplied for the picked listings and for the runner-up, and for nobody else.
+ */
+export type ListingFacts = {
+  public_id: string;
+  car_id: number;
+  /** `models.model` — the very string the car page hands CarTitle. */
+  model: string;
+  year: number | null;
+  price: number;
+  km_declared: number | null;
+  hand_declared: number | null;
+  /** `cars.hand` — the registry's hand, the יד rubric's fallback. */
+  registry_hand: number | null;
+  ownership_history: { ym: string; type: string }[];
+  /** The page's `imageSrc`, already resolved (the resolver reads the filesystem and cannot be pure). */
+  image: string | null;
+};
+
+/**
+ * §0.3f / §1.7 — is this row one the search SHOWS?
+ *
+ * `rank` is the answer and the trace is not. selectThree gives a rank to exactly the rows it kept —
+ * "1..n contiguous; null when not shown" (selection/types.ts) — and a row it removed (a merged `duplicate`, a
+ * strong `sold_signal`, `below_threshold`, `above_new_price`, `dealer_not_visible`) has rank null. The trace
+ * cannot decide it from either side: the sold gate stops before any rule runs and writes NO record at all,
+ * and `too_similar` records the effect `excluded` on rows that are shown and merely lost a category.
+ */
+export function isShownRow(row: Pick<ResultRow, "rank">): boolean {
+  return row.rank !== null;
+}
+
+/** The rule whose record carries the cheapest pick's runner-up (selection/types.ts, RuleName). */
+const RUNNER_UP_RULE = "cheapest_runner_up";
+
+/** The category the runner-up rule is recorded on (selection/types.ts, Category). */
+const CHEAPEST: Category = "cheapest";
+
+/** A stored row's rule records, narrowed. The column is JSON; a row written by results.ts holds an array. */
+function traceOf(row: ResultRow): RuleTrace[] {
+  return Array.isArray(row.stage_b_trace) ? (row.stage_b_trace as unknown as RuleTrace[]) : [];
+}
+
+/**
+ * §0.3c / §2.1 — the runner-up's LISTING, read off the stored rows.
+ *
+ * `compare.ts`'s readRunnerUp() reads the same record but only from a FRESH SelectionResult, so it is of no
+ * use to a screen rendering a stored search; this is the stored-row reading of it. The record is reachable
+ * because `results.ts` keeps the FULL trace of every recommended row whatever its rank (traceFor), and the
+ * cheapest pick's row is recommended by definition — so the one `cheapest_runner_up` record it carries is in
+ * the column.
+ *
+ *   no cheapest pick / no record          → null (§2.1: present whenever the record exists)
+ *   the record says it was not evaluated  → null
+ *   two records                           → a throw; one row can only have been measured once
+ */
+export function storedRunnerUpListing(rows: readonly ResultRow[]): number | null {
+  const cheapest = rows.find((r) => r.recommendation_categories.includes(CHEAPEST));
+  if (cheapest === undefined) return null;
+  const entries = traceOf(cheapest).filter((t) => t.rule === RUNNER_UP_RULE);
+  if (entries.length === 0) return null;
+  if (entries.length > 1) {
+    throw new Error(`storedRunnerUpListing: listing ${cheapest.listing_id} carries ${entries.length} ${RUNNER_UP_RULE} records — the rule is measured once`);
+  }
+  const entry = entries[0];
+  if (entry.context.evaluated === false) return null; // no candidate in the band
+  const listing_id = entry.context.runner_up;
+  if (typeof listing_id !== "number") {
+    throw new Error(`storedRunnerUpListing: listing ${cheapest.listing_id}'s ${RUNNER_UP_RULE} record was evaluated but names no runner_up`);
+  }
+  return listing_id;
+}
+
+/**
+ * §2.1 — the whole view, from the rows and the facts. Pure: no database, no clock, no filesystem.
+ *
+ * The picks come from the rows exactly as the route file read them before this run: the first row carrying a
+ * category is that category's pick (there is only ever one). The grouping, the slot order, the colour and the
+ * count are the tested library's (src/lib/display/cards.ts) and are not restated here.
+ */
+export function resultsViewFrom(input: {
+  question_public_id: string;
+  rows: readonly ResultRow[];
+  /** The picked listings and the runner-up. */
+  facts: ReadonlyMap<number, ListingFacts>;
+  /** Every row's listing → its car, for the count. */
+  car_id_of: ReadonlyMap<number, number>;
+  /** `new_car_prices.id` → that row's `mehir`. */
+  new_price_of: ReadonlyMap<number, number>;
+}): ResultsView {
+  const { rows, facts } = input;
+
+  const rowOfListing = new Map(rows.map((r) => [r.listing_id, r]));
+  const factsOf = (listing_id: number, what: string): ListingFacts => {
+    const f = facts.get(listing_id);
+    if (f === undefined) throw new Error(`resultsView: ${what} listing ${listing_id} has no listings row — search_results and listings disagree`);
+    return f;
+  };
+
+  // the picks: one listing per category, the first row that carries it
+  const picks: Record<Category, number | null> = { best_value: null, peace_of_mind: null, cheapest: null };
+  for (const row of rows) {
+    for (const c of row.recommendation_categories) {
+      const category = c as Category;
+      if (picks[category] === null) picks[category] = row.listing_id;
+    }
+  }
+
+  const cards: ViewCard[] = groupCards(picks).map((card) => {
+    const f = factsOf(card.listing, "picked");
+    const row = rowOfListing.get(card.listing);
+    if (row === undefined) throw new Error(`resultsView: picked listing ${card.listing} is not among the search's rows`);
+    const newPrice = row.new_car_price_id === null ? null : (input.new_price_of.get(row.new_car_price_id) ?? null);
+    return {
+      public_id: f.public_id,
+      model: f.model,
+      year: f.year,
+      price: f.price,
+      new_price_pct: newPrice === null ? null : percentOfNewLine(f.price, newPrice),
+      km: f.km_declared,
+      // The יד rubric's rule (rubrics.ts, handRubric): the ad's hand, and an ad with no hand declaration
+      // shows the registry's. load.test.ts pins this against handRubric() itself, so the card and the page
+      // cannot drift apart.
+      hand: f.hand_declared ?? f.registry_hand,
+      ownership_type: currentOwnershipType(f.ownership_history),
+      image: f.image,
+      categories: card.categories,
+      color: card.color,
+      sentence: null, // Days 22–23: the justification generator fills this
+    };
+  });
+
+  // §2.1 — the runner-up, whenever the cheapest pick recorded one. Also when `cheapest` is one label of a
+  // multi-winner card: the record sits on that pick's row whatever else it won.
+  let runner_up: ViewRunnerUp | null = null;
+  const runnerUpId = storedRunnerUpListing(rows);
+  if (runnerUpId !== null) {
+    const cheapestId = picks[CHEAPEST];
+    if (cheapestId === null) throw new Error(`resultsView: a ${RUNNER_UP_RULE} record was read but no row carries the cheapest category`);
+    const cheapestRow = rowOfListing.get(cheapestId);
+    const runnerUpRow = rowOfListing.get(runnerUpId);
+    if (cheapestRow === undefined || runnerUpRow === undefined) {
+      throw new Error(`resultsView: the runner-up ${runnerUpId} of cheapest pick ${cheapestId} has no row in this search — a runner-up is always in the same cut pool`);
+    }
+    const f = factsOf(runnerUpId, "runner-up");
+    runner_up = {
+      public_id: f.public_id,
+      model: f.model,
+      year: f.year,
+      amount: runnerUpRow.price_snapshot - cheapestRow.price_snapshot,
+      fact: null, // Days 22–23: the justification generator fills this
+    };
+  }
+
+  const cars_shown = shownCarsCount(
+    rows.map((r) => {
+      const car_id = input.car_id_of.get(r.listing_id);
+      if (car_id === undefined) throw new Error(`resultsView: listing ${r.listing_id} has no car_id — search_results and listings disagree`);
+      return { car_id, shown: isShownRow(r) };
+    }),
+  );
+
+  return { public_id: input.question_public_id, cards, runner_up, cars_shown };
+}
+
+// ---------------------------------------------------------------------------
 // the DB glue — the client is imported on use, so the rules above stay testable without one
 // ---------------------------------------------------------------------------
 
@@ -151,6 +394,8 @@ const RESULT_COLUMNS = {
   km_snapshot: true,
   market_stats_id: true,
   listing_scores_id: true,
+  new_car_price_id: true, // §2.3 — added for the card's "X% ממחיר החדש"
+  stage_b_trace: true, // §2.3 — added for the cheapest pick's cheapest_runner_up record
 } as const;
 
 export type ResolvedQuestion = { question: SearchRow; reruns: SearchRow[] };
@@ -217,6 +462,97 @@ export async function currentVersions(): Promise<CurrentVersions> {
 export async function resultsOf(search_id: number): Promise<ResultRow[]> {
   const { db } = await import("@/lib/db");
   return db.search_results.findMany({ where: { search_id }, select: RESULT_COLUMNS, orderBy: [{ rank: "asc" }, { listing_id: "asc" }] });
+}
+
+/**
+ * §0.3e / §2.1 — THE PAGE'S PHOTO SOURCE, in one place: the image that ships with the app, by licence plate;
+ * null → the caller draws the placeholder.
+ *
+ * It was the car page's own `photoFor()` and it now serves the cards too, so it lives in one place and the two
+ * screens cannot resolve a photo differently. It sits HERE, beside resultsView(), because it reads the
+ * filesystem: `src/components/car/Photo.tsx` and `src/lib/display/cards.ts` are both in the browser bundle
+ * (PickCards is a client component) and `node:fs` may not enter it. The car page imports it from here; the
+ * resolution itself is unchanged, character for character.
+ */
+export function photoFor(plate: string | null): string | null {
+  if (plate === null || !/^\d+$/.test(plate)) return null;
+  return existsSync(path.join(process.cwd(), "public", "cars", `${plate}.jpeg`)) ? `/cars/${plate}.jpeg` : null;
+}
+
+/**
+ * §2.1 — the ONE builder, with its reads. Both paths call it with the rows they already hold:
+ * `/?s=` with the rows loadForAddress() returned, and the fresh search with the rows runSearch() wrote.
+ *
+ * Three reads, all read-only and all over ids the rows already name (§2.3):
+ *   listings  → every row's `car_id` (the count is per car, and `search_results` has no car column), and for
+ *               the picks and the runner-up the facts the card prints: the price, the km, the hand, the
+ *               model string, the year, the plate and the car's ownership history
+ *   new_car_prices → the `mehir` of the row each pick's `new_car_price_id` points at
+ */
+export async function resultsView(questionPublicId: string, rows: ResultRow[]): Promise<ResultsView> {
+  const { db } = await import("@/lib/db");
+
+  // who needs full facts: the three picks and, when one was recorded, the runner-up
+  const pickedIds = new Set<number>();
+  for (const r of rows) if (r.recommendation_categories.length > 0) pickedIds.add(r.listing_id);
+  const runnerUpId = storedRunnerUpListing(rows);
+  if (runnerUpId !== null) pickedIds.add(runnerUpId);
+
+  const allIds = rows.map((r) => r.listing_id);
+  const newPriceIds = [...new Set(rows.flatMap((r) => (r.new_car_price_id === null ? [] : [r.new_car_price_id])))];
+
+  const [cars, detailed, newPrices] = await Promise.all([
+    allIds.length === 0 ? [] : db.listings.findMany({ where: { id: { in: allIds } }, select: { id: true, car_id: true } }),
+    pickedIds.size === 0
+      ? []
+      : db.listings.findMany({
+          where: { id: { in: [...pickedIds] } },
+          select: {
+            id: true,
+            public_id: true,
+            car_id: true,
+            price: true,
+            km_declared: true,
+            hand_declared: true,
+            car: {
+              select: {
+                license_plate: true,
+                year: true,
+                hand: true,
+                ownership_history: true,
+                model: { select: { model: true } },
+              },
+            },
+          },
+        }),
+    newPriceIds.length === 0 ? [] : db.new_car_prices.findMany({ where: { id: { in: newPriceIds } }, select: { id: true, mehir: true } }),
+  ]);
+
+  const facts = new Map<number, ListingFacts>(
+    detailed.map((l) => [
+      l.id,
+      {
+        public_id: l.public_id,
+        car_id: l.car_id,
+        model: l.car.model.model ?? "",
+        year: l.car.year,
+        price: l.price,
+        km_declared: l.km_declared,
+        hand_declared: l.hand_declared,
+        registry_hand: l.car.hand,
+        ownership_history: Array.isArray(l.car.ownership_history) ? (l.car.ownership_history as { ym: string; type: string }[]) : [],
+        image: photoFor(l.car.license_plate),
+      },
+    ]),
+  );
+
+  return resultsViewFrom({
+    question_public_id: questionPublicId,
+    rows,
+    facts,
+    car_id_of: new Map(cars.map((l) => [l.id, l.car_id])),
+    new_price_of: new Map(newPrices.map((p) => [p.id, p.mehir])),
+  });
 }
 
 export type LoadedAddress = {

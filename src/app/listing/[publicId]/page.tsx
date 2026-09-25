@@ -15,8 +15,6 @@
 // Every display decision is made by the pure functions of src/lib/display/** (§8); this file only gathers
 // the inputs and hands them over. Nothing is decided here.
 
-import { existsSync } from "node:fs";
-import path from "node:path";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { rubricStrip, type RubricStrip } from "@/lib/display/rubrics";
@@ -42,7 +40,9 @@ import { isPublicId } from "@/lib/public-id";
 import { isCancelled, type Check, type Invoice, type Row } from "@/lib/scoring/types";
 import { modelKey } from "@/lib/search/assemble";
 import { activeFilterNames } from "@/lib/search/filters";
-import { loadForAddress, storedFilters, viewerFromCookies } from "@/lib/search/load";
+// Run 1 §0.3e — photoFor() moved to load.ts, where the recommendations screen's view builder also
+// needs it: ONE resolution of a plate to a file for both screens. §7.3's rule is unchanged.
+import { loadForAddress, photoFor, storedFilters, viewerFromCookies } from "@/lib/search/load";
 import { liveModels } from "@/lib/search/models";
 import { resolveListing } from "@/lib/search/visibility";
 import { isThinCell, type Category } from "@/lib/selection";
@@ -51,12 +51,6 @@ import CarPageView, { type CarPageData, type PageQuestion } from "@/components/c
 import type { FilterName } from "@/app/actions/search";
 
 export const dynamic = "force-dynamic";
-
-/** §7.3 — the photo by licence plate, from the images that ship with the app. null → the placeholder box. */
-function photoFor(plate: string | null): string | null {
-  if (plate === null || !/^\d+$/.test(plate)) return null;
-  return existsSync(path.join(process.cwd(), "public", "cars", `${plate}.jpeg`)) ? `/cars/${plate}.jpeg` : null;
-}
 
 // §13.2 (D2) — every car page declares its BARE address as canonical: /listing/{publicId}, never carrying
 // `s=` or any other query. searchParams is deliberately not read, so both address forms emit the same tag.

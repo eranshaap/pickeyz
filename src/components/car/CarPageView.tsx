@@ -46,13 +46,13 @@ import type { FilterName } from "@/app/actions/search";
 import QuestionRow from "@/components/search/QuestionRow";
 import { LinkPending } from "@/components/search/PickCards";
 import CarTitle from "./CarTitle";
+import Photo from "./Photo";
 import OwnershipTimeline from "./OwnershipTimeline";
 import Rubrics from "./Rubrics";
 import WhySection from "./WhySection";
 
 const GREY = "#665f58";
 const DARK = "#221f1c";
-const PLACEHOLDER_BG = "#e6e2db";
 
 const CONTACT = "צור קשר עם המוכר";
 const CONTACT_SHORT = "צור קשר";
@@ -123,32 +123,6 @@ export type CarPageData = {
 };
 
 // ---------------------------------------------------------------------------
-
-function CarGlyph() {
-  return (
-    <svg aria-hidden viewBox="0 0 48 24" className="h-8 w-16" fill="none" stroke={GREY} strokeWidth="1.5" strokeLinejoin="round">
-      <path d="M3 16v-3l4-1 3-5h16l5 5 10 1a3 3 0 0 1 3 3v3h-5" />
-      <path d="M3 16h8m10 0h14" />
-      <circle cx="15" cy="17" r="3" />
-      <circle cx="38" cy="17" r="3" />
-    </svg>
-  );
-}
-
-function Photo({ src, className }: { src: string | null; className: string }) {
-  if (src !== null) {
-    // eslint-disable-next-line @next/next/no-img-element -- a local file served from /public; no loader needed
-    return <img src={src} alt="" className={`${className} object-cover`} />;
-  }
-  return (
-    <div className={`${className} flex flex-col items-center justify-center gap-1`} style={{ background: PLACEHOLDER_BG }}>
-      <CarGlyph />
-      <span className="text-[13px]" style={{ color: GREY }}>
-        {PHOTO_PLACEHOLDER}
-      </span>
-    </div>
-  );
-}
 
 /** The label(s) or the place, then the 40×3px bar in the page colour. Nothing at all when there is neither. */
 function VerdictLine({ data, size }: { data: CarPageData; size: "phone" | "desktop" }) {
@@ -310,7 +284,7 @@ export default function CarPageView({ data }: { data: CarPageData }) {
       </header>
 
       {/* ---------------------------------------------------------------- phone image */}
-      <Photo src={data.imageSrc} className="block h-[200px] w-full md:hidden" />
+      <Photo src={data.imageSrc} className="block h-[200px] w-full md:hidden" caption={PHOTO_PLACEHOLDER} />
 
       {/* Run 7 §3 — the page container: max-width 1280px, centred; main padding 36px 48px 40px. S, the gap
           BETWEEN sections, is this element's own `gap-4` / `md:gap-7` and Run 9 §5.2 does not touch it. */}
@@ -369,7 +343,7 @@ export default function CarPageView({ data }: { data: CarPageData }) {
                 frame — is laid over it edge to edge and cropped by `object-cover`, so it fills whatever
                 height the row ends up with and is never distorted. */}
             <div className="relative hidden w-[536px] md:block md:min-h-[357px]">
-              <Photo src={data.imageSrc} className="absolute inset-0 h-full w-full rounded-lg" />
+              <Photo src={data.imageSrc} className="absolute inset-0 h-full w-full rounded-lg" caption={PHOTO_PLACEHOLDER} />
             </div>
           </div>
 

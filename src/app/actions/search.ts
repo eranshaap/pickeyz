@@ -18,37 +18,23 @@
 // SearchFilters through and never decide what it means. Nor is anything re-scored or re-ranked — every verdict
 // comes back from runSearch() already decided.
 //
-// WHAT THE SCREEN IS ALLOWED TO SEE (§0.6): the raw picks are FACTS ONLY — the category codes, the year, the
-// sub-model, the price, the km and the seller kind. No justification sentence, no confidence tag, no
-// runner-up, no "מועמד לא מאומת" label, no bottom list, no link to a car page. Those are Days 17 and 19–23,
-// and the way to keep them out of the screen is to keep them out of this payload.
+// WHAT THE SCREEN SEES (Run 1 §2.1) — ONE VIEW, BUILT IN ONE PLACE. `ask()` no longer assembles a card
+// payload of its own: it writes the search and then reads that search's own stored rows back through
+// resultsView() (src/lib/search/load.ts), which is the very function `/?s=` renders from. Before this run the
+// fresh answer and the answer at its own address were assembled by two different pieces of code — the way a
+// screen comes to change under a person who only pressed back. The picks' own facts are no longer here at
+// all; they are the card's, and the card's values are the car page's.
 //
 // FAILURE IS LOUD (§6): nothing here is retried and nothing is swallowed. An action that throws surfaces as
 // one plain line under the bar.
 
-import { db } from "@/lib/db";
 import type { ModelRows } from "@/lib/search/chip-state";
 import { filterCounts, modelRows } from "@/lib/search/counts";
 import { activeFilterNames, type SearchFilters } from "@/lib/search/filters";
+import { resultsOf, resultsView, type ResultsView } from "@/lib/search/load";
 import { liveModels as loadLiveModels, type LiveModel } from "@/lib/search/models";
 import { runSearch } from "@/lib/search/run";
 import { searchIdentity } from "@/lib/search/visitor";
-import { CATEGORY_PRIORITY, type Category } from "@/lib/selection";
-
-// One raw pick, §0.6. A car that won two categories is ONE card carrying both codes.
-export type PickCard = {
-  listing_id: number;
-  public_id: string; // Run 6b §9: the card links to /listing/<public_id>?s=<question public_id>
-  categories: Category[]; // codes; the Hebrew labels live in the component
-  year: number;
-  sub_model: string | null;
-  price: number;
-  km_declared: number | null;
-  dealer_type: string; // code: private | ... — "פרטי" / "מגרש" is a display decision
-};
-
-// A category nobody won, with selectThree's own reason code — raw; the wording is Days 20–23.
-export type EmptyCategory = { category: Category; reason: string };
 
 // §0.5 — which single ACTIVE filter, if released, brings cars back. null when no single removal does.
 export type Relief = { filter: FilterName; count: number };
@@ -60,16 +46,16 @@ const FILTER_DISPLAY_ORDER: readonly FilterName[] = ["price", "years", "kmMax", 
 // The question the shown picks answer — never the draft (§5).
 export type Question = { model: string; model_key: string; filters: SearchFilters; active: FilterName[] };
 
-export type AskResult = {
+/**
+ * What the screen renders. `cards`, `runner_up` and `cars_shown` are the §2.1 view, and `public_id` is that
+ * view's own — the question's address, which every link on the screen carries as `?s=`.
+ *
+ * Run 6b §5 — the client pushes `/?s=<public_id>` as a NEW history entry after every question, which is what
+ * gives the browser's own back the decided rule.
+ */
+export type AskResult = ResultsView & {
   search_id: number;
-  /**
-   * Run 6b §5 — the address this question is displayed at. The client pushes `/?s=<public_id>` as a NEW
-   * history entry after every question, which is what gives the browser's own back the decided rule.
-   */
-  public_id: string;
   question: Question;
-  picks: PickCard[]; // distinct listings, in category order; empty when the pool answered nothing
-  empties: EmptyCategory[]; // one per category with no pick
   pool_count: number; // the cut pool — what entered selectThree
   results_count: number; // what got a rank
   relief: Relief | null; // only ever set when pool_count is 0
@@ -87,44 +73,15 @@ export async function ask(input: { model: string; filters?: SearchFilters }): Pr
   const identity = await searchIdentity();
   const search = await runSearch({ model: input.model, filters, identity });
 
-  // Run 6b §9 — the card's link needs the listing's public id. It is not on the pool item (the assembly is
-  // not this run's to change), so it is read here for the picked listings and for nothing else.
-  const pickedIds = CATEGORY_PRIORITY.map((c) => search.picks[c]?.listing_id).filter((id): id is number => id !== undefined);
-  const publicIds = new Map(
-    (pickedIds.length === 0 ? [] : await db.listings.findMany({ where: { id: { in: pickedIds } }, select: { id: true, public_id: true } })).map((l) => [l.id, l.public_id]),
-  );
-
-  // one card per DISTINCT picked listing, in category order: a double winner appears once, under the first
-  // category it won
-  const cards = new Map<number, PickCard>();
-  const empties: EmptyCategory[] = [];
-  for (const c of CATEGORY_PRIORITY) {
-    const p = search.picks[c];
-    if (p === null) {
-      empties.push({ category: c, reason: search.missing[c] ?? "no_candidate" });
-      continue;
-    }
-    if (cards.has(p.listing_id)) continue;
-    const public_id = publicIds.get(p.listing_id);
-    if (public_id === undefined) throw new Error(`ask: picked listing ${p.listing_id} has no public_id — every listing row has one`);
-    cards.set(p.listing_id, {
-      listing_id: p.listing_id,
-      public_id,
-      categories: p.categories,
-      year: p.year,
-      sub_model: p.sub_model,
-      price: p.price,
-      km_declared: p.km_declared,
-      dealer_type: p.dealer_type,
-    });
-  }
+  // §2.1 — THE SAME ROWS, THE SAME BUILDER. The search has just written its `search_results` rows in one
+  // transaction; they are read back and handed to resultsView(), which is the function `/?s=` renders from.
+  // A fresh search is never a re-run, so this row IS the question and its public_id is the address.
+  const view = await resultsView(search.public_id, await resultsOf(search.search_id));
 
   return {
+    ...view,
     search_id: search.search_id,
-    public_id: search.public_id,
     question: { model: search.model, model_key: search.model_key, filters: search.filters, active: activeFilterNames(search.filters) as FilterName[] },
-    picks: [...cards.values()],
-    empties,
     pool_count: search.pool_cut,
     results_count: search.results_count,
     relief: search.pool_cut === 0 ? await reliefFor(input.model, search.filters) : null,

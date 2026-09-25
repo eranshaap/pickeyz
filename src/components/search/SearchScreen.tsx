@@ -53,6 +53,13 @@
 // number come from src/lib/search/chip-state.ts. This file hands the rows and the draft to resolveDrawer(),
 // forwards a click to toggleChip(), and commits exactly what the library returns.
 //
+// RUN 1 (Days 20–21) §4 — WHAT CHANGED HERE, AND IT IS THE RESULTS REGION ONLY: the region below the white
+// bar is now the site's 1280 container with the boards' padding (§4.2 — content 1184, as on the car page),
+// and its first row is one small grey line, "נבחרו מתוך X רכבים." (§4.1). The headline and the institute
+// sentence are GONE — deleted, not hidden (§4.3) — and NOTHING renders under the row of cards: the bottom
+// list is Days 24–25. The question row, the drawer, the filters, the dimming rule and the whole "עדכן"
+// machinery are untouched (§4.4); the white bar still runs the full width of this column.
+//
 // MOBILE FIRST. Desktop is the widening: the drawer becomes a panel that never closes (and therefore has no
 // history entry of its own). `dir="rtl"` is set in layout.tsx, so every inset here is logical.
 
@@ -72,6 +79,7 @@ import PickCardsSkeleton from "./PickCardsSkeleton";
 import QuestionRow, { type ScreenNav } from "./QuestionRow";
 import { useScreenHistory } from "./useHistory";
 import { FILTER_LABEL, num } from "./labels";
+import { countLine } from "@/lib/display/cards";
 
 const SEARCH = "חפש";
 const FILTERS = "פילטרים";
@@ -384,39 +392,55 @@ export default function SearchScreen({
             {error !== null && <p className="px-4 py-2 text-sm text-neutral-600">{error}</p>}
 
             <div className={`transition-opacity duration-200 ease-out motion-reduce:transition-none ${dim ? "pointer-events-none select-none opacity-25" : "opacity-100"}`} aria-hidden={dim}>
-              {/* §11.3 — the recommendations area, and ONLY it, goes to the placeholders while a navigation
-                  this screen started is in flight. The relief button goes with the cards: it belongs to the
-                  answer being replaced, and it is a second navigation waiting to be clicked. */}
-              {pending ? (
-                <PickCardsSkeleton />
-              ) : (
-                <>
-                  <PickCards answer={answer} />
+              {/* Run 1 (Days 20–21) §4.2 — THE RESULTS REGION: the site's 1280 container, centred, with the
+                  48px sides and `padding: 32px 48px 40px`; the content is therefore 1184 wide, as on the car
+                  page. The phone's is `24px 16px` (§5). The white bar above stays OUTSIDE it and keeps running
+                  the full width of the column, exactly as it does today (§4.4).
+                  §4.1 — the count line, then 20px, then the row. NOTHING ELSE, and nothing at all under the
+                  row: the headline and the institute sentence are gone (§4.3) and the bottom list is
+                  Days 24–25. */}
+              <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-4 pt-6 pb-10 md:px-12 md:pt-8">
+                {/* §4.1 / §5 — "נבחרו מתוך X רכבים." and no headline above it. */}
+                <p className="m-0 text-[14px] md:text-[16px]" style={{ color: "#665f58" }}>
+                  {countLine(answer.cars_shown)}
+                </p>
 
-                  {/* §0.5 — one relief suggestion, and only when the pool came back empty */}
-                  {answer.relief !== null && (
-                    <div className="px-4 pb-8">
-                      <button
-                        type="button"
-                        className="w-full rounded-2xl border border-neutral-900 px-4 py-3 text-neutral-900 hover:bg-neutral-100"
-                        onClick={() => {
-                          const next: SearchFilters = { ...asked.filters };
-                          const name = answer.relief?.filter;
-                          if (name === "price") {
-                            delete next.priceMin;
-                            delete next.priceMax;
-                          } else if (name === "years") delete next.years;
-                          else if (name === "kmMax") delete next.kmMax;
-                          else if (name === "regions") delete next.regions;
-                          doAsk(next);
-                        }}
-                      >
-                        {`הסרת ${FILTER_LABEL[answer.relief.filter]} תחזיר ${num(answer.relief.count)} רכבים`}
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
+                {/* §11.3 — the recommendations area, and ONLY it, goes to the placeholders while a navigation
+                    this screen started is in flight. The relief button goes with the cards: it belongs to the
+                    answer being replaced, and it is a second navigation waiting to be clicked. */}
+                {pending ? (
+                  <PickCardsSkeleton />
+                ) : (
+                  <>
+                    <PickCards answer={answer} />
+
+                    {/* §0.5 — one relief suggestion, and only when the pool came back empty. §8 — the
+                        zero-results screen is Run 2's and stays exactly as it is; `relief` is never set when
+                        the cut pool is not empty, so nothing renders under the row of a search with cards. */}
+                    {answer.relief !== null && (
+                      <div>
+                        <button
+                          type="button"
+                          className="w-full rounded-2xl border border-neutral-900 px-4 py-3 text-neutral-900 hover:bg-neutral-100"
+                          onClick={() => {
+                            const next: SearchFilters = { ...asked.filters };
+                            const name = answer.relief?.filter;
+                            if (name === "price") {
+                              delete next.priceMin;
+                              delete next.priceMax;
+                            } else if (name === "years") delete next.years;
+                            else if (name === "kmMax") delete next.kmMax;
+                            else if (name === "regions") delete next.regions;
+                            doAsk(next);
+                          }}
+                        >
+                          {`הסרת ${FILTER_LABEL[answer.relief.filter]} תחזיר ${num(answer.relief.count)} רכבים`}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           </>
         )}

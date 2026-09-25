@@ -12,27 +12,29 @@
 // it. There is no redirect and no error for the old form: an address that still carries `open=` is read
 // exactly as one that does not, because the parameter is simply not read any more.
 //
-// WHAT IS RENDERED FROM WHAT (§9): the ranks, the categories, the price and the km come from the stored
-// `search_results` snapshots; the static card facts (year, sub-model, seller kind) come from the DB rows
-// those snapshots point at. The pick-cards look is otherwise untouched — the cards' redesign is Days 20–21.
+// RUN 1 (Days 20–21) §7 — THE FILE IS BACK AT THE ROOT. It spent Runs 7–9 inside the route group
+// `src/app/(results)/`, which lost its one job (a `loading.tsx` for the results segment) when Run 7c moved the
+// placeholders into the screen itself; the group named nothing and the folder held nothing else, so `/` is
+// served from `src/app/page.tsx` again. The route itself does not change — a route group never appears in a
+// URL — and `PageProps<"/">` is the same type it was.
+//
+// RUN 1 §2.1 — WHAT IS RENDERED FROM WHAT: nothing about a card is assembled here any more. The stored rows
+// go through resultsView() (src/lib/search/load.ts), the ONE builder the fresh search also goes through, and
+// what comes back is what the screen draws — the cards with every value the card prints, the cheapest pick's
+// runner-up, and X of the count line. This file gathers the question and hands the rows over.
 //
 // Dynamic, never prerendered: the model bar offers LIVE models, the results are a stored verdict read at
 // request time, and the loading rule reads the clock.
 
-import { db } from "@/lib/db";
 import SearchScreen from "@/components/search/SearchScreen";
-import { reliefFor, type AskResult, type FilterName, type PickCard } from "@/app/actions/search";
+import { reliefFor, type AskResult, type FilterName } from "@/app/actions/search";
 import { modelKey } from "@/lib/search/assemble";
 import { activeFilterNames } from "@/lib/search/filters";
-import { loadForAddress, storedFilters, viewerFromCookies } from "@/lib/search/load";
+import { loadForAddress, resultsView, storedFilters, viewerFromCookies } from "@/lib/search/load";
 import { liveModels } from "@/lib/search/models";
 import { isPublicId } from "@/lib/public-id";
-import { CATEGORY_PRIORITY, type Category } from "@/lib/selection";
 
 export const dynamic = "force-dynamic";
-
-/** selectThree answers every category one way or the other, and `no_candidate` is its only missing reason. */
-const NO_CANDIDATE = "no_candidate";
 
 export default async function Home(props: PageProps<"/">) {
   const params = await props.searchParams;
@@ -55,68 +57,20 @@ export default async function Home(props: PageProps<"/">) {
   const { question, run, results, model_rows } = loaded;
   if (model_rows === null) throw new Error(`/?s=${s}: the model's filter rows were asked for and did not come back`);
 
-  // §9 — the picks come from the STORED run: the rows that carry a recommendation, in category order.
-  const byCategory = new Map<Category, (typeof results)[number]>();
-  for (const r of results) {
-    for (const c of r.recommendation_categories) {
-      const category = c as Category;
-      if (!byCategory.has(category)) byCategory.set(category, r);
-    }
-  }
-
-  const pickedIds = [...new Set([...byCategory.values()].map((r) => r.listing_id))];
-  const listings =
-    pickedIds.length === 0
-      ? []
-      : await db.listings.findMany({
-          where: { id: { in: pickedIds } },
-          select: {
-            id: true,
-            public_id: true,
-            dealer: { select: { dealer_type: true } },
-            car: { select: { year: true, model: { select: { sub_model: true } } } },
-          },
-        });
-  const rowOf = new Map(listings.map((l) => [l.id, l]));
-
-  const picks: PickCard[] = [];
-  const empties: AskResult["empties"] = [];
-  const seen = new Set<number>();
-  for (const c of CATEGORY_PRIORITY) {
-    const r = byCategory.get(c);
-    if (r === undefined) {
-      empties.push({ category: c, reason: NO_CANDIDATE });
-      continue;
-    }
-    if (seen.has(r.listing_id)) continue; // a double winner is ONE card, under the first category it won
-    seen.add(r.listing_id);
-    const l = rowOf.get(r.listing_id);
-    if (l === undefined) throw new Error(`/?s=${s}: search_results points at listing ${r.listing_id}, which is not in listings`);
-    if (l.car.year === null) throw new Error(`/?s=${s}: listing ${l.id} (car year null) cannot be shown on a card`);
-    picks.push({
-      listing_id: r.listing_id,
-      public_id: l.public_id,
-      categories: r.recommendation_categories as Category[],
-      year: l.car.year,
-      sub_model: l.car.model.sub_model,
-      price: r.price_snapshot, // the snapshot, not today's price (§9)
-      km_declared: r.km_snapshot,
-      dealer_type: l.dealer.dealer_type,
-    });
-  }
+  // §2.1 — the ADDRESS is the question's, whatever run is displayed (§4), so the view is built under the
+  // question's public_id and every link on the screen carries it.
+  const view = await resultsView(question.public_id, results);
 
   const filters = storedFilters(question.filters);
   const answer: AskResult = {
+    ...view,
     search_id: run.id,
-    public_id: question.public_id, // the ADDRESS is the question's, whatever run is displayed (§4)
     question: {
       model: run.model_searched,
       model_key: modelKey(run.model_searched),
       filters,
       active: activeFilterNames(filters) as FilterName[],
     },
-    picks,
-    empties,
     pool_count: run.pool_count ?? 0,
     results_count: run.results_count,
     relief: (run.pool_count ?? 0) === 0 ? await reliefFor(run.model_searched, filters) : null,
