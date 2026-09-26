@@ -76,20 +76,18 @@ export type ListingView = {
   labels: string[]; // the Hebrew display strings above, in a fixed order
 };
 
-export type PickView = ListingView & { also_won: Category[] };
+/**
+ * A pick, and the OTHER categories the same listing won — the multi-winner fact of Run 1: one car crowned in
+ * two or three categories is drawn as one card carrying every label it won, so the card needs the rest of them
+ * beside the category it is being shown as.
+ */
+export type PickView = ListingView & { other_categories: Category[] };
 
 export type RunnerUpView = {
   listing: ListingView;
   gap: number;
   price_over_pct: number;
   triggered: boolean;
-  /**
-   * The categories the runner-up's own listing won in this search — read off ITS result, not off the record.
-   * Days 20–21 rules v7 (§1.5) makes a pick ineligible to be the runner-up, so this is always empty now; it is
-   * kept because it is a statement about the listing on the screen, not the selection record's vanished
-   * `also_won`, and scripts/oneoff/verify-search-layer.ts prints it.
-   */
-  also_won: Category[];
 };
 
 export type BlockedFirstView = {
@@ -218,7 +216,7 @@ export async function runSearch(input: {
     const id = res.picks[c];
     if (id === null) continue;
     const r = resultFor(id);
-    picks[c] = { ...view(r), also_won: r.categories.filter((x) => x !== c) };
+    picks[c] = { ...view(r), other_categories: r.categories.filter((x) => x !== c) };
   }
 
   const ru = res.runner_ups.cheapest;
@@ -227,8 +225,7 @@ export async function runSearch(input: {
       ? null
       : (() => {
           const r = resultFor(ru.listing_id);
-          // rules v7 (§1.5): a pick is never a candidate, so `r.categories` is empty — read, not assumed.
-          return { listing: view(r), gap: ru.gap, price_over_pct: ru.price_over_pct, triggered: ru.triggered, also_won: r.categories };
+          return { listing: view(r), gap: ru.gap, price_over_pct: ru.price_over_pct, triggered: ru.triggered };
         })();
 
   const blocked_first: BlockedFirstView[] = [];

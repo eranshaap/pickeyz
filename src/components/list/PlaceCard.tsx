@@ -31,6 +31,16 @@ const CARD_BORDER = "#d8d3cb";
 /** §4.1 — the photo's frame: 96×72, the same box the placeholder fills. */
 const PHOTO = "block h-[72px] w-24 shrink-0 rounded-md object-cover";
 
+/**
+ * Run 2b §2.1 — the narrowest width this card is drawn at, and the minimum of the grid track that holds it
+ * (UncrownedResults.tsx). It lives here because it is a fact about the card, not about the board.
+ *
+ * the widest title row in the demo ("IONIQ HYBRID 2021" at 15px/700 beside a five-digit price) plus the photo,
+ * the gap and the paddings — Claude's estimate, 26/09; moves by eye if the two-column form still wraps on the
+ * live site
+ */
+export const PLACE_CARD_MIN_WIDTH = 340;
+
 export default function PlaceCard({ place, questionPublicId }: { place: ViewPlace; questionPublicId: string }) {
   const word = place.ownership_type === null ? null : ownershipWord(place.ownership_type);
   return (
@@ -63,7 +73,10 @@ export default function PlaceCard({ place, questionPublicId }: { place: ViewPlac
             <span style={{ fontSize: 15, fontWeight: 700 }}>
               <CarTitle model={place.model} year={place.year} />
             </span>
-            <span style={{ fontSize: 15, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{shekel(place.price)}</span>
+            {/* Run 2b §2.2 — the price is one word: it never wraps and never gives up width to the title. */}
+            <span style={{ fontSize: 15, fontWeight: 800, fontVariantNumeric: "tabular-nums", flexShrink: 0, whiteSpace: "nowrap" }}>
+              {shekel(place.price)}
+            </span>
           </div>
 
           <span style={{ fontSize: 12, color: GREY }}>{dataLine({ km: place.km, hand: place.hand, word })}</span>

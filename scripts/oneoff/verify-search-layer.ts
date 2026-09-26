@@ -176,7 +176,7 @@ function assertExpectedPicks(model: string, search: SearchView): void {
 
 function printSearch(search: SearchView): void {
   const ru = search.runner_up;
-  console.log(`    runner-up (cheapest): ${ru === null ? "none recorded" : `${ru.listing.plate} listing ${ru.listing.listing_id}, gap ${ru.gap}, +${ru.price_over_pct}%, triggered ${ru.triggered}, also_won ${ru.also_won.join(" + ") || "-"}`}`);
+  console.log(`    runner-up (cheapest): ${ru === null ? "none recorded" : `${ru.listing.plate} listing ${ru.listing.listing_id}, gap ${ru.gap}, +${ru.price_over_pct}%, triggered ${ru.triggered}`}`);
   console.log(`    blocked_first: ${search.blocked_first.length === 0 ? "none — in every category the counterfactual winner is the actual winner" : search.blocked_first.map((b) => `${b.category}: ${b.plate} listing ${b.listing_id} (rank ${b.rank ?? "-"}, history ${b.history_source ?? "-"})`).join(" · ")}`);
   const labelled = [...search.ranked, ...search.tail].filter((l) => l.labels.length > 0);
   console.log(`    gate labels: ${labelled.length === 0 ? "none" : labelled.map((l) => `${l.plate} [${l.labels.join(", ")}]`).join(" · ")}`);

@@ -18,10 +18,24 @@
 
 import CarRow, { CarRows } from "@/components/list/CarRow";
 import GroupHead from "@/components/list/GroupHead";
-import PlaceCard from "@/components/list/PlaceCard";
+import PlaceCard, { PLACE_CARD_MIN_WIDTH } from "@/components/list/PlaceCard";
 import type { ResultsView } from "@/lib/search/load";
 
 const GREY = "#665f58";
+
+/**
+ * Run 2b §2.1 — the scored floor's desktop track: as many columns as fit at the card's own minimum width, each
+ * one sharing the leftover evenly. At the board's 1184px of content that is three columns, exactly as before;
+ * narrower, two; narrower still, one. `auto-fill` and NOT `auto-fit`: a single card takes ONE column of the
+ * normal width instead of stretching across the whole row (the one-scored-car edge screen).
+ *
+ * The minimum is PlaceCard's own constant, handed to CSS as a custom property — the convention CarPageView.tsx
+ * uses for a number a Tailwind class cannot carry.
+ */
+const PLACE_GRID: React.CSSProperties & Record<string, string> = {
+  "--place-card-min": `${PLACE_CARD_MIN_WIDTH}px`,
+  gridTemplateColumns: "repeat(auto-fill, minmax(var(--place-card-min), 1fr))",
+};
 
 export default function UncrownedResults({ answer }: { answer: ResultsView }) {
   const { head, places, unscored, group } = answer;
@@ -41,10 +55,11 @@ export default function UncrownedResults({ answer }: { answer: ResultsView }) {
         </p>
       </div>
 
-      {/* §5.1 — the scored floor: three columns on the desktop, stacked full width on the phone. No crowns, no
-          colours, no category labels. Never present on the zero-scored screen, which has no scored car. */}
+      {/* §5.1 — the scored floor: as many columns as fit on the desktop (§2.1 — three at the board's width),
+          stacked full width on the phone. No crowns, no colours, no category labels. Never present on the
+          zero-scored screen, which has no scored car. */}
       {places.length > 0 && (
-        <div className="flex flex-col gap-3 md:grid md:gap-5" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+        <div className="flex flex-col gap-3 md:grid md:gap-5" style={PLACE_GRID}>
           {places.map((place) => (
             <PlaceCard key={place.public_id} place={place} questionPublicId={answer.public_id} />
           ))}

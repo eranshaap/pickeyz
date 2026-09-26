@@ -10,7 +10,9 @@
 //             body has no click and keeps the default cursor (findCar-now.md, "לחיצות במסך התוצאות").
 //   phone     the WHOLE row is the link: one stacked data line and no link text, tapped anywhere, dimming whole.
 // The visibility classes are Tailwind's because a media query cannot live in a style attribute; everything the
-// brief spells as CSS is a style attribute, so each tree has one convention.
+// brief spells as CSS is a style attribute, so each tree has one convention. THE ONE EXCEPTION (Run 2b §1):
+// `display` is always a class — `hidden md:grid` and `flex md:hidden` — because an inline `display` outranks the
+// breakpoint class that hides the tree and both trees would draw at once.
 //
 // A RENDERER ONLY: every value arrives decided by load.ts (§3.4) and edge-screens.ts (§2.4).
 
@@ -49,6 +51,9 @@ function DesktopRow({ car, place, questionPublicId }: CarRowProps) {
       style={{
         gridTemplateColumns: "56px 56px 110px 90px 44px 90px minmax(0, 1fr) 100px",
         gap: 14,
+        // Run 2b §2.3 — the seven fixed tracks (56+56+110+90+44+90+100 = 546) plus the seven 14px gaps, with
+        // the sentence track at 0: below 644px the row does not squeeze its cells, the box scrolls sideways.
+        minWidth: 644,
         alignItems: "center",
         height: 48,
         fontSize: 15,
@@ -82,11 +87,14 @@ function DesktopRow({ car, place, questionPublicId }: CarRowProps) {
 
 function PhoneRow({ car, questionPublicId }: CarRowProps) {
   const word = car.ownership_type === null ? EMPTY_VALUE : ownershipWord(car.ownership_type);
+  // Run 2b §1 — `flex` is a CLASS here and never an inline `display`: an inline declaration beats a stylesheet
+  // rule whatever media query guards it, so an inline `display: flex` kept this anchor on at ≥768px and drew
+  // every desktop row twice. Every other layout value of this tree stays inline, as the file's convention has it.
   return (
     <Link
       href={`/listing/${car.public_id}?s=${questionPublicId}`}
-      className="md:hidden"
-      style={{ position: "relative", padding: "12px 0", display: "flex", flexDirection: "column", gap: 6, textDecoration: "none", color: DARK }}
+      className="flex md:hidden"
+      style={{ position: "relative", padding: "12px 0", flexDirection: "column", gap: 6, textDecoration: "none", color: DARK }}
     >
       <LinkPending />
       {/* §4.2 — FIVE spans, and no place: the phone board's row is the year, the price, the km, the hand and
@@ -120,9 +128,11 @@ export default function CarRow(props: CarRowProps) {
  */
 export function CarRows({ children }: { children: React.ReactNode }) {
   const rows = Children.toArray(children);
+  // Run 2b §2.3 — `md:overflow-x-auto`: the sideways scroll is the DESKTOP box's alone, because it is the
+  // desktop row that carries fixed tracks and a min-width. The phone rows have neither and stay as they were.
   return (
     <div
-      className="px-3.5 md:px-5"
+      className="px-3.5 md:overflow-x-auto md:px-5"
       style={{ background: BOX_BG, border: `1px solid ${BOX_BORDER}`, borderRadius: 10, display: "flex", flexDirection: "column", paddingTop: 4, paddingBottom: 4 }}
     >
       {rows.map((child, i) => (
