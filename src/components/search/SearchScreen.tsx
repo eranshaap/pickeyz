@@ -56,9 +56,12 @@
 // RUN 1 (Days 20–21) §4 — WHAT CHANGED HERE, AND IT IS THE RESULTS REGION ONLY: the region below the white
 // bar is now the site's 1280 container with the boards' padding (§4.2 — content 1184, as on the car page),
 // and its first row is one small grey line, "נבחרו מתוך X רכבים." (§4.1). The headline and the institute
-// sentence are GONE — deleted, not hidden (§4.3) — and NOTHING renders under the row of cards: the bottom
-// list is Days 24–25. The question row, the drawer, the filters, the dimming rule and the whole "עדכן"
-// machinery are untouched (§4.4); the white bar still runs the full width of this column.
+// sentence are GONE — deleted, not hidden (§4.3). The question row, the drawer, the filters, the dimming rule
+// and the whole "עדכן" machinery are untouched (§4.4); the white bar still runs the full width of this column.
+//
+// RUN 1 (Days 24–25) §4.1 — THE BOTTOM LIST IS BORN, and it is the only change here: <ResultsList> under the
+// three cards, on the phone as on the desktop, drawing the view's `list`. The count line's X now comes from
+// that same `list` (§2.2), which is the one place the cars the screen shows are counted.
 //
 // MOBILE FIRST. Desktop is the widening: the drawer becomes a panel that never closes (and therefore has no
 // history entry of its own). `dir="rtl"` is set in layout.tsx, so every inset here is logical.
@@ -77,6 +80,7 @@ import ModelBar from "./ModelBar";
 import PickCards from "./PickCards";
 import PickCardsSkeleton from "./PickCardsSkeleton";
 import QuestionRow, { type ScreenNav } from "./QuestionRow";
+import ResultsList from "@/components/list/ResultsList";
 import UncrownedResults from "./UncrownedResults";
 import ZeroResults from "./ZeroResults";
 import { useScreenHistory } from "./useHistory";
@@ -442,11 +446,15 @@ export default function SearchScreen({
                 <ZeroResults relief={reliefControl} />
               ) : answer.state === "crowned" ? (
                 <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-4 pt-6 pb-10 md:px-12 md:pt-8">
-                  {/* §3.3 — the count line belongs to the crowned screen alone. */}
+                  {/* §3.3 — the count line belongs to the crowned screen alone. Days 24–25 §2.2 — its X is
+                      `list.x`, the one place the cars the screen shows are counted. */}
                   <p className="m-0 text-[14px] md:text-[16px]" style={{ color: "#665f58" }}>
-                    {countLine(answer.cars_shown)}
+                    {countLine(answer.list.x)}
                   </p>
                   <PickCards answer={answer} />
+                  {/* Days 24–25 §4.1 — THE BOTTOM LIST, directly below the three cards, on the phone as on the
+                      desktop. It was empty here until this run. */}
+                  <ResultsList list={answer.list} />
                 </div>
               ) : (
                 <UncrownedResults answer={answer} />

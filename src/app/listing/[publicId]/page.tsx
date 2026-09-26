@@ -43,6 +43,9 @@ import { activeFilterNames } from "@/lib/search/filters";
 // Run 1 §0.3e — photoFor() moved to load.ts, where the recommendations screen's view builder also
 // needs it: ONE resolution of a plate to a file for both screens. §7.3's rule is unchanged.
 import { loadForAddress, photoFor, storedFilters, viewerFromCookies } from "@/lib/search/load";
+// Days 24–25 Run 1 §1.3 / §4.8 — the ONE function that turns a search's stored rows into the place a reader
+// sees. This page and the bottom list read it, so they cannot show one car two different numbers.
+import { displayedPlaces } from "@/lib/search/places";
 import { liveModels } from "@/lib/search/models";
 import { resolveListing } from "@/lib/search/visibility";
 import { isThinCell, type Category } from "@/lib/selection";
@@ -118,7 +121,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
 
   // ---- 2. the verdict, only when `s` resolves ------------------------------
   let labels: Category[] = [];
-  let rank: number | null = null;
+  let place: number | null = null;
   let question: PageQuestion | null = null;
 
   if (s !== null && isPublicId(s)) {
@@ -127,7 +130,15 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
       const row = loaded.results.find((r) => r.listing_id === listing.id);
       if (row !== undefined) {
         labels = row.recommendation_categories as Category[];
-        rank = row.rank;
+        // Days 24–25 Run 1 §4.8 — THE PLACE THIS PAGE SHOWS IS THE DISPLAYED PLACE (§1), not the stored rank:
+        // the same number the list shows for the same car, from the same function. loadForAddress() already
+        // returns every row of the displayed run in ONE query, with the five columns §1 reads, so the whole
+        // search is classified here and this listing's place is looked up in the answer.
+        //   a pick            → null, and the page draws its label as it always has
+        //   a ranked non-pick → its displayed place, which sits below the cards' places
+        //   no price / cancelled → null: no place at all. Before this run both showed their tail rank.
+        //   rank null         → absent from the map, so null, exactly as before
+        place = displayedPlaces(loaded.results).get(listing.id) ?? null;
       }
       const filters = storedFilters(loaded.question.filters);
       // Run 7c §11.2 — the row is TEXT here, so the live list is read for ONE thing: the model's display
@@ -147,7 +158,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
   // §7.1 — a cancelled car: "ביטול סופי" in place of the place, black, and no fair number. It wins no
   // category by definition (rules v6 §8), so there is no label to drop.
   const shownLabels = cancelled ? [] : labels;
-  const shownRank = cancelled ? null : rank;
+  const shownPlace = cancelled ? null : place;
   const color = cancelled ? BLACK : pageColor(shownLabels);
 
   // ---- the display decisions (all of them made in src/lib/display) --------
@@ -193,8 +204,8 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     color,
     labelWords: shownLabels.map((c) => ({ word: CATEGORY_LABEL[c], color: shownLabels.length === 1 ? color : CATEGORY_COLOR[c] })),
     labels: shownLabels,
-    placeWord: cancelled ? CANCELLED_WORD : shownRank === null ? null : placeWord(shownRank),
-    rank: shownRank,
+    placeWord: cancelled ? CANCELLED_WORD : shownPlace === null ? null : placeWord(shownPlace),
+    place: shownPlace,
     // Run 9 §3.1 — THE TWO PARTS, never a joined string: CarTitle puts a 0.4em gap between them and the
     // comma is gone. The model spelling itself is unchanged — it is the same `models.model` as before.
     model: car.model.model ?? "",

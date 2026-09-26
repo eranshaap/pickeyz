@@ -13,7 +13,9 @@ import {
   legendHead,
   legendHeadParts,
   legendLine,
+  listHeading,
   months,
+  moreCarsLink,
   noHistoryView,
   ownershipAxis,
   ownershipKind,
@@ -24,6 +26,7 @@ import {
   priceBlock,
   scaleLabelWidth,
   scaleLayout,
+  TABLE_HEADINGS,
   type ScaleLabel,
   SCALE_LABEL_GAP_PX,
   thinCellLine,
@@ -34,6 +37,7 @@ import {
   ZERO_KM_MARKER,
 } from "./texts";
 import { OWNERSHIP_CODES } from "@/lib/mot/translator";
+import { RUBRIC_HEADINGS } from "./rubrics";
 
 describe("the fair number (§8.2)", () => {
   it("rounds the deal to the nearest 100", () => {
@@ -634,5 +638,50 @@ describe("the gap after the top block (§1.5)", () => {
       assert.ok(g >= s * 1.5, `S=${s} gave ${g}`);
       assert.ok(g - 4 < s * 1.5, `S=${s} gave ${g} — not the SMALLEST multiple of 4 that fits`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BRIEF Days 24–25, Run 1 §5.2–§5.4 / §6.3 — the bottom list's own words
+// ---------------------------------------------------------------------------
+
+describe("listHeading() (§5.2)", () => {
+  it("where the list starts and how many cars are under it", () => {
+    assert.equal(listHeading(4, 22), "מקום 4 והלאה — עוד 22 רכבים שנבדקו");
+    assert.equal(listHeading(3, 23), "מקום 3 והלאה — עוד 23 רכבים שנבדקו");
+    assert.equal(listHeading(2, 24), "מקום 2 והלאה — עוד 24 רכבים שנבדקו");
+  });
+
+  it("both numbers carry the site's thousands separator", () => {
+    assert.equal(listHeading(1001, 1200), "מקום 1,001 והלאה — עוד 1,200 רכבים שנבדקו");
+  });
+});
+
+describe("moreCarsLink() (§5.3)", () => {
+  it("the plural", () => {
+    assert.equal(moreCarsLink(10), "הצג את 10 הרכבים הנוספים");
+    assert.equal(moreCarsLink(4), "הצג את 4 הרכבים הנוספים");
+  });
+
+  it("the singular at one — a whole form of its own (decision 3)", () => {
+    assert.equal(moreCarsLink(1), "הצג את הרכב הנוסף");
+  });
+
+  it("the site's thousands separator on a big count", () => {
+    assert.equal(moreCarsLink(1200), "הצג את 1,200 הרכבים הנוספים");
+  });
+});
+
+describe("TABLE_HEADINGS (§5.4)", () => {
+  it("the seven labels, in the desktop row's order", () => {
+    assert.deepEqual([...TABLE_HEADINGS], ["מקום", "שנה", "מחיר", 'ק"מ', "יד", "בעלות נוכחית", "למה במקום הזה"]);
+  });
+
+  it("the km label IS the car page's km rubric heading — one spelling on the site", () => {
+    assert.equal(TABLE_HEADINGS[3], RUBRIC_HEADINGS.km);
+  });
+
+  it("the hand label is the hand rubric's own heading", () => {
+    assert.equal(TABLE_HEADINGS[4], RUBRIC_HEADINGS.hand);
   });
 });

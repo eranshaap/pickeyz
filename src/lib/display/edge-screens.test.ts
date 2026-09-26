@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { CROWNING_THRESHOLD } from "@/lib/selection/constants";
 import { RUBRIC_HEADINGS } from "./rubrics";
-import { dataLine, groupHead, noComparisonLine, placeLabel, uncrownedHead, zeroScoredHead } from "./edge-screens";
+import { cancelledGroupHead, dataLine, groupHead, noComparisonLine, placeLabel, uncrownedHead, zeroScoredHead } from "./edge-screens";
 
 const T = CROWNING_THRESHOLD;
 
@@ -128,6 +128,31 @@ describe("groupHead() (§2.4, §2.5)", () => {
 
   it("0 -> a throw: no group object without rows", () => {
     assert.throws(() => groupHead(0), /never drawn empty/);
+  });
+});
+
+// BRIEF Days 24–25, Run 1 §5.1 / §6.3 — the cancelled group's object: the same two-line shape, its own words.
+describe("cancelledGroupHead() (Days 24–25 §5.1)", () => {
+  it("the plural", () => {
+    assert.deepEqual(cancelledGroupHead(3), {
+      title: "3 רכבים בביטול סופי",
+      line: "הרישום שלהם במשרד התחבורה בוטל לצמיתות — הם ירדו מהכביש.",
+    });
+  });
+
+  it("the singular at one — both lines change", () => {
+    assert.deepEqual(cancelledGroupHead(1), {
+      title: "רכב אחד בביטול סופי",
+      line: "הרישום שלו במשרד התחבורה בוטל לצמיתות — הוא ירד מהכביש.",
+    });
+  });
+
+  it("the site's thousands separator on a big count", () => {
+    assert.equal(cancelledGroupHead(1200).title, "1,200 רכבים בביטול סופי");
+  });
+
+  it("0 -> a throw: no group object without rows", () => {
+    assert.throws(() => cancelledGroupHead(0), /never drawn empty/);
   });
 });
 

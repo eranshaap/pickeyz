@@ -14,18 +14,24 @@ import { whyHeading } from "@/lib/display/texts";
 
 export default function WhySection({
   labels,
-  rank,
+  place,
   lines,
   color,
 }: {
   labels: Category[];
-  rank: number | null;
+  /**
+   * Days 24–25 Run 1 §4.8 — the DISPLAYED place (src/lib/search/places.ts), the same number the list and the
+   * page's own verdict line show. It was the stored rank until this run.
+   */
+  place: number | null;
   /** The justification lines. Empty in this run, always. */
   lines: string[];
   /** The page colour — it paints the heading and nothing else here. */
   color: string;
 }) {
-  const heading = whyHeading({ labels, rank, lines });
+  // `rank` is the name whyHeading()'s input has carried since Run 6b (src/lib/display/texts.ts) and this run
+  // does not rename it — what changed is the number handed to it, not the text it returns.
+  const heading = whyHeading({ labels, rank: place, lines });
   if (heading === null) return null;
 
   return (

@@ -1,6 +1,6 @@
-// The below-threshold screen and the zero-scored screen (BRIEF Days 20–21, Run 2 §5) — the canonical boards
-// «מסך התוצאות מתחת לסף — בלי הכתרה», «מסך אפס בעלי ציון — גודל מלא» and the first two frames of
-// «טלפון — שלושת מסכי הקצה».
+// The below-threshold screen and the zero-scored screen (BRIEF Days 20–21, Run 2 §5; Days 24–25, Run 1 §4.2,
+// §4.7) — the canonical boards «מסך התוצאות מתחת לסף — בלי הכתרה», «מסך אפס בעלי ציון — גודל מלא» and the first
+// two frames of «טלפון — שלושת מסכי הקצה».
 //
 // ONE COMPONENT FOR BOTH, because the document says the zero-scored screen IS this screen without the scored
 // floor. So the below-threshold board's frame governs both (§5.0: the zero-scored board's own 40/48 padding and
@@ -10,36 +10,30 @@
 //   group === null         no group object — on the zero-scored screen the HEAD of the screen already says it,
 //                          so the rows follow the head directly (§5.1)
 //
-// WHAT RENDERS, AND NOTHING ELSE (§5.1): the two head lines, the scored floor, the group object, the rows. No
-// count line, no cards, no fold cue, nothing under the rows — the bottom list is Days 24–25.
+// WHAT RENDERS (§5.1, as Days 24–25 §4.7 extends it): the two head lines, the scored floor, the no-price group
+// object and its rows, and — new — the cancelled group at the very end, when the search has such a car. No count
+// line, no cards, no fold cue. THE SCREENS' HEADLINES DO NOT COUNT CANCELLED CARS: "מתחת לסף" counts the cars with
+// a price comparison and the eligible ones, "אפס בעלי ציון" counts the no-price cars only (§4.7).
 //
-// A RENDERER ONLY: the state, the counts, the head, the places, the rows and the group object all arrive
-// decided by src/lib/search/load.ts (§3) over src/lib/display/edge-screens.ts (§2). No Hebrew lives here.
+// THE CARDS AND THE ROWS ARE THE BOTTOM LIST'S OWN (§4.2): PlaceCardGrid and PlaceCard, CarRows and CarRow, over
+// the same `ListRow` view. The grid rule left this file for PlaceCard.tsx, where the card itself lives, and the
+// place a card shows is now the DISPLAYED place (§1) — which on these two screens, having no picks above it,
+// equals the stored rank this screen has always drawn.
+//
+// A RENDERER ONLY: the state, the counts, the head, the places, the rows and the group objects all arrive decided
+// by src/lib/search/load.ts (§3) over src/lib/display/edge-screens.ts (§2). No Hebrew lives here.
 
 import CarRow, { CarRows } from "@/components/list/CarRow";
 import GroupHead from "@/components/list/GroupHead";
-import PlaceCard, { PLACE_CARD_MIN_WIDTH } from "@/components/list/PlaceCard";
+import PlaceCard, { PlaceCardGrid } from "@/components/list/PlaceCard";
 import type { ResultsView } from "@/lib/search/load";
 
 const GREY = "#665f58";
 
-/**
- * Run 2b §2.1 — the scored floor's desktop track: as many columns as fit at the card's own minimum width, each
- * one sharing the leftover evenly. At the board's 1184px of content that is three columns, exactly as before;
- * narrower, two; narrower still, one. `auto-fill` and NOT `auto-fit`: a single card takes ONE column of the
- * normal width instead of stretching across the whole row (the one-scored-car edge screen).
- *
- * The minimum is PlaceCard's own constant, handed to CSS as a custom property — the convention CarPageView.tsx
- * uses for a number a Tailwind class cannot carry.
- */
-const PLACE_GRID: React.CSSProperties & Record<string, string> = {
-  "--place-card-min": `${PLACE_CARD_MIN_WIDTH}px`,
-  gridTemplateColumns: "repeat(auto-fill, minmax(var(--place-card-min), 1fr))",
-};
-
 export default function UncrownedResults({ answer }: { answer: ResultsView }) {
-  const { head, places, unscored, group } = answer;
+  const { head, places, unscored, cancelled, group } = answer;
   if (head === null) throw new Error(`UncrownedResults: a ${answer.state} search has no head — this screen is not the one to draw it`);
+  const cancelledGroup = answer.list.cancelledGroup;
 
   return (
     // §5.1 / §5.2 — the site's 1280 container: `36px 48px 40px` with a column gap of 28 on the desktop,
@@ -59,11 +53,11 @@ export default function UncrownedResults({ answer }: { answer: ResultsView }) {
           stacked full width on the phone. No crowns, no colours, no category labels. Never present on the
           zero-scored screen, which has no scored car. */}
       {places.length > 0 && (
-        <div className="flex flex-col gap-3 md:grid md:gap-5" style={PLACE_GRID}>
-          {places.map((place) => (
-            <PlaceCard key={place.public_id} place={place} questionPublicId={answer.public_id} />
+        <PlaceCardGrid>
+          {places.map((row) => (
+            <PlaceCard key={row.public_id} row={row} />
           ))}
-        </div>
+        </PlaceCardGrid>
       )}
 
       {/* §5.1 — the unscored group. On the below-threshold screen the group object sits above the rows; on the
@@ -72,8 +66,21 @@ export default function UncrownedResults({ answer }: { answer: ResultsView }) {
         <div className="flex flex-col gap-2 md:gap-3">
           {group !== null && <GroupHead title={group.title} line={group.line} />}
           <CarRows>
-            {unscored.map((car) => (
-              <CarRow key={car.public_id} car={car} place={null} questionPublicId={answer.public_id} />
+            {unscored.map((row) => (
+              <CarRow key={row.public_id} row={row} />
+            ))}
+          </CarRows>
+        </div>
+      )}
+
+      {/* Days 24–25 §4.7 — the cancelled group, last on both screens and placeless, the same object the bottom
+          list draws. No such car exists in the data today, so nothing of this is on the live site yet. */}
+      {cancelled.length > 0 && cancelledGroup !== null && (
+        <div className="flex flex-col gap-2 md:gap-3">
+          <GroupHead title={cancelledGroup.title} line={cancelledGroup.line} />
+          <CarRows>
+            {cancelled.map((row) => (
+              <CarRow key={row.public_id} row={row} />
             ))}
           </CarRows>
         </div>

@@ -102,7 +102,12 @@ export type CarPageData = {
   labels: Category[];
   /** "מקום {N}", or "ביטול סופי" for a cancelled car; null when the page carries neither. */
   placeWord: string | null;
-  rank: number | null;
+  /**
+   * Days 24–25 Run 1 §4.8 — THE DISPLAYED PLACE (src/lib/search/places.ts), never the stored rank: the very
+   * number the bottom list shows for this car. null on a pick (it shows its label), on a car with no price
+   * comparison, on a cancelled car and on a listing the search did not rank.
+   */
+  place: number | null;
   /** §3.1 — the title's two parts, never a joined string: CarTitle puts the gap between them, not a comma. */
   model: string;
   year: number | null;
@@ -354,7 +359,7 @@ export default function CarPageView({ data }: { data: CarPageData }) {
         </section>
 
         {/* ------------------------------------------------- למה (between the rubrics and the history) */}
-        <WhySection labels={data.labels} rank={data.rank} lines={data.whyLines} color={data.color} />
+        <WhySection labels={data.labels} place={data.place} lines={data.whyLines} color={data.color} />
 
         {/* ------------------------------------------------------------ ownership history */}
         <section className="flex flex-col gap-3">

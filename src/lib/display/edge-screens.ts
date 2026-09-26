@@ -105,6 +105,20 @@ export function groupHead(n: number): Head {
   return { title: n === 1 ? "רכב אחד בלי השוואת מחיר" : `${num(n)} רכבים בלי השוואת מחיר`, line: noComparisonLine(n) };
 }
 
+/**
+ * Days 24–25 Run 1 §5.1 — the group object at the very end of the list: the cars whose registration at the
+ * Ministry of Transport was cancelled for good. `n === 0` throws, like groupHead(): a group object is never
+ * drawn empty.
+ *
+ * ledger: the two wordings are a FIRST GUESS (decision 2, 26/09), like every wording on these screens.
+ */
+export function cancelledGroupHead(n: number): Head {
+  if (n === 0) throw new Error("cancelledGroupHead: no row — a group object is never drawn empty");
+  return n === 1
+    ? { title: "רכב אחד בביטול סופי", line: "הרישום שלו במשרד התחבורה בוטל לצמיתות — הוא ירד מהכביש." }
+    : { title: `${num(n)} רכבים בביטול סופי`, line: "הרישום שלהם במשרד התחבורה בוטל לצמיתות — הם ירדו מהכביש." };
+}
+
 /** §2.4 — the place card's label. */
 export function placeLabel(n: number): string {
   return `מקום ${num(n)}`;

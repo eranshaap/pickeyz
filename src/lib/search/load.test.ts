@@ -24,7 +24,8 @@ import {
 } from "./load";
 import { handRubric } from "@/lib/display/rubrics";
 import { MULTI_COLOR } from "@/lib/display/cards";
-import { groupHead, noComparisonLine, uncrownedHead, zeroScoredHead } from "@/lib/display/edge-screens";
+import { cancelledGroupHead, groupHead, noComparisonLine, uncrownedHead, zeroScoredHead } from "@/lib/display/edge-screens";
+import { listHeading, OWNERSHIP_WORD } from "@/lib/display/texts";
 import { CROWNING_THRESHOLD, RULE_TYPE, type RuleTrace } from "@/lib/selection";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -309,6 +310,9 @@ describe("resultsViewFrom() — the cards (§2.1, §2.4)", () => {
     [20, listingFacts({ public_id: "bbbbbbbbbb", car_id: 2, price: 133000, year: 2023 })],
     [30, listingFacts({ public_id: "cccccccccc", car_id: 3, price: 96600, year: 2021 })],
     [40, listingFacts({ public_id: "dddddddddd", car_id: 4, price: 100000 })],
+    // Days 24–25 §2.2 — row 50 is shown, so the ONE load reads its facts too: the bottom list draws every car
+    // the search shows, and not the picks and the runner-up alone.
+    [50, listingFacts({ public_id: "eeeeeeeeee", car_id: 4, price: 100000 })],
   ]);
   const car_id_of = new Map([
     [10, 1],
@@ -490,10 +494,20 @@ describe("resultsViewFrom() — the cards (§2.1, §2.4)", () => {
     });
   });
 
-  describe("cars_shown — X of the count line (§1.7, decision 4 of 25/09)", () => {
-    it("two surviving ads of one car count once, and a removed row does not count", () => {
-      // rows 10, 20, 30, 40 and 50 are shown (50 is a second ad of car 4); row 60 was merged away
-      assert.equal(view.cars_shown, 4);
+  describe("cars_shown — X of the count line (§1.7, decision 4 of 25/09; Days 24–25 §2.2)", () => {
+    // Days 24–25 §2.2 — X IS NOW READ FROM ONE SOURCE, `list.x`: every non-hidden row of the search. A removed
+    // row (rank null) is not one of them, so row 60, merged away, is not counted — which is the rule that
+    // matters on the site, because Stage B gives the merged ad of a car rank null and a car therefore has
+    // exactly ONE shown row. The read-back (§6.5, assertion 3) proves the two readings agree on every stored
+    // search; this fixture is the one they cannot agree on, and it cannot occur: it has two SHOWN ads of car 4.
+    it("a removed row does not count: five shown rows -> X is 5", () => {
+      assert.equal(view.list.x, 5);
+      assert.equal(view.cars_shown, view.list.x);
+    });
+
+    it("the per-car count is untouched and still counts two ads of one car once", () => {
+      // §1.7's rule itself — shownCarsCount over the rows — is unchanged and still on the view.
+      assert.equal(view.counts.cars, 4);
     });
   });
 });
@@ -638,25 +652,32 @@ describe("resultsViewFrom() — the places, the rows and the group (§3.5)", () 
     );
   });
 
-  it("a place card carries the same fields a pick card does — one mapping (§3.4)", () => {
+  // Days 24–25 §2.1 — a place card and a table row are now ONE row view (ListRow), and its values still come out
+  // of the same mapping the pick cards come out of (§3.4): the ad's km, the ad's hand or the registry's, the
+  // current ownership — as a WORD here, because that is what a row prints. `sentence` and `tag` are the
+  // generator's two fields and are empty strings until it lands (§3).
+  it("a list row carries the ListRow view, from the pick cards' own mapping (§2.1)", () => {
     const p = view.places[0];
     assert.deepEqual(Object.keys(p).sort(), [
       "hand",
+      "href",
       "image",
       "km",
       "model",
-      "new_price_pct",
-      "ownership_type",
+      "ownership_word",
       "place",
       "price",
       "public_id",
       "sentence",
+      "tag",
       "year",
     ]);
     assert.equal(p.km, 34000);
     assert.equal(p.hand, 2);
-    assert.equal(p.ownership_type, "private");
-    assert.equal(p.sentence, null);
+    assert.equal(p.ownership_word, OWNERSHIP_WORD.private);
+    assert.equal(p.sentence, "");
+    assert.equal(p.tag, "");
+    assert.equal(p.href, `/listing/${p.public_id}?s=${QUESTION_ID}`);
   });
 
   it("unscored: the shown rows with no comparison, in their stored order, the cancelled one left out", () => {
@@ -696,8 +717,25 @@ describe("resultsViewFrom() — the places, the rows and the group (§3.5)", () 
       head: null,
       cards: [],
       runner_up: null,
+      // Days 24–25 §2.2 — the list is assembled in every state and is empty in this one; `x` is 0, which is
+      // what the count line would say if this screen had one.
+      list: {
+        cardCount: 0,
+        x: 0,
+        heading: { firstPlace: 1, more: 0, text: listHeading(1, 0) },
+        cards: [],
+        table: [],
+        restRanked: [],
+        noPrice: [],
+        noPriceGroup: null,
+        cancelled: [],
+        cancelledGroup: null,
+        hiddenCount: 0,
+        moreLink: null,
+      },
       places: [],
       unscored: [],
+      cancelled: [],
       group: null,
       cars_shown: 0,
     });
@@ -718,8 +756,11 @@ describe("resultsViewFrom() — the places, the rows and the group (§3.5)", () 
   });
 });
 
-describe("drawnListingIds() — one query for every drawn row (§3.5)", () => {
-  it("crowned: the picks and the runner-up, exactly Run 1's set", () => {
+// Days 24–25 §2.2 — ONE LOAD: the details of every NON-HIDDEN row, in every state. The crowned path read the
+// picks and the runner-up alone until this run, because nothing was drawn under the cards; the bottom list draws
+// every car the search shows, the cancelled ones included.
+describe("drawnListingIds() — one query for every drawn row (§3.5, §2.2)", () => {
+  it("crowned: every shown row, not only the picks and the runner-up", () => {
     const rows = [
       scoredRow(10, 1, { recommendation_categories: ["best_value"], stage_b_trace: [crowningRecord(9, 9)] }),
       scoredRow(20, 2, { recommendation_categories: ["cheapest"], stage_b_trace: [runnerUpRecord(30)] }),
@@ -728,11 +769,11 @@ describe("drawnListingIds() — one query for every drawn row (§3.5)", () => {
     ];
     assert.deepEqual(
       drawnListingIds(rows).sort((a, b) => a - b),
-      [10, 20, 30],
+      [10, 20, 30, 40],
     );
   });
 
-  it("uncrowned: every drawn row, and not the cancelled one nor a removed one", () => {
+  it("uncrowned: every shown row, the cancelled one included and the removed one left out", () => {
     const rows = [
       scoredRow(10, 1, { stage_b_trace: [crowningRecord(2, 2)] }),
       scoredRow(20, 2),
@@ -742,11 +783,62 @@ describe("drawnListingIds() — one query for every drawn row (§3.5)", () => {
     ];
     assert.deepEqual(
       drawnListingIds(rows).sort((a, b) => a - b),
-      [10, 20, 30],
+      [10, 20, 30, 40],
     );
   });
 
   it("zero_results: nothing at all", () => {
     assert.deepEqual(drawnListingIds([resultRow({ listing_id: 10, rank: null })]), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BRIEF Days 24–25, Run 1 §4.7 / §6.4 — THE UNCROWNED HEADLINES DO NOT COUNT CANCELLED CARS, and the cancelled
+// row sits in its own group at the end of the screen. The headline's two numbers are computed here
+// (resultsCounts + uncrownedHead / zeroScoredHead), which is why the fixture is here.
+// ---------------------------------------------------------------------------
+
+describe("§6.4 — the uncrowned headlines with a cancelled car on the screen", () => {
+  it("below threshold: 5 scored eligible + 1 no-price + 1 cancelled -> the headline says 5", () => {
+    const rows = [
+      scoredRow(10, 1, { stage_b_trace: [crowningRecord(5, 5)] }),
+      scoredRow(20, 2),
+      scoredRow(30, 3),
+      scoredRow(40, 4),
+      scoredRow(50, 5),
+      tailRow(60, 6),
+      tailRow(70, 7, { stage_b_trace: [cancelledRecord()] }),
+    ];
+    const v = viewOf(rows);
+    assert.equal(v.state, "uncrowned");
+    assert.equal(v.counts.with_comparison, 5);
+    assert.equal(v.counts.eligible, 5);
+    assert.deepEqual(v.head, uncrownedHead({ with_comparison: 5, eligible: 5, threshold: CROWNING_THRESHOLD }));
+    // the floor, the no-price group and the cancelled group, each with its own rows
+    assert.deepEqual(
+      v.places.map((r) => r.place),
+      [1, 2, 3, 4, 5],
+    );
+    assert.deepEqual(
+      v.unscored.map((r) => r.public_id),
+      ["p000000060"],
+    );
+    assert.deepEqual(
+      v.cancelled.map((r) => [r.public_id, r.place]),
+      [["p000000070", null]],
+    );
+    assert.deepEqual(v.group, groupHead(1));
+    assert.deepEqual(v.list.cancelledGroup, cancelledGroupHead(1));
+  });
+
+  it("zero scored: 0 scored + 3 no-price + 1 cancelled -> the headline says 3", () => {
+    const rows = [tailRow(10, 1), tailRow(20, 2), tailRow(30, 3), tailRow(40, 4, { stage_b_trace: [cancelledRecord()] })];
+    const v = viewOf(rows);
+    assert.equal(v.state, "zero_scored");
+    assert.deepEqual(v.head, zeroScoredHead(3));
+    assert.equal(v.unscored.length, 3);
+    assert.equal(v.cancelled.length, 1);
+    assert.equal(v.group, null); // the zero-scored screen's own head already says it
+    assert.deepEqual(v.list.cancelledGroup, cancelledGroupHead(1));
   });
 });

@@ -160,10 +160,45 @@ export function backLinkWord(input: { hasQuestion: boolean; labels: Category[] }
   return input.labels.length > 0 ? BACK_TO_PICKS : BACK_TO_RESULTS;
 }
 
-/** §7.1 — "מקום {rank}" when the listing has a place and no label. */
+/**
+ * §7.1 — "מקום {N}" when the listing has a place and no label.
+ *
+ * Days 24–25 Run 1 §1.3 — the N is the DISPLAYED PLACE (src/lib/search/places.ts) and no longer the stored
+ * rank. The word itself did not change; where the number comes from did.
+ */
 export function placeWord(rank: number): string {
   return `מקום ${num(rank)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Days 24–25 Run 1 §5.2–§5.4 — the bottom list's own words
+// ---------------------------------------------------------------------------
+
+/**
+ * §5.2 — the heading of the list under the three cards: where it starts and how many cars are under it.
+ *
+ * `firstPlace` is c+1 (c = the cards the screen shows) and `more` is x−c (x = every car the screen shows). On
+ * a crowned screen `more` is never below 5 — crowning needs eight eligible cars — so there is no form at one.
+ */
+export function listHeading(firstPlace: number, more: number): string {
+  return `מקום ${num(firstPlace)} והלאה — עוד ${num(more)} רכבים שנבדקו`;
+}
+
+/** §5.3 — the closing row of the closed table: the N cars the list is still holding back. */
+export function moreCarsLink(n: number): string {
+  return n === 1 ? "הצג את הרכב הנוסף" : `הצג את ${num(n)} הרכבים הנוספים`;
+}
+
+/**
+ * §5.4 — the desktop table's header labels, in the ROW's order: place, year, price, km, hand, current
+ * ownership, the sentence. The eighth track — the link to the car page — has no label (§4.3).
+ *
+ * The km label is the car page's own km rubric heading, character for character: the header, the phone row's
+ * unit and the place card's data line may not spell it three ways. It is written out here rather than imported
+ * because this file is the display library's LEAF module and rubrics.ts imports it — an import back would be a
+ * cycle. texts.test.ts pins the two strings equal, so the one spelling cannot drift.
+ */
+export const TABLE_HEADINGS = ["מקום", "שנה", "מחיר", 'ק"מ', "יד", "בעלות נוכחית", "למה במקום הזה"] as const;
 
 // ---------------------------------------------------------------------------
 // Run 9 §1.2 — the car title

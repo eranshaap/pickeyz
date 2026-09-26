@@ -19,13 +19,15 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { Prisma } from "@/generated/prisma/client";
-import { currentOwnershipType, groupCards, shownCarsCount } from "@/lib/display/cards";
+import { currentOwnershipType, groupCards, ownershipWord, shownCarsCount } from "@/lib/display/cards";
 import { groupHead, uncrownedHead, zeroScoredHead, type Head } from "@/lib/display/edge-screens";
 import { israelDay, percentOfNewLine } from "@/lib/display/texts";
 import { CROWNING_THRESHOLD } from "@/lib/selection/constants";
 import type { Category, RuleTrace } from "@/lib/selection";
 import type { ModelRows } from "./chip-state";
 import type { SearchFilters } from "./filters";
+// Days 24–25 §2 — the list's one assembly and the row view it returns. Pure modules: they bring no database.
+import { assembleList, type ListRow, type ListRowData, type ListView } from "./list";
 
 // ---------------------------------------------------------------------------
 // the rows this module works on
@@ -189,8 +191,9 @@ export type ViewCard = DrawnCar & {
   color: string;
 };
 
-/** Run 2 §3.5 — one card of the below-threshold screen's scored floor: the drawn car under its place. */
-export type ViewPlace = DrawnCar & { place: number };
+// Days 24–25 Run 1 §2.1 — ViewPlace IS GONE. The below-threshold screen's scored floor is drawn by the same
+// PlaceCard the bottom list draws, from the same row view, so there is one row type and not two: `ListRow`
+// (src/lib/search/list.ts), whose `place` is the DISPLAYED place of §1 rather than the stored rank.
 
 /** The runner-up strip's data — only ever set when the cheapest pick recorded one. */
 export type ViewRunnerUp = {
@@ -240,15 +243,30 @@ export type ResultsView = {
   head: Head | null;
   cards: ViewCard[];
   runner_up: ViewRunnerUp | null;
-  /** §3.5 — the scored floor of the uncrowned screen, in rank order. Empty in the other three states. */
-  places: ViewPlace[];
+  /**
+   * Days 24–25 §2.2 — THE BOTTOM LIST, assembled from the same classified rows as everything below. It is
+   * built in every state (it is the one place `x` is counted) and DRAWN on the crowned screen alone: the two
+   * uncrowned screens draw their own floor and their own groups, from the fields under this one.
+   */
+  list: ListView;
+  /**
+   * §3.5 — the scored floor of the uncrowned screen, by displayed place (which on an uncrowned search equals
+   * the stored rank — no picks, so nothing sits above it). Empty in the other three states.
+   */
+  places: ListRow[];
   /** §3.5 — the cars with no price comparison, in their stored order, cancelled ones left out. */
-  unscored: DrawnCar[];
-  /** §3.5 — the group object above `unscored`, on the uncrowned screen only. */
+  unscored: ListRow[];
+  /** Days 24–25 §4.7 — the cars in final cancellation, in their stored order; the last group of the screen. */
+  cancelled: ListRow[];
+  /**
+   * §3.5 — the group object above `unscored`, on the uncrowned screen only (the zero-scored screen's own head
+   * already says it). The cancelled group's object is `list.cancelledGroup`, which every screen that draws the
+   * group reads — it has no such per-screen rule.
+   */
   group: Head | null;
   /**
-   * X of "נבחרו מתוך X רכבים." — Run 1's name for `counts.cars`, KEPT under both names so that nothing Run 1
-   * pinned moves. The count line itself belongs to the crowned screen alone (§3.3).
+   * X of "נבחרו מתוך X רכבים." — Run 1's name for the number, now read from ONE source: `list.x`, the cars the
+   * screen shows (§2.2). The count line itself belongs to the crowned screen alone (§3.3).
    */
   cars_shown: number;
 };
@@ -330,14 +348,15 @@ export function storedRunnerUpListing(rows: readonly ResultRow[]): number | null
   return listing_id;
 }
 
-/** A row is drawn on the scored floor when it is shown and carries a deal score — `total_score` is the answer. */
+/** A row has a price comparison when it is shown and carries a deal score — `total_score` is the answer. */
 const hasComparison = (row: ResultRow): boolean => isShownRow(row) && row.total_score !== null;
 
 /** A rule record of this row that fired with the `ineligible` effect — the rule's own verdict (rules v5 §0.1). */
 const firedIneligible = (row: ResultRow, rule: string): boolean => traceOf(row).some((t) => t.rule === rule && t.effect === "ineligible");
 
-/** Run 2 §3.5 — the cancelled cars: a third kind, whose place is the end of the FULL list (Days 24–25). */
-const isCancelledRow = (row: ResultRow): boolean => traceOf(row).some((t) => t.rule === "cancelled" && t.triggered);
+// Days 24–25 §1.1 — isCancelledRow() is GONE from this file: which kind a stored row is — hidden, pick,
+// cancelled, ranked or no_price — is classifyRow()'s one answer (src/lib/search/places.ts), and the cancelled
+// group, the no-price group and the scored floor are all read off it. Nothing here reads the trace for a kind.
 
 /**
  * §3.2 — the counts, from the record when it is there and from a recount over the rows when it is not.
@@ -409,25 +428,23 @@ export function resultsState(rows: readonly ResultRow[], counts: Pick<ResultsCou
 }
 
 /**
- * §3.5 — which listings a search DRAWS, so that one query reads the details of all of them and of nobody else.
- * In `crowned` that is the picks and the runner-up, as Run 1 read them; in `uncrowned` and `zero_scored` it is
- * every row the two screens put on the screen; in `zero_results` there is nothing to draw.
+ * §3.5, as Days 24–25 §2.2 re-cut it — which listings a search DRAWS, so that ONE query reads the details of
+ * all of them and of nobody else.
+ *
+ * IT IS NOW EVERY NON-HIDDEN ROW, in every state. Before this run the crowned path read the picks and the
+ * runner-up and nothing else, because nothing was drawn under the cards; the bottom list draws every car the
+ * search shows — the ranked rows, the no-price group and the cancelled group — so the crowned path reads what
+ * the two uncrowned screens already read. A `hidden` row (rank null: a merged duplicate, a listing Stage B took
+ * out) is drawn nowhere and is not read.
+ *
+ * The runner-up is added explicitly, as before: it is a shown row by rule, and the rule is not this function's
+ * to re-derive.
  */
 export function drawnListingIds(rows: readonly ResultRow[]): number[] {
   const ids = new Set<number>();
-  for (const r of rows) if (r.recommendation_categories.length > 0) ids.add(r.listing_id);
+  for (const r of rows) if (isShownRow(r)) ids.add(r.listing_id);
   const runnerUpId = storedRunnerUpListing(rows);
   if (runnerUpId !== null) ids.add(runnerUpId);
-
-  const counts = { with_comparison: rows.filter(hasComparison).length };
-  const state = resultsState(rows, counts);
-  if (state === "uncrowned" || state === "zero_scored") {
-    for (const r of rows) {
-      if (!isShownRow(r)) continue;
-      if (!hasComparison(r) && isCancelledRow(r)) continue; // §3.5 — a cancelled car is drawn on neither screen
-      ids.add(r.listing_id);
-    }
-  }
   return [...ids];
 }
 
@@ -441,7 +458,7 @@ export function drawnListingIds(rows: readonly ResultRow[]): number[] {
 export function resultsViewFrom(input: {
   question_public_id: string;
   rows: readonly ResultRow[];
-  /** Every DRAWN listing (§3.5, drawnListingIds): the picks and the runner-up, plus the edge screens' rows. */
+  /** Every DRAWN listing (§3.5, drawnListingIds): every non-hidden row, plus the runner-up. */
   facts: ReadonlyMap<number, ListingFacts>;
   /** Every row's listing → its car, for the count. */
   car_id_of: ReadonlyMap<number, number>;
@@ -476,13 +493,38 @@ export function resultsViewFrom(input: {
       hand: f.hand_declared ?? f.registry_hand,
       ownership_type: currentOwnershipType(f.ownership_history),
       image: f.image,
-      sentence: null, // Days 22–23: the justification generator fills this
+      // THE SEAM — Days 22–23 / Days 24–25 §3. The justification generator fills FOUR fields and they are all
+      // here, in this one place: a card's `sentence` (below), the runner-up strip's `fact` (further down), and
+      // every list row's `sentence` and `tag` (listRowData, below). Nothing else fills any of them.
+      sentence: null,
     };
   };
   const drawn = (listing_id: number, what: string): DrawnCar => {
     const row = rowOfListing.get(listing_id);
     if (row === undefined) throw new Error(`resultsView: ${what} listing ${listing_id} is not among the search's rows`);
     return listingView(row, factsOf(listing_id, what));
+  };
+
+  /**
+   * Days 24–25 §2.1 — one row of the LIST, from the very same mapping: the same km, the same hand rule, the
+   * same ownership — as a WORD here, because a row prints the word and a card's rubric prints it too
+   * (ownershipWord is the one table). `sentence` and `tag` are the generator's two fields on a row (§3).
+   */
+  const listRowData = (listing_id: number): ListRowData => {
+    const car = drawn(listing_id, "list row");
+    return {
+      public_id: car.public_id,
+      href: `/listing/${car.public_id}?s=${input.question_public_id}`,
+      model: car.model,
+      year: car.year,
+      price: car.price,
+      km: car.km,
+      hand: car.hand,
+      ownership_word: car.ownership_type === null ? null : ownershipWord(car.ownership_type),
+      image: car.image,
+      sentence: "", // §3 — the generator's
+      tag: "", // §3 — the generator's
+    };
   };
 
   // §3.2 / §3.1 — the counts first, then the screen they decide.
@@ -526,18 +568,18 @@ export function resultsViewFrom(input: {
     };
   }
 
-  // §3.5 — the places and the rows, on the two edge screens only. In `crowned` and `zero_results` nothing is
-  // drawn here and no detail is read for them.
+  // Days 24–25 §2.2 — THE LIST, from the same rows and the same one load, in every state. It is the crowned
+  // screen's whole bottom half and it is also where the two uncrowned screens' floor and groups come from, so
+  // there is one classification and one assembly on the site and not one per screen.
+  const list = assembleList(rows, listRowData);
+
+  // §3.5 — the two edge screens' own reading of the same lists. In `crowned` and `zero_results` these are
+  // empty: the crowned screen draws `list` and the zero-results screen draws nothing.
   const draws = state === "uncrowned" || state === "zero_scored";
-  const places: ViewPlace[] = !draws
-    ? []
-    : rows
-        .filter(hasComparison)
-        .sort((a, b) => (a.rank as number) - (b.rank as number))
-        .map((r) => ({ place: r.rank as number, ...drawn(r.listing_id, "place") }));
-  const unscored: DrawnCar[] = !draws
-    ? []
-    : rows.filter((r) => isShownRow(r) && r.total_score === null && !isCancelledRow(r)).map((r) => drawn(r.listing_id, "row"));
+  // With no picks the displayed place equals the stored rank (§1.2), so this IS the scored floor in rank order.
+  const places: ListRow[] = !draws ? [] : [...list.cards, ...list.table, ...list.restRanked];
+  const unscored: ListRow[] = !draws ? [] : list.noPrice;
+  const cancelled: ListRow[] = !draws ? [] : list.cancelled;
 
   // §3.3 — the head, per state. The count line is the crowned screen's alone and is not computed here.
   const head: Head | null =
@@ -552,10 +594,14 @@ export function resultsViewFrom(input: {
     head,
     cards,
     runner_up,
+    list,
     places,
     unscored,
+    cancelled,
     group,
-    cars_shown: counts.cars,
+    // §2.2 — ONE source for X. `counts.cars` counts the same cars by a different road (distinct `car_id` over
+    // the shown rows); the read-back's assertion 3 proves the two agree on every stored search.
+    cars_shown: list.x,
   };
 }
 
