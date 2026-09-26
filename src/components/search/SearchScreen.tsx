@@ -67,7 +67,7 @@
 // switching back to one asks nothing.
 //
 // AND IT DECIDES NOTHING (§1). Every chip's state, every count, the shelf, the release at 0 and the button's
-// number come from src/lib/search/chip-state.ts. This file hands the rows and the draft to resolveDrawer(),
+// number come from src/lib/search/chip-state.ts. This file hands the rows and the draft to resolveFilters(),
 // forwards a click to toggleChip(), and commits exactly what the library returns.
 //
 // RUN 1 (Days 20–21) §4 — the region below the white bar is the site's results container with the boards'
@@ -85,7 +85,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { applyFilters as sentFilters, draftFromQuestion, isUnchanged, release, resolveDrawer, shelfOf, type ModelRows } from "@/lib/search/chip-state";
+import { applyFilters as sentFilters, draftFromQuestion, isUnchanged, release, resolveFilters, shelfOf, type ModelRows } from "@/lib/search/chip-state";
 import { activeFilterNames, noFilters } from "@/lib/search/filters";
 import type { SearchFilters } from "@/lib/search/filters";
 import type { LiveModel } from "@/lib/search/models";
@@ -275,7 +275,7 @@ export default function SearchScreen({
   // §2.2 — THE RESOLVE, WHERE THE COMPONENT RENDERS: on the server for the first paint and in the browser
   // for every edit after it, one pure function, memoised on its inputs. This is what makes a chip click
   // instant — it changes the draft, and the next render has every chip and every count.
-  const resolved = useMemo(() => (rows === null || shelf === null ? null : resolveDrawer(rows.rows, shelf, draft)), [rows, shelf, draft]);
+  const resolved = useMemo(() => (rows === null || shelf === null ? null : resolveFilters(rows.rows, shelf, draft)), [rows, shelf, draft]);
 
   /**
    * §11.3 — the push, and the only one this screen makes. It runs inside a transition, so React holds the

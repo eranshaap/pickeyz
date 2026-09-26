@@ -15,6 +15,12 @@
 // — the correct answer for a row whose width is not yet known — so the first client render matches the
 // server's and the ticks appear on the same frame as hydration.
 //
+// RUN 2b (Days 24–25) §4 — TWO THINGS ABOUT THE PHONE, both below the site's 900px boundary and neither of
+// them a phone-only branch of this tree: the scale shows the two END marks ALONE, no year between them
+// however much room it would have (§4.1, the `hidden md:block` on a year mark below), and the bar fills its
+// span to the "היום" mark exactly as the desktop's does (§4.2, the per-cent flex factors below). The
+// desktop is untouched by both: the years with room, the bar to the mark.
+//
 // ONE RIGHT-TO-LEFT GEOMETRY (§2.1). On-the-road is the RIGHT edge, today is the LEFT edge. The bar and the
 // scale row are two rows of ONE column template, so they cannot drift apart.
 //
@@ -162,7 +168,23 @@ export default function OwnershipTimeline({
 
   // §2.4 — the bar and the scale row are the SAME column template, so they cannot drift apart. §2.1 — every
   // track is minmax(10px, {share}fr): a segment can be squeezed to a sliver but never to nothing.
-  const template = axis.segments.map((s) => `minmax(${SEGMENT_MIN_PX}px, ${s.share}fr)`).join(" ");
+  //
+  // RUN 2b (Days 24–25) §4.2 — THE FLEX FACTORS ARE PER CENT, NOT FRACTIONS, and that one multiplication is
+  // the whole fix for a bar that ended before the "היום" mark on the phone. `share` sums to 1, so as
+  // fractions the flex factors summed to exactly 1 — and CSS Grid raises a flex-factor sum below 1 to 1 when
+  // it sizes an fr (Grid §12.7.1). The moment one segment's share × the bar's width falls under the 10px
+  // minimum, that track is clamped to its 10px base and taken OUT of the flexible set; the rest then sum to
+  // LESS than 1, are sized against a divisor of 1 all the same, and so take only that fraction of the space.
+  // The bar came up short by exactly the clamped tracks' would-be width — on the phone's narrower card, three
+  // one-month dealer transits at the end of a ~33-month history are ~9px each and ~28px of shortfall, while
+  // the same three clear 10px on the desktop's wider card and nothing was clamped there at all.
+  //
+  // Expressed per cent the remaining sum stays far above 1, so the leftover space is distributed IN FULL and
+  // the ownership segments give the clamped segments' share back PROPORTIONALLY: the bar is 100% of its span
+  // on both trees. It is the cause and not the symptom — no segment is stretched by hand and nothing is
+  // phone-only. With no track clamped the two forms resolve identically (30fr/70fr is 0.3fr/0.7fr), which is
+  // why the desktop's bar renders exactly as it did.
+  const template = axis.segments.map((s) => `minmax(${SEGMENT_MIN_PX}px, ${s.share * 100}fr)`).join(" ");
 
   const labels = scaleLayout(axis, scaleWidth);
 
@@ -220,11 +242,18 @@ export default function OwnershipTimeline({
           // every year tick is anchored at its cell's right edge with its label CENTRED on it. §11.1: the
           // anchor is the PHYSICAL right edge — `right`, not `insetInlineEnd`. `translateX(50%)` is unchanged:
           // it was written for right-edge anchoring and is correct now that the anchoring is physical.
+          //
+          // RUN 2b (Days 24–25) §4.1 — A YEAR MARK IS DESKTOP-ONLY. Below the site's 900px boundary the scale
+          // carries the two END marks and nothing else, whether or not a year would have room: tick and label
+          // go together, as they always do, so `hidden md:block` on this span takes both. The rule is the
+          // TREE's, not the collision rule's — scaleLayout() still decides which years clear at this width,
+          // and the desktop draws exactly what it drew. The two copies of this component (CarPageView.tsx,
+          // `md:hidden` and `hidden md:block`) share one tree, so this is where the boundary can be read.
           const isStart = l.kind === "start";
           return (
             <span
               key={isStart ? "start" : `y${l.year}`}
-              className="absolute top-0 whitespace-nowrap text-center"
+              className={`absolute top-0 whitespace-nowrap text-center${isStart ? "" : " hidden md:block"}`}
               style={{ right: `${l.share_from_start * 100}%`, transform: isStart ? undefined : "translateX(50%)" }}
             >
               <span

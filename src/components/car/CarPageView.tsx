@@ -117,7 +117,7 @@ export type CarPageData = {
   price: number;
   percentOfNew: string | null;
   priceBlock: PriceBlock;
-  /** §4.3 — listings.region, the very field the drawer's region chips read. Empty/null → no line at all. */
+  /** §4.3 — listings.region, the very field the filters window's region chips read. Empty/null → no line at all. */
   region: string | null;
   strip: RubricStrip;
   axis: OwnershipAxis | null;

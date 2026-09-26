@@ -805,8 +805,8 @@ export type LoadedAddress = {
   rerun_written: boolean;
   /**
    * Run 8b §2.1 — the question's model's LIVE FILTER ROWS and km anchors, in place of Run 8's resolved
-   * drawer: the browser resolves the drawer from these, in render, with no call of its own (§2.2). Present
-   * only when the caller asked for it; the car page has no drawer and does not pay.
+   * window: the browser resolves the window from these, in render, with no call of its own (§2.2). Present
+   * only when the caller asked for it; the car page has no filters window and does not pay.
    */
   model_rows: ModelRows | null;
 };
@@ -836,7 +836,7 @@ export async function loadForAddress(publicId: string, viewer: Viewer, options: 
   // fetched from here on, CONCURRENTLY with the run's own load: the page's response is delayed by the slower
   // of the two, never by their sum. It is started here and awaited at the bottom, once per path, so the
   // stored-results path and the re-run path get the same rows from the same fetch. The car page passes
-  // nothing and fetches nothing — it has no drawer.
+  // nothing and fetches nothing — it has no filters window.
   const rowsLoad = options.model_rows === true ? modelRowsFor(resolved.question.model_searched) : null;
   // A rejection here must not be "unhandled" while the run's own load is still in flight; the await below is
   // what surfaces it, loudly, as every failure in this file does.

@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 };
 
 // The screen is mobile-first, so the layout viewport has to be the device's. Without this the phone renders
-// at ~980 px and the bottom "חפש" bar and the drawer are laid out for a screen nobody is holding.
+// at ~980 px and the bottom "חפש" bar and the filters window are laid out for a screen nobody is holding.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,

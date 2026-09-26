@@ -1,8 +1,8 @@
-// The drawer's rules (BRIEF Run 8b §1, §2.4, §3) — PURE, and the only place a chip's state is decided.
+// The filters window's rules (BRIEF Run 8b §1, §2.4, §3) — PURE, and the only place a chip's state is decided.
 //
-// WHERE IT RUNS (§2.2). This module is imported by the results page AND by the browser: resolveDrawer() runs
+// WHERE IT RUNS (§2.2). This module is imported by the results page AND by the browser: resolveFilters() runs
 // where the component renders — on the server for the first paint, in the browser for every edit after it —
-// so a chip click and a price edit make NO server call. Run 8 resolved the drawer in an action and the
+// so a chip click and a price edit make NO server call. Run 8 resolved the filters window in an action and the
 // component rendered only the server's answer, which put a network round trip in front of every click; that
 // is what Run 8b takes out. The one call left is the model's rows (§2.3), and it is not this module's
 // business: this module is given rows and answers questions about them.
@@ -36,7 +36,7 @@ export type ChipGroup = "years" | "kmMax" | "regions";
 /** §1.1 — three states, and no fourth. `off-0` is the one that cannot be clicked on. */
 export type ChipState = "chosen" | "off" | "off-0";
 
-/** A chip as the drawer draws it. `value` is the year, the km ceiling or the region name. */
+/** A chip as the filters window draws it. `value` is the year, the km ceiling or the region name. */
 export type ChipView<V extends number | string = number | string> = {
   group: ChipGroup;
   value: V;
@@ -48,14 +48,14 @@ export type ChipView<V extends number | string = number | string> = {
 export type ChipRef = { group: ChipGroup; value: number | string };
 
 /**
- * The drawer, resolved. `years`/`km`/`regions` are the SHELF's chips in the shelf's own order; `total` is
+ * The filters window, resolved. `years`/`km`/`regions` are the SHELF's chips in the shelf's own order; `total` is
  * the number on the "עדכן · N" button — the pool under the draft as it stands.
  *
  * There is no `effective` and no `emptyCombination` any more (§1.4): after an edit the draft cannot hold a
  * chip at 0, so what "עדכן" sends IS the draft (applyFilters below), and the only way the pool can be empty
  * is a typed price that leaves nothing — which the button says as "עדכן · 0", as it always did.
  */
-export type ResolvedDrawer = {
+export type ResolvedFilters = {
   years: ChipView<number>[];
   km: ChipView<number>[];
   regions: ChipView<string>[];
@@ -76,8 +76,8 @@ export type ModelRows = {
   km_note: string | null;
 };
 
-/** §1.2 / §3 — which chips the drawer offers for one model, in the shelf's usual order. */
-export type DrawerShelf = {
+/** §1.2 / §3 — which chips the filters window offers for one model, in the shelf's usual order. */
+export type FiltersShelf = {
   years: number[];
   km_anchors: number[] | null;
   regions: string[];
@@ -102,10 +102,10 @@ export type DrawerShelf = {
  *
  * THE ONE CASE THIS RULE DOES NOT REACH, flagged in REPORT.md: when `km_anchors` is null the model has no km
  * group at all (counts.ts §5, unchanged) — there is no block for a stored ceiling to join, so a stored
- * `kmMax` is not drawn. It cannot arise from a question asked through this drawer (a ceiling can only be
+ * `kmMax` is not drawn. It cannot arise from a question asked through this window (a ceiling can only be
  * chosen from an anchor), only from anchors deleted after the fact.
  */
-export function shelfOf(model: ModelRows, stored: SearchFilters | null): DrawerShelf {
+export function shelfOf(model: ModelRows, stored: SearchFilters | null): FiltersShelf {
   const storedKm = stored?.kmMax;
   return {
     years: [...new Set([...model.rows.map((r) => r.year), ...(stored?.years ?? [])])].sort((a, b) => a - b),
@@ -190,7 +190,7 @@ function countOf(pool: Filterable[], draft: SearchFilters, group: ChipGroup, val
  * for the on-screen question's own values, which always join the shelf. It is still in the draft, still in
  * `total`, and still released by the first edit like any other chosen chip at 0.
  */
-export function resolveDrawer(pool: Filterable[], shelf: DrawerShelf, draft: SearchFilters): ResolvedDrawer {
+export function resolveFilters(pool: Filterable[], shelf: FiltersShelf, draft: SearchFilters): ResolvedFilters {
   const chosen = new Set(chosenChips(draft).map((c) => idOf(c.group, c.value)));
 
   const view = <V extends number | string>(group: ChipGroup, value: V): ChipView<V> => {
@@ -236,11 +236,11 @@ export function release(pool: Filterable[], draft: SearchFilters): SearchFilters
   return filtersOf(typedOnly(draft), keep);
 }
 
-/** Find a chip in the resolved drawer. A click on a chip the drawer does not offer is a bug, not a no-op. */
-function viewOf(resolved: ResolvedDrawer, chip: ChipRef): ChipView {
+/** Find a chip in the resolved window. A click on a chip the window does not offer is a bug, not a no-op. */
+function viewOf(resolved: ResolvedFilters, chip: ChipRef): ChipView {
   const list: ChipView[] = chip.group === "years" ? resolved.years : chip.group === "kmMax" ? resolved.km : resolved.regions;
   const found = list.find((c) => c.value === chip.value);
-  if (found === undefined) throw new Error(`toggleChip: no ${chip.group} chip ${JSON.stringify(chip.value)} in the resolved drawer`);
+  if (found === undefined) throw new Error(`toggleChip: no ${chip.group} chip ${JSON.stringify(chip.value)} in the resolved window`);
   return found;
 }
 
@@ -253,7 +253,7 @@ function viewOf(resolved: ResolvedDrawer, chip: ChipRef): ChipView {
  *   off      chosen; in a single-select group it replaces whatever the group had chosen
  *   chosen   removed from the chosen set
  */
-export function toggleChip(pool: Filterable[], draft: SearchFilters, resolved: ResolvedDrawer, chip: ChipRef): SearchFilters {
+export function toggleChip(pool: Filterable[], draft: SearchFilters, resolved: ResolvedFilters, chip: ChipRef): SearchFilters {
   const view = viewOf(resolved, chip);
   if (view.state === "off-0") return draft;
 

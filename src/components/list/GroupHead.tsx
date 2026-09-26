@@ -4,10 +4,17 @@
 // and the bottom list of Days 24–25 will draw the same component over the same kind of group.
 //
 // IT KNOWS NO HEBREW. Both strings come in as props, decided by src/lib/display/edge-screens.ts (§2.4).
+//
+// RUN 2b (Days 24–25) §3.1 — THE AIR ABOVE IT IS THIS COMPONENT'S OWN: a 12px top margin on both devices, on
+// top of whatever gap the parent stack already puts between its children, so the heading belongs to its grey
+// line and its rows and stands off from what is above it. It is here and not in the parents because the
+// component is the one place the group object lives (work.md, "מבנה חוזר = מקום אחד בקוד"), and no parent
+// gap changes: the two uncrowned screens go 28 → 40 on the desktop and 16 → 28 on the phone, and the bottom
+// list 16 → 28 on both. Claude's estimate, 26/09 — move by eye on the live site.
 
 export default function GroupHead({ title, line }: { title: string; line: string }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    <div className="mt-3" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {/* §4.3 — 15px on the phone, 16px on the desktop. */}
       <h3 className="text-[15px] md:text-[16px]" style={{ margin: 0, fontWeight: 700, color: "#221f1c" }}>
         {title}

@@ -229,7 +229,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
       sample_size: norm?.sample_size ?? null,
       window_days: norm?.window_days ?? null,
     }),
-    // Run 9 §4.3 — the region line reads THE LISTING's own region, the very field the drawer's region chips
+    // Run 9 §4.3 — the region line reads THE LISTING's own region, the very field the filters window's region chips
     // read; §4.4 — the seller line, which used to carry the dealer's name, word and region, is gone. The
     // dealer row itself is still selected above and still read by everything else that reads it.
     region: listing.region,

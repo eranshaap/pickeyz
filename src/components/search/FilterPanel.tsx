@@ -48,7 +48,7 @@
 // src/lib/search/filters.ts's business, for the search and the counters alike.
 
 import { useEffect, useMemo, useState } from "react";
-import { isUnchanged, release, toggleChip, type ChipState, type ChipView, type ResolvedDrawer } from "@/lib/search/chip-state";
+import { isUnchanged, release, toggleChip, type ChipState, type ChipView, type ResolvedFilters } from "@/lib/search/chip-state";
 import { sameFilters, type Filterable, type SearchFilters } from "@/lib/search/filters";
 import type { FilterName } from "@/app/actions/search";
 import { FILTER_LABEL, num } from "./labels";
@@ -187,7 +187,7 @@ export default function FilterPanel({
    * §1.1 — every chip with its state and its count, as the library resolved them. Nothing here recomputes,
    * and the shelf is not a prop of its own: which chips exist is already in these three lists.
    */
-  resolved: ResolvedDrawer;
+  resolved: ResolvedFilters;
   draft: SearchFilters; // the committed draft: the price in it is the SETTLED price
   poolNow: number | null; // the "עדכן · N" number — the pool under the EFFECTIVE filters
   /** §2.3 — the filters of the question the shown picks answer; null on the opening screen (nothing asked). */
@@ -351,8 +351,11 @@ export default function FilterPanel({
           isUnchanged() is true. The screen's "apply with no change = cancel" runs on the same predicate, so
           an unchanged "עדכן" can never get here busy even if a click did reach the control.
           RUN 2 (Days 24–25) §3.5: this is the window's FOOTER, always visible under the scrolling body. It is
-          the phone sheet's pinned bar with its own classes kept, plus the desktop window's 24px sides (§3.4). */}
-      <div className="shrink-0 border-t border-neutral-200 p-4 md:px-6">
+          the phone sheet's pinned bar with its own classes kept, plus the desktop window's 24px sides (§3.4).
+          RUN 2b (Days 24–25) §5: its top hairline is the SITE's hairline, #e6e2db — the colour the window's own
+          header draws under the title and the colour CarRow.tsx draws between rows. It was Tailwind's own
+          neutral grey, a different colour, so the two lines of one window did not match. */}
+      <div className="shrink-0 border-t border-[#e6e2db] p-4 md:px-6">
         <button
           type="button"
           disabled={busy || unchanged}

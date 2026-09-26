@@ -7,9 +7,9 @@
 // not redirect and do not error. A name that does exist is loaded by the ONE loading rule — which may, when
 // something has changed since the stored run, re-run the question in place and show the new run (§3.2, §4).
 //
-// RUN 7 §1.1 — `open=` IS GONE. Run 6b's car page navigated here to change a filter, carrying the drawer it
-// wanted opened in the address; the car page now opens the same sheet over itself and never navigates to do
-// it. There is no redirect and no error for the old form: an address that still carries `open=` is read
+// RUN 7 §1.1 — `open=` IS GONE. Run 6b's car page navigated here to change a filter, carrying the filters
+// window it wanted opened in the address; the car page now opens the same sheet over itself and never
+// navigates to do it. There is no redirect and no error for the old form: an address that still carries `open=` is read
 // exactly as one that does not, because the parameter is simply not read any more.
 //
 // RUN 1 (Days 20–21) §7 — THE FILE IS BACK AT THE ROOT. It spent Runs 7–9 inside the route group
@@ -45,11 +45,11 @@ export default async function Home(props: PageProps<"/">) {
   // §5 — no `s`, or one that cannot be a public id, is the opening screen. No redirect, no error.
   if (s === null || !isPublicId(s)) return <SearchScreen models={models} />;
 
-  // Run 8b §2.1 — THE MODEL'S FILTER ROWS RIDE IN THIS REQUEST, in place of Run 8's resolved drawer.
+  // Run 8b §2.1 — THE MODEL'S FILTER ROWS RIDE IN THIS REQUEST, in place of Run 8's resolved window.
   // loadForAddress fetches them concurrently with the stored-results load (the seam sits inside the loader,
   // right after the question row is read, so the response is delayed by the slower of the two and not by
-  // their sum). The screen builds the shelf and resolves the drawer from them IN RENDER — here for the first
-  // paint, in the browser for every edit after it (§2.2) — so the drawer is full from the first frame and a
+  // their sum). The screen builds the shelf and resolves the window from them IN RENDER — here for the first
+  // paint, in the browser for every edit after it (§2.2) — so the window is full from the first frame and a
   // chip click never waits for the network.
   const loaded = await loadForAddress(s, await viewerFromCookies(), { model_rows: true });
   if (loaded === null) return <SearchScreen models={models} />; // nothing exists behind that name

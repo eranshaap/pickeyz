@@ -3,9 +3,9 @@
 // The screen's server actions (BRIEF Days 15–16, Run 2b §6). Three of them, and nothing else crosses the wire.
 //
 //   ask()             one question -> one `searches` row (+ its `search_results` rows) -> the three raw picks
-//   modelFilterRows() Run 8b §2.3 — THE MODEL-ROWS CALL, and the drawer's only call left: one model in, its
-//                     live filter rows and km anchors out. It replaces Run 8's drawer(), which took a draft
-//                     and returned a resolved drawer — one round trip per settled edit, which is exactly the
+//   modelFilterRows() Run 8b §2.3 — THE MODEL-ROWS CALL, and the filters window's only call left: one model in,
+//                     its live filter rows and km anchors out. It replaces Run 8's resolving action, which took
+//                     a draft and returned a resolved window — one round trip per settled edit, which is exactly the
 //                     delay Run 8b removes. Called ONLY when the active model changes to a model whose rows
 //                     are not already in hand; the browser resolves every chip itself, from these rows.
 //   liveModels()      the model bar's list; called on the SERVER in page.tsx, and available to the client for a retry

@@ -119,16 +119,16 @@ async function loadKmAnchors(make: string, model: string): Promise<{ anchors: nu
 }
 
 /**
- * Run 8b §2.1 / §2.4 — THE WHOLE OF WHAT THE DRAWER NEEDS FROM THE DATABASE, in one fetch of the model's
+ * Run 8b §2.1 / §2.4 — THE WHOLE OF WHAT THE FILTERS WINDOW NEEDS FROM THE DATABASE, in one fetch of the model's
  * live listings plus the anchors row: the rows the chips are counted over and the anchors the km chips are.
  *
  * Nothing about a chip is decided here and the SHELF IS NOT BUILT HERE ANY MORE (§2.4): its arithmetic —
  * the years and regions with stock, the km chips from the anchors, and §3's join of the stored question's own
  * values — is pure and moved to src/lib/search/chip-state.ts (shelfOf), which the browser can import. Run 8's
- * drawerInput() and the ShelfView it returned are gone with the resolved drawer they served: the page and the
- * model-rows action hand these rows over, and resolveDrawer() runs where the component renders (§2.2).
+ * input builder and the ShelfView it returned are gone with the resolved window they served: the page and the
+ * model-rows action hand these rows over, and resolveFilters() runs where the component renders (§2.2).
  *
- * The rows are the counters' own rows — the same `Filterable` the search cuts with — so the drawer's numbers
+ * The rows are the counters' own rows — the same `Filterable` the search cuts with — so the window's numbers
  * and the search's pool can never be measured differently.
  */
 export async function modelRows(model: string): Promise<ModelRows> {

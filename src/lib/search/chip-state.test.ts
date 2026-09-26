@@ -1,4 +1,4 @@
-// BRIEF Run 8b §6 — the drawer's rules, on small synthetic pools. Pure: no database, no clock, no DOM.
+// BRIEF Run 8b §6 — the filters window's rules, on small synthetic pools. Pure: no database, no clock, no DOM.
 //
 // Every case is one of the fifteen §6 names. Run 8's thirteen are replaced, not dropped: the four that were
 // about the DORMANT chip (a chip that went grey at 0, stayed in the chosen set and woke by itself) are gone
@@ -7,7 +7,7 @@
 //
 // The pools are hand-built so that the arithmetic can be read off the rows: a "car" here is the Filterable
 // the search itself cuts with (filters.ts), which is exactly what the page, the model-rows action and the
-// browser all hand to resolveDrawer().
+// browser all hand to resolveFilters().
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -16,12 +16,12 @@ import {
   draftFromQuestion,
   isUnchanged,
   release,
-  resolveDrawer,
+  resolveFilters,
   shelfOf,
   toggleChip,
-  type DrawerShelf,
+  type FiltersShelf,
   type ModelRows,
-  type ResolvedDrawer,
+  type ResolvedFilters,
 } from "./chip-state";
 import type { Filterable, SearchFilters } from "./filters";
 
@@ -44,7 +44,7 @@ const POOL: Filterable[] = [
 const ANCHORS = [60_000, 90_000];
 
 /** The shelf of the pool above: the years with stock, the two km anchors, the regions present. */
-const SHELF: DrawerShelf = { years: [2021, 2022], km_anchors: ANCHORS, regions: ["צפון", "מרכז"] };
+const SHELF: FiltersShelf = { years: [2021, 2022], km_anchors: ANCHORS, regions: ["צפון", "מרכז"] };
 
 /** One model's rows, as §2.1 carries them to the browser. */
 const rowsOf = (rows: Filterable[], km_anchors: number[] | null = ANCHORS): ModelRows => ({
@@ -55,9 +55,9 @@ const rowsOf = (rows: Filterable[], km_anchors: number[] | null = ANCHORS): Mode
   km_note: null,
 });
 
-const resolve = (draft: SearchFilters, pool: Filterable[] = POOL, shelf: DrawerShelf = SHELF) => resolveDrawer(pool, shelf, draft);
+const resolve = (draft: SearchFilters, pool: Filterable[] = POOL, shelf: FiltersShelf = SHELF) => resolveFilters(pool, shelf, draft);
 
-const chip = (r: ResolvedDrawer, group: "years" | "kmMax" | "regions", value: number | string) =>
+const chip = (r: ResolvedFilters, group: "years" | "kmMax" | "regions", value: number | string) =>
   (group === "years" ? r.years : group === "kmMax" ? r.km : r.regions).find((c) => c.value === value);
 
 /** What a settled price does: the draft with the new bounds, then the release (§1.2) — FilterPanel's settle(). */
@@ -289,11 +289,11 @@ describe("Run 8b §6 — the chip-state library", () => {
     assert.deepEqual(bare.years, [2022]);
     assert.deepEqual(bare.regions, ["מרכז"]);
     assert.deepEqual(bare.km_anchors, [60_000, 90_000]);
-    assert.equal(chip(resolveDrawer(model.rows, bare, { years: [2019] }), "years", 2019), undefined);
+    assert.equal(chip(resolveFilters(model.rows, bare, { years: [2019] }), "years", 2019), undefined);
 
     // a model with no anchors at all has no km group, as it always did
     assert.equal(shelfOf(rowsOf(model.rows, null), stored).km_anchors, null);
-    assert.deepEqual(resolveDrawer(model.rows, shelfOf(rowsOf(model.rows, null), null), {}).km, []);
+    assert.deepEqual(resolveFilters(model.rows, shelfOf(rowsOf(model.rows, null), null), {}).km, []);
   });
 
   it("15. applyFilters after an edit never contains a chip at 0", () => {
