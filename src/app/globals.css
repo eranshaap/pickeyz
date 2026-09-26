@@ -17,6 +17,14 @@
      reintroduce a second font — `font-mono`, and the <code> in the empty-category card, included. */
   --font-sans: var(--font-app);
   --font-mono: var(--font-app);
+
+  /* BRIEF Run 2 (Days 24–25) §1.1 — THE SITE'S ONE PHONE/DESKTOP BOUNDARY: 900 px at the browser's default
+     text size, and every `md:` class in src/ follows it (findCar-now.md, "גבול הפריסות"). Written in rem
+     because Tailwind's own breakpoints are rem and it sorts the breakpoints by value within one unit —
+     56.25rem sits between the default `sm` (40rem) and `lg` (64rem), so the order is unchanged. It is the
+     only breakpoint this project declares; `src/lib/display/layout.ts` carries the same number for
+     JavaScript and a test pins the two together. */
+  --breakpoint-md: 56.25rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,6 +37,14 @@
 /* §4.1 — the ONE declaration that governs the page. Everything else inherits it. */
 html {
   font-family: var(--font-app);
+}
+
+/* BRIEF Run 2 (Days 24–25) §3.8 — THE PAGE MAY NOT SHIFT WHEN THE FILTERS WINDOW OPENS. The window locks the
+   page behind it with `overflow: hidden` on this element for its lifetime; on Windows, hiding the scrollbar
+   that way widens the page by the scrollbar's width, and a 17px jump at open and at close would be an
+   animation the rule forbids (only the fade animates). The gutter is therefore reserved at all times. */
+html {
+  scrollbar-gutter: stable;
 }
 
 body {

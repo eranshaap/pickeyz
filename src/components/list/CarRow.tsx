@@ -102,7 +102,7 @@ function DesktopRow({ row }: CarRowProps) {
 
 function PhoneRow({ row }: CarRowProps) {
   // Run 2b §1 — `flex` is a CLASS here and never an inline `display`: an inline declaration beats a stylesheet
-  // rule whatever media query guards it, so an inline `display: flex` kept this anchor on at ≥768px and drew
+  // rule whatever media query guards it, so an inline `display: flex` kept this anchor on at ≥900px and drew
   // every desktop row twice. Every other layout value of this tree stays inline, as the file's convention has it.
   return (
     <Link

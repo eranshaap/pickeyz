@@ -27,6 +27,7 @@ import CarRow, { CarRows } from "@/components/list/CarRow";
 import GroupHead from "@/components/list/GroupHead";
 import PlaceCard, { PlaceCardGrid } from "@/components/list/PlaceCard";
 import type { ResultsView } from "@/lib/search/load";
+import { RESULTS_CONTAINER_CLASS } from "@/lib/display/layout";
 
 const GREY = "#665f58";
 
@@ -36,9 +37,10 @@ export default function UncrownedResults({ answer }: { answer: ResultsView }) {
   const cancelledGroup = answer.list.cancelledGroup;
 
   return (
-    // §5.1 / §5.2 — the site's 1280 container: `36px 48px 40px` with a column gap of 28 on the desktop,
-    // `20px 16px 28px` with a gap of 16 on the phone.
-    <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-4 px-4 pt-5 pb-7 md:gap-7 md:px-12 md:pt-9 md:pb-10">
+    // §5.1 / §5.2 — the results screen's container (Days 24–25 §2.2: 1,440 with 48px sides, one class for
+    // every state of the screen): `36px 48px 40px` with a column gap of 28 on the desktop, `20px 16px 28px`
+    // with a gap of 16 on the phone. Only the width moved — the paddings and the gaps are Run 2's own.
+    <div className={`${RESULTS_CONTAINER_CLASS} flex flex-col gap-4 px-4 pt-5 pb-7 md:gap-7 md:pt-9 md:pb-10`}>
       {/* the head — the same gap of 8 on both, the sizes stepping down on the phone */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <h1 className="text-[22px] leading-[1.3] md:text-[28px] md:leading-[1.25]" style={{ margin: 0, fontWeight: 800 }}>

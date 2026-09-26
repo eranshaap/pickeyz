@@ -1,7 +1,14 @@
 "use client";
 
-// The filters (BRIEF Days 15–16, Run 2b §5; Run 2c §7 and §12) — the drawer on mobile, the fixed panel on
-// desktop. One component: the screen decides where it sits, this decides what it says.
+// The filters (BRIEF Days 15–16, Run 2b §5; Run 2c §7 and §12) — WHAT IS INSIDE THE FILTERS WINDOW, and only
+// that: the four groups in a scrolling box, and the "עדכן · N" button under it.
+//
+// RUN 2 (Days 24–25) §3.2 — THE CHROME IS GONE FROM HERE. Until this run one component drew both the phone's
+// sliding sheet and the desktop's 320 px side panel that never closed, and it carried their frame: its own
+// title row with its own × (hidden at md, since the panel could not be closed), and the width and the side
+// placement its host gave it. Filters are now edited in ONE place on both devices — FiltersWindow.tsx, a modal
+// <dialog> — and the frame is that file's: the title, the close button, the 780 px, the fade, the dim, the
+// scroll lock. What is left here is the two regions the window lays out, unchanged in logic, look and labels.
 //
 // THE DRAFT vs THE QUESTION. Everything here edits the DRAFT. Nothing here asks anything — pressing "עדכן"
 // is the only commit, and it is one call. The picks never update live.
@@ -11,7 +18,7 @@
 // therefore never moves that group's own numbers. No arrows, no colours, no deltas. One template for every
 // chip (§0.10): the label on top, the count beneath it, both centred, the width coming from the label, every
 // chip carrying the count line — `0` included — so nothing grows or shrinks when a number changes. Tabular
-// digits, no animation. The numbers arrive with the drawer; the last ones stay on screen until the new ones
+// digits, no animation. The numbers arrive with the window; the last ones stay on screen until the new ones
 // come, and there is no spinner.
 //
 // RUN 8b §1.1 — THREE CHIP STATES, AND THIS FILE DECIDES NONE OF THEM. Every chip arrives carrying its state
@@ -48,7 +55,6 @@ import { FILTER_LABEL, num } from "./labels";
 
 const UPDATE = "עדכן";
 const HELD = "—"; // §0.3 — what the button reads while a price is being edited
-const CLOSE = "סגירה";
 const NOTHING_LEFT = "הצירוף לא משאיר רכבים";
 const PRICE_MAX_LABEL = "עד";
 const PRICE_MIN_LABEL = "מ-";
@@ -109,7 +115,7 @@ const BUTTON_DISABLED: React.CSSProperties = { background: "#d8d3cb", color: "#6
 
 // §0.10 — one template for every chip. Two lines, centred; the width comes from the label and the min-width
 // is a safety net for a long count, not the normal case; every chip carries the count line so the heights
-// match whatever the numbers are. The count is never absent: the drawer is resolved in render (§2.2), so
+// match whatever the numbers are. The count is never absent: the groups are resolved in render (§2.2), so
 // there is no render in which a chip exists without its number.
 //
 // §1.1 — THE THREE STATES, drawn and not decided. `chosen` keeps today's chosen look and `off` keeps today's
@@ -169,8 +175,6 @@ export default function FilterPanel({
   focus,
   onDraftChange,
   onAsk,
-  onCancel,
-  persistentOnDesktop,
   busy = false,
 }: {
   /**
@@ -188,12 +192,9 @@ export default function FilterPanel({
   poolNow: number | null; // the "עדכן · N" number — the pool under the EFFECTIVE filters
   /** §2.3 — the filters of the question the shown picks answer; null on the opening screen (nothing asked). */
   stored: SearchFilters | null;
-  focus: FilterName | null; // the filter the drawer was opened on (§5)
+  focus: FilterName | null; // the filter the window was opened on (§5)
   onDraftChange: (next: SearchFilters) => void;
   onAsk: (filters: SearchFilters) => void;
-  onCancel: (() => void) | null;
-  /** true once this is the desktop panel (§5): it never closes there, so it carries no close control at md. */
-  persistentOnDesktop: boolean;
   /**
    * Run 7 §7.3 / Run 7c §11.3 — a commit is in flight: "עדכן" is disabled and carries a spinner from the
    * click until the NEW SCREEN IS ON. It is the screen's own pending state, the same one that puts the
@@ -245,7 +246,7 @@ export default function FilterPanel({
     commit(release(pool, current));
   }
 
-  // §5 — opened on a rubric, the drawer arrives already at that filter.
+  // §5 — opened on a rubric, the window arrives already at that filter.
   useEffect(() => {
     if (focus === null) return;
     document.getElementById(`filter-${focus}`)?.scrollIntoView({ block: "start", behavior: "auto" });
@@ -285,21 +286,10 @@ export default function FilterPanel({
 
   return (
     <>
-      <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
-        <h2 className="text-lg font-semibold text-neutral-900">פילטרים</h2>
-        {onCancel !== null && (
-          <button
-            type="button"
-            aria-label={CLOSE}
-            className={`rounded-full px-3 py-1 text-2xl leading-none text-neutral-500 hover:bg-neutral-100 ${persistentOnDesktop ? "md:hidden" : ""}`}
-            onClick={onCancel}
-          >
-            ×
-          </button>
-        )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
+      {/* THE BODY — the window's one scrolling region (§3.1): `overscroll-contain` so that reaching its end
+          does not hand the gesture to the page behind. §3.4 — padding 24 inside the desktop window; the phone
+          keeps the full-bleed body it had as a sheet, where the window IS the screen. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain md:p-6">
         {/* מחיר — two text fields, "עד" first and prominent, no slider, and NO number of its own (§12) */}
         <Block name="price">
           <h3 className="font-medium text-neutral-900">{FILTER_LABEL.price}</h3>
@@ -359,8 +349,10 @@ export default function FilterPanel({
           acknowledged for as long as anything is happening.
           Run 8 §2.3: it is ALSO disabled — in the board's greys, with the number still shown — while
           isUnchanged() is true. The screen's "apply with no change = cancel" runs on the same predicate, so
-          an unchanged "עדכן" can never get here busy even if a click did reach the control. */}
-      <div className="border-t border-neutral-200 p-4">
+          an unchanged "עדכן" can never get here busy even if a click did reach the control.
+          RUN 2 (Days 24–25) §3.5: this is the window's FOOTER, always visible under the scrolling body. It is
+          the phone sheet's pinned bar with its own classes kept, plus the desktop window's 24px sides (§3.4). */}
+      <div className="shrink-0 border-t border-neutral-200 p-4 md:px-6">
         <button
           type="button"
           disabled={busy || unchanged}

@@ -3,13 +3,13 @@
 // The question row (BRIEF Run 6b §6) — ONE component, both screens, replacing QuestionLine.tsx.
 //
 // It lives inside the white top bar next to the brand name, on the results screen and on the car page, and
-// it shows THE QUESTION THAT WAS ASKED, never a draft: while the drawer is open and the draft has moved,
+// it shows THE QUESTION THAT WAS ASKED, never a draft: while the filters window is open and the draft has moved,
 // this row does not move with it.
 //
 // TWO MODES, AND THE SCREEN PICKS ONE (Run 7c §11.2):
 //
 //   the results screen   THE ROW IS A CONTROL. The model opens the search bar in place; a chip opens the
-//                        screen's own drawer. Everything below about the editor is this mode's.
+//                        screen's own filters window. Everything below about the editor is this mode's.
 //   the car page         THE ROW IS TEXT, and nothing in it reacts to a click: no search bar, no sheet, no
 //                        "+ פילטרים" chip, no hover underline, no handler of any kind. "חזרה" is the only
 //                        way to change the question, and it changes it on the results screen. Same layout,
@@ -17,7 +17,7 @@
 //                        text #665f58, the chips' border #c9c3b9.
 //
 // That reverses Run 7 §1's car-page half, and with it Run 6b's "from the car page a chip → results with the
-// drawer open". On the car page there is no reason to change the question, so it cannot be changed there:
+// filters open". On the car page there is no reason to change the question, so it cannot be changed there:
 // the page no longer mounts FilterPanel or the search bar, and the open / apply / cancel plumbing that
 // served it is gone. THE TWO MODES ARE TWO COMPONENTS so that the read-only one mounts none of it — no
 // state, no history listener, no server action. Nothing on the results screen changed.
@@ -115,7 +115,10 @@ type Props =
       /** The asked question's model key — what makes "the same model" a cancel. */
       modelKey: string;
       nav: ScreenNav;
-      /** The results screen's own drawer opener: the drawer is part of that screen's layout. */
+      /**
+       * The results screen's own filters opener, and the SAME handler on both devices since Run 2 (Days
+       * 24–25) §3.3: the window it opens is the one place a filter is edited.
+       */
       onOpenFilters: (focus: FilterName | null) => void;
       /** §6 — while the editor is open the host dims the page and drops the back link from the row. */
       onEditingChange: (editing: boolean) => void;
@@ -166,7 +169,7 @@ function ReadOnlyRow({ modelDisplay, filters, active }: RowQuestion) {
 }
 
 // ---------------------------------------------------------------------------
-// the results screen's row: the model opens the search bar, a chip opens the drawer
+// the results screen's row: the model opens the search bar, a chip opens the filters window
 // ---------------------------------------------------------------------------
 
 function EditableRow({
@@ -287,7 +290,11 @@ function EditableRow({
   if (!editing) {
     return (
       <div className={ROW}>
-        <button type="button" onClick={open} className={`${MODEL} text-[#221f1c] underline decoration-1 underline-offset-4 md:no-underline md:hover:underline`}>
+        {/* RUN 2 (Days 24–25) §5 — NO PERMANENT UNDERLINE ON THE PHONE. It was there to say "this is a
+            control", and on a screen where every other control says so by being a chip it said "this is a
+            link" instead. The desktop's hover underline is untouched, and so is the car page's caption row,
+            which has never had either. */}
+        <button type="button" onClick={open} className={`${MODEL} text-[#221f1c] decoration-1 underline-offset-4 md:hover:underline`}>
           {modelDisplay}
         </button>
 
