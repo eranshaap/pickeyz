@@ -25,6 +25,13 @@ const assistant = Assistant({
   variable: "--font-assistant",
 });
 
+// BRIEF Run 3 (Days 24–25) §4.4 — `suppressHydrationWarning` ON <html>, AND NOWHERE ELSE. The inline script
+// of PickCards writes the pick form's attribute and the photo box's two custom properties onto this element
+// while the browser is still parsing the page, so that the server-rendered first paint of the recommendations
+// screen is already the right form at the right size. Those three things are not React's, and React compares the DOM
+// against its own output when it hydrates; this attribute is the standard way to tell it that on this one
+// element the DOM wins (Next.js, "How to prevent flash before hydration"). It suppresses nothing below <html>.
+//
 // Metadata and viewport only (BRIEF Run 2b, ALLOWED). The element, the lang and the dir are untouched —
 // `dir="rtl"` was already set and every screen relies on it.
 export const metadata: Metadata = {
@@ -41,7 +48,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="he" dir="rtl" className={`${assistant.variable} h-full antialiased`}>
+    <html lang="he" dir="rtl" suppressHydrationWarning className={`${assistant.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

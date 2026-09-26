@@ -366,9 +366,12 @@ export default function CarPageView({ data }: { data: CarPageData }) {
           <h2 className="text-[17px] font-extrabold md:text-[18px]" style={{ color: data.color }}>
             {OWNERSHIP_HEADING}
           </h2>
-          {/* Run 7 §2.3 — ONE tick system now: the phone no longer drops every year tick by rule, it drops
-              whichever labels do not clear, by the same collision rule the desktop uses. The axis is still
-              rendered twice only because each copy measures its own card. */}
+          {/* Run 7 §2.3 / Run 2b (Days 24-25) §4.1 — TWO RULES, ONE TREE: on the desktop scaleLayout()
+              decides which year marks clear, by the collision rule, and the scale draws exactly those; below
+              the site's 900px boundary the phone carries the two END marks alone, whatever scaleLayout() would
+              have cleared (findCar-now.md, "היסטוריית בעלויות"). The two copies below are the SAME tree — the boundary
+              lives inside it, on the year mark's own span — and the axis is rendered twice only because each
+              copy measures its own card. */}
           <div className="md:hidden">
             <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
           </div>

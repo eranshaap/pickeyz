@@ -27,6 +27,23 @@
   --breakpoint-md: 56.25rem;
 }
 
+/* BRIEF Run 3 (Days 24–25) §4.1 — THE COMPACT FORM OF THE THREE RECOMMENDATION CARDS, as ONE variant.
+   The cards are one DOM in two desktop layouts (§4): the plain `md:` state is the upright form and
+   `pick-compact:` overrides it with the compact one. Which is on is a single attribute on <html>, written
+   before the first paint by the inline script of §4.4 and on every resize by the hook of §5 — both through
+   applyFirstScreen() in src/lib/display/first-screen.ts, which is the one writer.
+
+   The boundary is NOT retyped: `theme(--breakpoint-md)` is the one `--breakpoint-md` declaration above, which
+   is what every `md:` class already follows, so the two layouts can never part company at the edge. Below it
+   the variant never matches and the phone's base classes draw the cards, untouched. */
+@custom-variant pick-compact {
+  @media (width >= theme(--breakpoint-md)) {
+    html[data-pick-form="compact"] & {
+      @slot;
+    }
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;

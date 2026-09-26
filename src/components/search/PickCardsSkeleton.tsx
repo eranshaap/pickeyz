@@ -1,4 +1,5 @@
-// The recommendations area's placeholders (BRIEF Run 7c §11.3; rebuilt to the new card by Run 1 §6).
+// The recommendations area's placeholders (BRIEF Run 7c §11.3; rebuilt to the new card by Run 1 §6, and to
+// the two desktop forms by Run 3 §6).
 //
 // These are the three grey cards Run 7 §7.2 drew in a route-level `loading.tsx`, which is gone: this is a
 // pending state of the results screen ITSELF, in the browser, shown only for a navigation that screen started
@@ -7,8 +8,15 @@
 // §6 — THE POINT IS THAT THE SCREEN DOES NOT JUMP, so the placeholders take the NEW card's frame and not a
 // rectangle of their own: the §3.0 row, a card at the three-card width with the same border and radius, the
 // 6px strip, and inside it a block per row of the real card at that row's own height — the label with its
-// 40×3 bar, the 196px photo (a 4/3 frame on the phone, §5), the title, the price, the rubric strip between
-// its two hairlines, and the 44px button (46 on the phone).
+// 40×3 bar, the photo, the title, the price, the rubric strip between its two hairlines, and the 44px button
+// (46 on the phone).
+//
+// RUN 3 §6 — AND THE SAME GRID, THE SAME VARIANT AND THE SAME PHOTO BOX as PickCards.tsx §4.2: the card's
+// inner container is one DOM in two desktop layouts, so a placeholder drawn as a flex column would have the
+// wrong form and the wrong height the moment the window asks for the compact one. The classes below are
+// written out rather than imported, as every other measurement of this file already is — it is the card's
+// frame copied, and PickCards.tsx is where it is decided. The photo block is sized by the SAME two custom
+// properties the real photo is, with the same `100%` / `auto` fallback, so the two boxes are one box.
 //
 // NO TEXT AND NO DUMMY DATA (§7.2): a skeleton that invents a price or a model name would be showing a car
 // that is not there. Everything below is a block in today's skeleton tone.
@@ -22,6 +30,15 @@ function Block({ className, style }: { className?: string; style?: React.CSSProp
   return <div className={className} style={{ background: BLOCK, ...style }} />;
 }
 
+/** §6 / §4.2 — the card's grid, and its rows for a card with no sentence (a placeholder never has one). */
+const GRID =
+  "flex grow flex-col gap-3 p-4 md:grid md:grid-cols-1 md:gap-x-0 md:gap-y-[10px] md:px-5 md:py-4 " +
+  "pick-compact:grid-cols-[var(--pick-photo-w,1fr)_minmax(130px,1fr)] pick-compact:gap-x-[12px] pick-compact:p-4 " +
+  "md:grid-rows-[auto_auto_auto_auto_auto_1fr] pick-compact:grid-rows-[auto_auto_auto_auto_1fr]";
+
+/** §6 / §4.2 — everything that is not the photo, the title or the price spans both compact columns. */
+const FULL_ROW = "pick-compact:col-span-2";
+
 export default function PickCardsSkeleton() {
   return (
     <div aria-hidden className="flex flex-col items-stretch justify-center gap-6 md:flex-row">
@@ -34,15 +51,15 @@ export default function PickCardsSkeleton() {
           {/* §3.1 — the 6px strip, flush with the edge; grey, because no category is known yet. */}
           <Block className="h-1.5 shrink-0" />
 
-          <div className="flex grow flex-col gap-3 p-4 md:gap-3.5 md:p-5">
+          <div className={GRID}>
             {/* §3.2 — the label and its bar */}
-            <div className="flex flex-col gap-1.5">
+            <div className={`flex flex-col gap-1.5 ${FULL_ROW}`}>
               <Block className="h-[25px] w-[132px] rounded-sm" />
               <Block className="rounded-sm" style={{ width: 40, height: 3 }} />
             </div>
 
-            {/* §3.3 / §5 — the photo frame */}
-            <Block className="aspect-[4/3] w-full rounded-lg md:aspect-auto md:h-[196px]" />
+            {/* §3.3 / §4.2 — the photo frame, in the very box the real photo gets */}
+            <Block className="aspect-[4/3] w-full rounded-lg md:h-[var(--pick-photo-h,auto)] md:w-[var(--pick-photo-w,100%)] md:max-w-full md:justify-self-center pick-compact:col-start-1 pick-compact:row-span-2" />
 
             {/* §3.4 — the title */}
             <Block className="h-6 w-3/5 rounded-sm" />
@@ -51,7 +68,7 @@ export default function PickCardsSkeleton() {
             <Block className="h-9 w-2/5 rounded-sm" />
 
             {/* §3.6 — the rubric strip, between its own two hairlines */}
-            <div className="grid border-t border-b border-[#e6e2db] py-2.5" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+            <div className={`grid border-t border-b border-[#e6e2db] py-2.5 ${FULL_ROW}`} style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
               {[0, 1, 2].map((c) => (
                 <div key={c} className={`flex flex-col gap-0.5 ${c === 0 ? "px-1" : "border-s border-[#e6e2db] px-2.5 md:px-3"}`}>
                   <Block className="h-6 w-4/5 rounded-sm" />
@@ -61,7 +78,7 @@ export default function PickCardsSkeleton() {
             </div>
 
             {/* §3.9 — the button, at the bottom of the card as on the real one */}
-            <div className="mt-auto">
+            <div className={`mt-auto ${FULL_ROW}`}>
               <Block className="h-[46px] w-full rounded-lg md:h-11" />
             </div>
           </div>
