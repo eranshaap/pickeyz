@@ -468,10 +468,14 @@ export default function SearchScreen({
         {/* The opening screen: the bar centred, the collapsed cluster once a model is chosen, "חפש" below.
             The ~200 ms merge of Run 2b is kept: the bar collapses upward and the question row takes its
             place, and `motion-reduce` turns that off for anyone who asked the system for less motion.
-            Overflow is hidden only while collapsing — the model bar's dropdown hangs out of this box. */}
+            Overflow is hidden only while collapsing — the model bar's dropdown hangs out of this box.
+            A fixed-position descendant escapes `overflow: hidden` and `opacity: 0` does not stop pointer
+            events, so the collapsed block must be `invisible` AND carry the attribute below — the platform's
+            own way to take a whole subtree out of interaction — or its pinned "חפש" button stays tappable
+            under the results on the phone (Run 3c, Days 24–25). */}
         <div
-          className={`transition-all duration-200 ease-out motion-reduce:transition-none ${answered ? "max-h-0 overflow-hidden opacity-0" : "max-h-[80vh] overflow-visible opacity-100"}`}
-          aria-hidden={answered}
+          className={`transition-all duration-200 ease-out motion-reduce:transition-none ${answered ? "invisible max-h-0 overflow-hidden opacity-0" : "max-h-[80vh] overflow-visible opacity-100"}`}
+          inert={answered}
         >
           <div className="flex flex-col items-center gap-4 px-4 pt-[20vh] pb-6">
             <div className="w-full max-w-md">
