@@ -88,7 +88,13 @@ export const PICK_PAD_COMPACT_SIDE_PX = 16;
 //
 // Every addend is summed from the classes §4.2 writes, with Assistant's `normal` line height taken as 1.308
 // (ascent 1021 + |descent| 287, unitsPerEm 1000) wherever no `leading-*` is set. The row gap of the card's
-// grid is 10 in both forms (`md:gap-y-[10px]`).
+// grid is 10 in both forms (`md:gap-y-[10px]`), and so is the gap INSIDE the title-and-price block
+// (`md:gap-[10px]` on TITLE_PRICE_BLOCK).
+//
+// RUN 3b §3.2 — THE CHROME DID NOT MOVE, AND NO CONSTANT BELOW CHANGED. §3.1 made the title and the price one
+// block element, so the upright grid has one row fewer: its row gaps go from × 5 to × 4 (50 → 40) and the 10 px
+// that used to separate the two lines is now the block's own gap — the same 10 px, in a different owner, so the
+// upright sum is the 279 it was. In the compact form the two were never addends and the sum is the 196 it was.
 //
 //   addend                      class (PickCards.tsx)                       upright   compact
 //   ------------------------------------------------------------------------------------------
@@ -100,21 +106,23 @@ export const PICK_PAD_COMPACT_SIDE_PX = 16;
 //   the bar and its gap         `md:gap-[5px]` + `height: 3`                       8         8
 //   the title                   `md:text-[20px]` / `pick-compact:text-[18px]`
 //                               at `leading-[1.2]`                                24         — (beside the photo)
+//   the block's own gap         `md:gap-[10px]` on TITLE_PRICE_BLOCK              10         — (beside the photo)
 //   the price                   `md:text-[32px]` / `pick-compact:text-[26px]`
 //                               at `leading-[1.1]`                                35         — (beside the photo)
 //   the rubric strip            `border-t`+`border-b` (2) · `md:py-2` (16) ·
 //                               value `md:text-[16px]`/`[15px]` · `gap-0.5` (2) ·
 //                               label `md:text-[12px]`/`[11px]`                   57        54
 //   the button                  `md:h-10` (both desktop forms)                    40        40
-//   the grid's row gaps         `md:gap-y-[10px]` × 5 (upright: labels · photo ·
-//                               title · price · rubrics · bottom) / × 3
-//                               (compact: labels · photo+text · rubrics ·
-//                               bottom)                                           50        30
+//   the grid's row gaps         `md:gap-y-[10px]` × 4 (upright: labels · photo ·
+//                               the title-and-price block · rubrics · bottom)
+//                               / × 3 (compact: labels · photo+block · rubrics ·
+//                               bottom)                                           40        30
 //   ------------------------------------------------------------------------------------------
 //   TOTAL                                                                        279       196
 //
-// In the COMPACT form the title and the price sit BESIDE the photo, in the two rows the photo spans, so they
-// are not addends there: the photo's own height is what those two rows come to.
+// In the COMPACT form the title and the price sit BESIDE the photo, in the ONE row the photo takes, so neither
+// they nor the block's gap are addends there: that row is `auto`, so its height is the taller of the photo and
+// the block — the photo everywhere but at its floor — and the block is centred on it (decision 25).
 
 /** The base chrome of the upright form — see the table above. */
 export const PICK_CHROME_UPRIGHT_PX = 279;

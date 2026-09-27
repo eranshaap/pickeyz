@@ -10,9 +10,10 @@
 // the same current-ownership word (§2.1). Nothing here decides what a value means.
 //
 // WHAT A CARD IS, TOP TO BOTTOM (§3.1–§3.9): the 6px strip in its colour · the label(s), each in its OWN
-// colour with a 40×3 bar · the photo · the title without a comma · the price with the new-price share · three
-// rubrics with fixed grey labels · the sentence, when there is one · the runner-up strip, on the cheapest card
-// only · the button, pinned to the bottom of every card so the three land on one line.
+// colour with a 40×3 bar · the photo · the title without a comma and the price with the new-price share, the two
+// as ONE block (Run 3b §3.1, decision 25) · three rubrics with fixed grey labels · the sentence, when there is
+// one · the runner-up strip, on the cheapest card only · the button, pinned to the bottom of every card so the
+// three land on one line.
 //
 // RUN 3 §4 — ONE DOM, TWO DESKTOP LAYOUTS. Those components, in that order, are the card on every screen; what
 // changes above the site's boundary is only where the photo sits and how big it is:
@@ -96,23 +97,26 @@ const PHOTO_BOX_MARK = "pick-photo-box";
  *             no-script case, before any writer has run — the fallbacks are `100%` and `auto`, which is the
  *             full inner width at 4:3, the same box the phone gets.
  *   upright   centred in its column when it is narrower than it (decision 23).
- *   compact   the first column, spanning the title's row and the price's.
+ *   compact   the first column of ONE row — Run 3b §3.1: the title and the price are now one block beside it in
+ *             that same row, so the photo no longer spans two rows that grow apart.
  * Run 1's `md:aspect-auto` and its fixed desktop band are both gone: that band is what this run replaces.
  */
 const PHOTO_BOX =
   `${PHOTO_BOX_MARK} block aspect-[4/3] w-full rounded-lg ` +
   "md:h-[var(--pick-photo-h,auto)] md:w-[var(--pick-photo-w,100%)] md:max-w-full md:justify-self-center " +
-  "pick-compact:col-start-1 pick-compact:row-span-2";
+  "pick-compact:col-start-1";
 
 /**
- * §4.2 — THE CARD'S GRID, as written. The children stay in today's DOM order — labels · photo · title · price ·
- * rubrics · sentence (when present) · bottom — and the two forms place them differently:
+ * §4.2 / Run 3b §3.1 — THE CARD'S GRID, as written. The children stay in today's DOM order — labels · photo ·
+ * [title · price] · rubrics · sentence (when present) · bottom, the title and the price being ONE block element
+ * in every form (TITLE_PRICE_BLOCK below) — and the two forms place them differently:
  *
  *   upright   one column; the rows in that order; padding 16 top and bottom and 20 at the sides; row gap 10.
  *   compact   two columns, `var(--pick-photo-w) minmax(130px, 1fr)` — the photo column at the inline START,
  *             which in RTL is the right edge, like the "מקום N" card (decision 23) — with a column gap of 12
  *             (PICK_COMPACT_GAP_PX) and padding 16 on every side. The labels, the rubrics, the sentence and
- *             the bottom go across both columns; the photo spans the title's row and the price's.
+ *             the bottom go across both columns; the photo takes column 1 of ONE row and the block column 2 of
+ *             that same row, centred on it (decision 25).
  *
  * The LAST row is `1fr` in both, which is what pins the button to the bottom of the card whatever the card
  * above it holds, so the three buttons land on one line across a row of equal-height cards. The number of
@@ -120,17 +124,32 @@ const PHOTO_BOX =
  * names as literals and can never be handed a computed one.
  */
 const GRID_BASE = "flex grow flex-col gap-3 p-4 md:grid md:grid-cols-1 md:gap-x-0 md:gap-y-[10px] md:px-5 md:py-4 pick-compact:grid-cols-[var(--pick-photo-w,1fr)_minmax(130px,1fr)] pick-compact:gap-x-[12px] pick-compact:p-4";
-/** labels · photo · title · price · rubrics · bottom */
-const GRID_UPRIGHT_ROWS = "md:grid-rows-[auto_auto_auto_auto_auto_1fr]";
+/** labels · photo · the title-and-price block · rubrics · bottom */
+const GRID_UPRIGHT_ROWS = "md:grid-rows-[auto_auto_auto_auto_1fr]";
 /** … with the sentence between the rubrics and the bottom */
-const GRID_UPRIGHT_ROWS_SENTENCE = "md:grid-rows-[auto_auto_auto_auto_auto_auto_1fr]";
-/** labels · (photo beside title, then price) · rubrics · bottom */
-const GRID_COMPACT_ROWS = "pick-compact:grid-rows-[auto_auto_auto_auto_1fr]";
+const GRID_UPRIGHT_ROWS_SENTENCE = "md:grid-rows-[auto_auto_auto_auto_auto_1fr]";
+/** labels · (photo beside the title-and-price block, one row) · rubrics · bottom */
+const GRID_COMPACT_ROWS = "pick-compact:grid-rows-[auto_auto_auto_1fr]";
 /** … with the sentence between the rubrics and the bottom */
-const GRID_COMPACT_ROWS_SENTENCE = "pick-compact:grid-rows-[auto_auto_auto_auto_auto_1fr]";
+const GRID_COMPACT_ROWS_SENTENCE = "pick-compact:grid-rows-[auto_auto_auto_auto_1fr]";
 
-/** §4.2 — everything that is not the photo and not the title or the price goes across both compact columns. */
+/** §4.2 — everything that is not the photo and not the title-and-price block goes across both compact columns. */
 const FULL_ROW = "pick-compact:col-span-2";
+
+/**
+ * Run 3b §3.1 (decision 25) — THE TITLE AND THE PRICE AS ONE BLOCK, the same DOM in every form.
+ *
+ * A flex column carrying the distance the grid's row gap used to give the two lines: 12 on the phone (`gap-3`,
+ * the base grid's own gap, so the phone renders exactly as it did) and 10 on both desktop forms (`md:gap-[10px]`,
+ * the grid's `md:gap-y-[10px]`). The grid therefore has one row fewer than it had, and nothing moves: in the
+ * upright form the 10 px simply crossed from a grid gap into this element's gap (§3.2 — the chrome sum stays).
+ *
+ * In the COMPACT form it is column 2 of the photo's one row, `self-center`: the row is `auto`, so its height is
+ * the taller of the two, and the block sits in the middle of it with the same air above and below. That is the
+ * whole of decision 25 — before it, the photo spanned two `auto` rows which grew apart, pinning the title to the
+ * photo's top edge and the price near its middle.
+ */
+const TITLE_PRICE_BLOCK = "flex flex-col gap-3 md:gap-[10px] pick-compact:self-center";
 
 type Card = AskResult["cards"][number];
 type RunnerUp = NonNullable<AskResult["runner_up"]>;
@@ -296,25 +315,29 @@ function PickCard({ card, runnerUp, questionPublicId }: { card: Card; runnerUp: 
             (findCar-now.md). */}
         <Photo src={card.image} className={PHOTO_BOX} />
 
-        {/* §3.4 — the title: no comma, the 0.4em spacer comes from CarTitle itself. §4.2 — 20 / 18. */}
-        <div className="text-[19px] font-bold leading-[1.2] md:text-[20px] pick-compact:text-[18px]" style={{ color: DARK }}>
-          <CarTitle model={card.model} year={card.year} />
-        </div>
+        {/* Run 3b §3.1 — the title and the price as ONE block: one grid row, centred on the photo's height in
+            the compact form. */}
+        <div className={TITLE_PRICE_BLOCK}>
+          {/* §3.4 — the title: no comma, the 0.4em spacer comes from CarTitle itself. §4.2 — 20 / 18. */}
+          <div className="text-[19px] font-bold leading-[1.2] md:text-[20px] pick-compact:text-[18px]" style={{ color: DARK }}>
+            <CarTitle model={card.model} year={card.year} />
+          </div>
 
-        {/* §3.5 — the price, and the new-price share beside it; with no new-price row there is NO element.
-            §4.2 — the price 32 / 26, its share line 13 in both. */}
-        <div className="flex flex-wrap items-baseline gap-x-2.5">
-          <span
-            className="text-[30px] font-extrabold leading-[1.1] tabular-nums md:text-[32px] pick-compact:text-[26px]"
-            style={{ color: DARK }}
-          >
-            {shekel(card.price)}
-          </span>
-          {card.new_price_pct !== null && (
-            <span className="text-[13px]" style={{ color: GREY }}>
-              {card.new_price_pct}
+          {/* §3.5 — the price, and the new-price share beside it; with no new-price row there is NO element.
+              §4.2 — the price 32 / 26, its share line 13 in both. */}
+          <div className="flex flex-wrap items-baseline gap-x-2.5">
+            <span
+              className="text-[30px] font-extrabold leading-[1.1] tabular-nums md:text-[32px] pick-compact:text-[26px]"
+              style={{ color: DARK }}
+            >
+              {shekel(card.price)}
             </span>
-          )}
+            {card.new_price_pct !== null && (
+              <span className="text-[13px]" style={{ color: GREY }}>
+                {card.new_price_pct}
+              </span>
+            )}
+          </div>
         </div>
 
         <Rubrics card={card} />

@@ -1,8 +1,9 @@
-// BRIEF Days 24–25, Run 1 §6.2 — THE LIST'S ONE ASSEMBLY, on the same stored-row fixtures §6.1 uses. No
-// database: list.ts is pure, and the per-row values arrive through the `dataOf` seam that load.ts fills.
+// BRIEF Days 24–25, Run 1 §6.2 (Run 3b §1.5) — THE LIST'S ONE ASSEMBLY, on the same stored-row fixtures §6.1
+// uses. No database: list.ts is pure, and the per-row values arrive through the `dataOf` seam that load.ts fills.
 //
 // Every expectation is the brief's own number, written out: the places on the three cards, the seven table rows,
-// the rows the closed list holds back, the two groups, `hiddenCount` and the two texts.
+// the rows each closed box holds back, the two groups, and — Run 3b §1 — the hidden count and the closing-row
+// text OF EACH BOX, the cancelled rows counted by neither.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -109,10 +110,16 @@ describe("§6.2 — assembleList() over fixture A: three cards, 17 ranked, 4 no-
     assert.deepEqual(list.cancelledGroup, cancelledGroupHead(1));
   });
 
-  it("hiddenCount = 7 + 2 + 1 = 10, and the closing row says so", () => {
-    assert.equal(list.hiddenCount, 10);
-    assert.equal(list.moreLink, moreCarsLink(10));
-    assert.equal(list.moreLink, "הצג את 10 הרכבים הנוספים");
+  it("Run 3b §1.1 — a count and a link PER BOX: the table 7, the group 4 − 2 = 2, the 1 cancelled in neither", () => {
+    assert.equal(list.tableHidden, 7);
+    assert.equal(list.tableMoreLink, moreCarsLink(7));
+    assert.equal(list.tableMoreLink, "הצג את 7 הרכבים הנוספים");
+    assert.equal(list.noPriceHidden, 2);
+    assert.equal(list.noPriceMoreLink, moreCarsLink(2));
+    assert.equal(list.noPriceMoreLink, "הצג את 2 הרכבים הנוספים");
+    // §1.4 — the cancelled row is in neither count, and the sum of the two is the old single link's 10 less it.
+    assert.equal(list.cancelled.length, 1);
+    assert.equal(list.tableHidden + list.noPriceHidden, 9);
   });
 
   it("a row carries the ListRow view, with the generator's two fields empty (§3)", () => {
@@ -147,8 +154,11 @@ describe("§6.2 — fixture B2: one card, so the list starts at place 2", () => 
 // §6.2 — the three small fixtures: what the closed list holds back, at the three interesting counts
 // ---------------------------------------------------------------------------
 
-/** Three picks at ranks 1–3, then `ranked` scored rows, then `noPrice` unscored ones. No cancelled car. */
-function small(ranked: number, noPrice: number): PlaceRow[] {
+/**
+ * Three picks at ranks 1–3, then `ranked` scored rows, then `noPrice` unscored ones, then `cancelled` unscored
+ * rows carrying the cancellation record (Run 3b §1.5 — the cancelled group needs a fixture of its own).
+ */
+function small(ranked: number, noPrice: number, cancelled = 0): PlaceRow[] {
   const rows: PlaceRow[] = [];
   let rank = 0;
   for (let i = 0; i < 3; i += 1) {
@@ -163,30 +173,84 @@ function small(ranked: number, noPrice: number): PlaceRow[] {
     rank += 1;
     rows.push({ listing_id: idAt(rank), rank, recommendation_categories: [], total_score: null, stage_b_trace: [] });
   }
+  for (let i = 0; i < cancelled; i += 1) {
+    rank += 1;
+    rows.push({ listing_id: idAt(rank), rank, recommendation_categories: [], total_score: null, stage_b_trace: [cancelledRecord()] });
+  }
   return rows;
 }
 
-describe("§6.2 — the closing row's three cases", () => {
-  it("13 ranked + 3 no-price: 3 held back below, 1 above -> 4", () => {
+describe("§6.2 / Run 3b §1.5 — the closing row of each box", () => {
+  it("13 ranked + 3 no-price: the table holds 3, the group holds 1 — each link over its OWN count", () => {
     const list = assembleList(small(13, 3), dataOf);
     assert.equal(list.restRanked.length, 3);
-    assert.equal(list.hiddenCount, 4);
-    assert.equal(list.moreLink, "הצג את 4 הרכבים הנוספים");
+    assert.equal(list.tableHidden, 3);
+    assert.equal(list.tableMoreLink, "הצג את 3 הרכבים הנוספים");
+    assert.equal(list.noPriceHidden, 1);
+    assert.equal(list.noPriceMoreLink, "הצג את הרכב הנוסף");
   });
 
-  it("10 ranked + 3 no-price: one car only -> the singular form", () => {
+  it("10 ranked + 3 no-price: the table holds nothing, so only the group has a closing row", () => {
     const list = assembleList(small(10, 3), dataOf);
     assert.deepEqual(list.restRanked, []);
-    assert.equal(list.hiddenCount, 1);
-    assert.equal(list.moreLink, "הצג את הרכב הנוסף");
+    assert.equal(list.tableHidden, 0);
+    assert.equal(list.tableMoreLink, null);
+    assert.equal(list.noPriceHidden, 1);
+    assert.equal(list.noPriceMoreLink, "הצג את הרכב הנוסף");
   });
 
-  it("10 ranked + 2 no-price: nothing is held back -> no closing row at all", () => {
+  it("11 ranked + 3 no-price: one car hidden in EACH box -> the singular text in both", () => {
+    const list = assembleList(small(11, 3), dataOf);
+    assert.equal(list.tableHidden, 1);
+    assert.equal(list.tableMoreLink, "הצג את הרכב הנוסף");
+    assert.equal(list.tableMoreLink, moreCarsLink(1));
+    assert.equal(list.noPriceHidden, 1);
+    assert.equal(list.noPriceMoreLink, "הצג את הרכב הנוסף");
+  });
+
+  it("10 ranked + 2 no-price: neither box hides anything -> no closing row at all", () => {
     const list = assembleList(small(10, 2), dataOf);
-    assert.equal(list.hiddenCount, 0);
-    assert.equal(list.moreLink, null);
+    assert.equal(list.tableHidden, 0);
+    assert.equal(list.tableMoreLink, null);
+    assert.equal(list.noPriceHidden, 0);
+    assert.equal(list.noPriceMoreLink, null);
     assert.deepEqual(list.cancelled, []);
     assert.equal(list.cancelledGroup, null);
+  });
+});
+
+describe("Run 3b §1.5 — 44 ranked, 6 no-price, 2 cancelled: 31 and 4, the 2 counted by neither", () => {
+  // 44 scored cars, three of them picks -> 41 ranked rows: 3 cards, 7 table rows, 31 held back.
+  const list = assembleList(small(41, 6, 2), dataOf);
+
+  it("the table hides 31 and the group hides 4", () => {
+    assert.equal(list.restRanked.length, 31);
+    assert.equal(list.tableHidden, 31);
+    assert.equal(list.tableMoreLink, "הצג את 31 הרכבים הנוספים");
+    assert.equal(list.noPrice.length, 6);
+    assert.equal(list.noPriceHidden, 4);
+    assert.equal(list.noPriceMoreLink, "הצג את 4 הרכבים הנוספים");
+  });
+
+  it("§1.4 — the 2 cancelled cars are in the cancelled group and in NEITHER count", () => {
+    assert.equal(list.cancelled.length, 2);
+    assert.deepEqual(list.cancelledGroup, cancelledGroupHead(2));
+    assert.equal(list.tableHidden + list.noPriceHidden, 35); // 31 + 4, the 2 nowhere in it
+  });
+
+  it("§1.4 — the cancelled rows belong to that group ALONE, which is what puts them last on the screen", () => {
+    const ids = list.cancelled.map((r) => r.public_id);
+    // The two last stored rows: three picks and 41 ranked rows take ranks 1–44, the six no-price ones 45–50.
+    assert.deepEqual(ids, [idAt(51), idAt(52)].map(pidOf));
+    assert.deepEqual(placesOf(list.cancelled), [null, null]);
+    for (const box of [list.cards, list.table, list.restRanked, list.noPrice]) {
+      assert.equal(box.some((r) => ids.includes(r.public_id)), false);
+    }
+  });
+
+  it("decision 4 — the no-price heading keeps counting all 6 while the closed group shows two rows", () => {
+    assert.deepEqual(list.noPriceGroup, groupHead(6));
+    assert.equal(list.noPrice.slice(0, NO_PRICE_DEFAULT).length, 2);
   });
 });
 

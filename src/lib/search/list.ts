@@ -1,11 +1,17 @@
-// The bottom list of the recommendations screen (BRIEF Days 24–25, Run 1 §2) — ONE pure assembly, from the
-// stored rows of one search to everything the list draws: how many cards, how many cars, the heading, the three
-// "מקום N" cards, the table's rows, the rows the closed list holds back, the two groups at the end, and the
-// closing row's text.
+// The bottom list of the recommendations screen (BRIEF Days 24–25, Run 1 §2; Run 3b §1) — ONE pure assembly,
+// from the stored rows of one search to everything the list draws: how many cards, how many cars, the heading,
+// the three "מקום N" cards, the table's rows, the rows each closed box holds back, the two groups at the end,
+// and the closing row's text OF EVERY BOX THAT HIDES ROWS.
 //
 // IT DECIDES NOTHING ABOUT A CAR. Which kind a row is and what place it shows are places.ts's (§1); every value
 // a row prints is load.ts's ONE mapping, the very one the three big cards use (§2.2) — this module only puts the
 // rows in their lists, in their order, and counts.
+//
+// RUN 3b §1 — A COUNT AND A LINK PER BOX, NOT ONE FOR THE WHOLE LIST (decision 21): the ranked table hides its
+// places 14 and on, the no-price group hides everything past its two default rows, and each box carries its own
+// hidden count and its own closing-row text, counting its own rows only. The cancelled group is counted by
+// neither and has no closing row at all: it is drawn at the end of the list whenever it has rows, closed or
+// open (decision 22), announcing itself with its own heading and count.
 //
 // THE WHOLE LIST IS IN THE PAGE FROM THE FIRST RENDER (§2.3, decision 7): `restRanked`, the rest of the no-price
 // group and the cancelled group are all here, closed or open. The click of §4.4 reveals them; it fetches
@@ -88,14 +94,21 @@ export type ListView = {
    * none — a group object is never drawn empty.
    */
   noPriceGroup: Head | null;
-  /** The cars in final cancellation, in the tail's stored order — the last group of the open list. */
+  /**
+   * The cars in final cancellation, in the tail's stored order — the LAST group of the list, drawn whenever it
+   * has rows, in the closed state as much as in the open one (Run 3b §1.4, decision 22).
+   */
   cancelled: ListRow[];
   /** §5.1 — the group object above `cancelled`; null when there are none. */
   cancelledGroup: Head | null;
-  /** How many rows the CLOSED list is holding back. 0 → no closing row. */
-  hiddenCount: number;
-  /** The closing row's text (§5.3), or null when the closed list holds nothing back. */
-  moreLink: string | null;
+  /** Run 3b §1.1 — how many ranked rows the CLOSED table is holding back: `restRanked`. 0 → no closing row. */
+  tableHidden: number;
+  /** The table's closing-row text (§5.3) over ITS count, or null when the table holds nothing back. */
+  tableMoreLink: string | null;
+  /** Run 3b §1.1 — how many no-price rows the closed group holds back: everything past NO_PRICE_DEFAULT. */
+  noPriceHidden: number;
+  /** The no-price group's closing-row text over ITS count, or null when the group holds nothing back. */
+  noPriceMoreLink: string | null;
 };
 
 /**
@@ -135,7 +148,10 @@ export function assembleList(rows: readonly PlaceRow[], dataOf: (listing_id: num
   const table = ranked.slice(LIST_CARDS, LIST_CARDS + LIST_ROWS);
   const restRanked = ranked.slice(LIST_CARDS + LIST_ROWS);
 
-  const hiddenCount = restRanked.length + Math.max(0, noPrice.length - NO_PRICE_DEFAULT) + cancelled.length;
+  // Run 3b §1.1 — each box counts ITS OWN hidden rows and nothing else; the cancelled rows are counted by
+  // neither box, because the cancelled group has no closing row (§1.4).
+  const tableHidden = restRanked.length;
+  const noPriceHidden = Math.max(0, noPrice.length - NO_PRICE_DEFAULT);
   const more = x - cardCount;
 
   return {
@@ -149,7 +165,9 @@ export function assembleList(rows: readonly PlaceRow[], dataOf: (listing_id: num
     noPriceGroup: noPrice.length === 0 ? null : groupHead(noPrice.length),
     cancelled,
     cancelledGroup: cancelled.length === 0 ? null : cancelledGroupHead(cancelled.length),
-    hiddenCount,
-    moreLink: hiddenCount > 0 ? moreCarsLink(hiddenCount) : null,
+    tableHidden,
+    tableMoreLink: tableHidden > 0 ? moreCarsLink(tableHidden) : null,
+    noPriceHidden,
+    noPriceMoreLink: noPriceHidden > 0 ? moreCarsLink(noPriceHidden) : null,
   };
 }
