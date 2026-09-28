@@ -7,7 +7,7 @@
 
 export const JUSTIFICATION_GENERATOR_VERSION = 1;
 // changelog:
-// 1 — Days 22–23: the first generator — the library, the wordings file, the thresholds below
+// 1 — Days 22–23: the first generator — the library, the wordings file, the thresholds below; section ב (28/09): the further facts of a "ראש שקט" page judged by the reality reading
 
 // from what effect on the score, in points, an ownership or km fact is worth a sentence; below it the line is
 // empty; not applied to a pick's reason.

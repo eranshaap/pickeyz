@@ -50,6 +50,7 @@ export * from "./constants";
 export * from "./wordings";
 export { fairAmount, fairLine, kmSentence, priceExpression } from "./price";
 export { carFacts, largestComponent, type CarFacts, type ComponentName } from "./facts";
+export { carsFromSelection, crownedOf } from "./input";
 export { buildContext, cheaperThanCheapest, countOwnership, form, holds, lowestKm, type Form, type OwnershipFact, type SearchContext } from "./claims";
 export type {
   CarJustification,
@@ -288,7 +289,12 @@ function whyLines(ctx: SearchContext, car: JustificationCar, f: CarFacts, writte
   if (written.sentence !== "" && written.fact !== "price") lines.push(written.sentence);
   if (f.cancelled) return lines; // no rows to read: no extra facts
   const extras: { name: ComponentName; v: number }[] = [];
-  if (f.ownership_effect !== null && f.verified) extras.push({ name: "ownership", v: f.ownership_effect });
+  // Eran, 28/09 (section B): on a car whose labels include "peace_of_mind" the further facts are judged by the
+  // reality reading, like the category and the first line (index.ts:245); every other car by the ordinary
+  // reading. (BRIEF §1.1 writes this line's two names in Hebrew; Run 2 §3 lets no Hebrew letter into this file,
+  // not even in a comment — wordings.test.ts:103-114 — so they stand here as the codes they are.)
+  const own = car.categories.includes("peace_of_mind") ? f.ownership_effect_reality : f.ownership_effect;
+  if (own !== null && f.verified) extras.push({ name: "ownership", v: own });
   if (f.km_effect !== null) extras.push({ name: "km", v: f.km_effect });
   const ordered = extras
     .filter((e) => Math.abs(e.v) >= JUSTIFICATION_MIN_EFFECT_PCT && FAMILY[e.name] !== written.fact)

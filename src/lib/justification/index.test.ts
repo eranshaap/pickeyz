@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { checkOutput, justify } from "./index";
-import { car, fillers, search, untriggered } from "./fixtures";
+import { car, fillers, search, untriggered, type CarSpec } from "./fixtures";
 import { JUSTIFICATION_GENERATOR_VERSION, RUNNER_UP_FACT_MAX_CHARS, SENTENCE_MAX_CHARS } from "./constants";
 import { RULE, TAG_CHEAPER_THAN_CHEAPEST } from "./wordings";
 import type { CarJustification, JustificationOutput, JustificationSearch } from "./types";
@@ -391,6 +391,61 @@ describe("§6.6 — the car page", () => {
     const out = justify(search([car({ id: 1, cancelled: "2026-03-15" }), car({ id: 2, thin: true, ...HAND1 })]));
     assert.deepEqual(rowOf(out, 1).page.why_lines, ["בוטל ב-3/2026"]);
     assert.deepEqual(rowOf(out, 2).page.why_lines, []);
+  });
+});
+
+// -----------------------------------------------------------------------------------------------------------
+describe("section ב — the further facts of a ראש שקט page", () => {
+  // Eran, 28/09: a zero-km car that changed hands again. The PAPER reading is −11 — the zero-km deal's own −10
+  // applied in full, and −1 for the owner count; the REALITY reading is −1, because the category ignores the
+  // deal's own row. km is +6. The car is the only one of the search at hand 3 and up.
+  const KM_SENTENCE = '6 אלף ק"מ מתחת לממוצע לשנתון';
+  const HAND_LINE = "היחיד בחיפוש ביד 3 ומעלה";
+  const zeroKmHand3 = (over: Partial<CarSpec> = {}) =>
+    car({
+      id: 2,
+      history: -11,
+      reality: -1,
+      typical: 0,
+      km: 6,
+      km_declared: 54_000,
+      median_km: 60_000,
+      owners: [
+        { ym: "2020-01", type: "leasing" },
+        { ym: "2020-06", type: "private" },
+        { ym: "2023-03", type: "private" },
+      ],
+      paper_hand: 3,
+      zero_km: true,
+      deductions: [
+        { for: "zero_km_leasing", pct: -10, applied: -10, rule: "largest_in_full" },
+        { for: "owners:3", pct: -1, applied: -1, rule: "halved" },
+      ],
+      ...over,
+    });
+
+  it("(a) a peace_of_mind pick: the extra is judged by the reality reading, so the hand line does not appear", () => {
+    // The first line is the km sentence (favourable by the reality reading: km +6 against ownership −1); the
+    // ownership extra is judged by −1 and stays below JUSTIFICATION_MIN_EFFECT_PCT; km is the sentence's own
+    // family. Before section ב the paper −11 would have added the hand line.
+    const out = justify(search([cheapestPick(), zeroKmHand3({ categories: ["peace_of_mind"] })]));
+    const row = rowOf(out, 2);
+    assert.equal(row.sentence, KM_SENTENCE);
+    assert.deepEqual(row.page.why_lines, [KM_SENTENCE]);
+  });
+
+  it("(b) the same car as a best_value pick: the ordinary reading, so the paper −11 writes the hand line", () => {
+    const out = justify(search([cheapestPick(), zeroKmHand3({ categories: ["best_value"] })]));
+    const row = rowOf(out, 2);
+    assert.equal(row.fact, "price"); // the reason is the price expression, so the section has no first line
+    assert.deepEqual(row.page.why_lines, [HAND_LINE, KM_SENTENCE]);
+  });
+
+  it("(c) a peace_of_mind pick whose reality reading is −4: a real further hand shows under it too", () => {
+    const out = justify(search([cheapestPick(), zeroKmHand3({ categories: ["peace_of_mind"], reality: -4 })]));
+    const row = rowOf(out, 2);
+    assert.equal(row.sentence, KM_SENTENCE);
+    assert.deepEqual(row.page.why_lines, [KM_SENTENCE, HAND_LINE]);
   });
 });
 
