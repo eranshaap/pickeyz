@@ -7,9 +7,15 @@ import type { CandidateListing, Category, Eligibility, PeaceOfMindFloorEffect } 
 import { RULE_TYPE } from "./types";
 import { invoiceRow } from "./util";
 
+// Days 22–23 (Run 2 §4.1) — the four readers below touch nothing but the invoice and the listing id, so that is
+// all they ask for: the justification library calls them with { breakdown: car.invoice, listing_id: car.listing_id }
+// and there is ONE definition of "a thin cell" and of "a registry reading" in the repository, not two. Every
+// existing caller passes a CandidateListing and is unaffected.
+type InvoiceOf = Pick<CandidateListing, "breakdown" | "listing_id">;
+
 // Day 18 rules v6 (§8): the engine's cancelled invoice. Every other reader of the invoice below asks this first —
 // a cancelled invoice has no rows, no sold signal and no sums to read.
-export function isCancelled(l: CandidateListing): boolean {
+export function isCancelled(l: InvoiceOf): boolean {
   return isCancelledInvoice(l.breakdown);
 }
 
@@ -24,20 +30,20 @@ export function isSoldMedium(l: CandidateListing): boolean {
 
 // A thin cell: the price row is unavailable with reason thin_cell. Eligible for no category, and — since the
 // three flags are what the runner-up filters on — not a runner-up either (Day 14 rules v5, §0.4).
-export function isThinCell(l: CandidateListing): boolean {
+export function isThinCell(l: InvoiceOf): boolean {
   const price = invoiceRow(l.breakdown, "price", l.listing_id);
   return price.status === "unavailable" && price.reason === "thin_cell";
 }
 
 // Day 14 rules v5 (§0.1) — the history row's `source` exactly as the engine stored it, or null when the row is
 // not a scored reading. 'mot' = the registry; 'typical' = the cell's median standing in (engine §0.4).
-export function historySource(l: CandidateListing): string | null {
+export function historySource(l: InvoiceOf): string | null {
   const row = invoiceRow(l.breakdown, "history", l.listing_id);
   return row.source ?? null;
 }
 
 // Eligible for a pick <=> the history row exists as a scored reading AND its source is the registry.
-export function hasVerifiedHistory(l: CandidateListing): boolean {
+export function hasVerifiedHistory(l: InvoiceOf): boolean {
   const row = invoiceRow(l.breakdown, "history", l.listing_id);
   return row.status === "scored" && row.source === "mot";
 }

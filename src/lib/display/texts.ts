@@ -11,6 +11,7 @@
 
 import type { Category } from "@/lib/selection";
 import type { OwnershipType } from "@/lib/scoring/types";
+import { fairAmount, fairLine } from "@/lib/justification";
 
 // ---------------------------------------------------------------------------
 // numbers
@@ -83,27 +84,16 @@ export function pageColor(labels: Category[]): string {
 
 // Run 9 §4.2 — THE SHORT FORM. "של רכבים כאלה" is gone from all three: the comparison sentence that used
 // to name the comparison group went with it (§4.1), and the phrase has to stand on one line under the price.
-// These three constants are the phrase's ONE home — fairLine() below is its only producer, priceBlock() its
-// only caller, and the pick cards do not spell it at all.
-const BELOW_MARKET = "מתחת לשווי השוק";
-const ABOVE_MARKET = "מעל לשווי השוק";
-const AT_MARKET = "במחיר השוק";
 const THIN_CELL_LINE = "אין השוואת מחיר — פחות מ-5 רכבים דומים הוצעו למכירה";
 
-/** The deal in shekels, rounded to the nearest 100: `listings.score ÷ 100 × median_price` of the norm row. */
-export function fairAmount(score: number, median_price: number): number {
-  return Math.round((score / 100) * median_price / 100) * 100;
-}
-
-/**
- * §8.2 — the shared expression. Positive = the car is under the market by that much; negative = over it by
- * that much (the sign is carried by the word, never by the digits); rounding to 0 = at the market price.
- */
-export function fairLine(score: number, median_price: number): string {
-  const amount = fairAmount(score, median_price);
-  if (amount === 0) return AT_MARKET;
-  return `${shekel(Math.abs(amount))} ${amount > 0 ? BELOW_MARKET : ABOVE_MARKET}`;
-}
+// Days 22–23 (Run 2 §7) — THE PRICE EXPRESSION MOVED. fairAmount() and fairLine() now live in
+// src/lib/justification/price.ts, and the three wordings they used to keep here as module-private constants live
+// in that library's wordings file: the line under the price and the generator's price sentence are ONE string,
+// produced once. Behaviour is unchanged — the same amount, the same rounding, the same three wordings — so
+// priceBlock() below and the car page are untouched, and this re-export is the whole of the change here.
+// priceBlock() below calls fairLine(), so the two names are imported at the top of this file and re-exported
+// there: a bare `export ... from` would publish them without binding them in this module.
+export { fairAmount, fairLine };
 
 // Run 9 §4.1 — comparedToLine() IS GONE. "הושווה ל-{N} רכבים דומים שהוצעו למכירה ב-{D} הימים האחרונים" was
 // deleted, not hidden: it is no longer produced anywhere. `sample_size` and `window_days` themselves are
