@@ -1,7 +1,7 @@
 // Stage B selection library — every number it uses (BRIEF Day 12 part 2, §5; part 3, §1–§3).
 // Each constant carries its source line as a comment. No other number lives anywhere else in src/lib/selection/.
 
-export const RULES_VERSION = 8;
+export const RULES_VERSION = 9;
 // 1 — Day 12 — first selection rules
 // 2 — Day 12 — double_winner tracking only (a car may win more than one category); cheapest bar -5 (was 0); peace_of_mind deal floor -10; cheapest_runner_up recorded (band 5%, gap 2)
 // 3 — Day 12 — peace_of_mind deal floor tracking only: the category is condition alone by definition; the absolute price ceiling will come from the new-car price file
@@ -10,6 +10,7 @@ export const RULES_VERSION = 8;
 // 6 — Day 18 — cancelled: a car finally cancelled at the registry (engine v4's cancelled invoice) is ineligible for every category and the runner-up; it stays in the tail
 // 7 — Days 20-21 — the crowning gate: a cut pool with fewer than CROWNING_THRESHOLD cars eligible to win crowns nothing; the cheapest runner-up is never one of the picks
 // 8 — Days 22–23: the condition floor (CONDITION_FLOOR, renamed from CHEAPEST_CONDITION_FLOOR) is an eligibility condition for all three categories and the runner-up, recorded as rule condition_floor with effect ineligible, its sole-barred first candidate carrying blocked_first; NO_DEAL_ORDER = history_desc; CROWNING_THRESHOLD counts eligible = with a comparison, registry history, not below the floor (with_comparison / verified / eligible).
+// 9 — Days 22–23 — cheapest_runner_up acts: a runner-up is named only when its deal_score exceeds the cheapest pick's by RUNNER_UP_DEAL_GAP (2) or more; below it (gap 0 and negative included) runner_ups.cheapest is null and the screen draws no strip; the record on the cheapest pick is still written in full; both runner-up constants unchanged
 
 // below_threshold: a listing priced under this share of its cell's median is an error, not a deal.
 // mechanism — the sum of the engine's caps (history 40 + km 11 = 51), rounded. In force.
@@ -46,11 +47,11 @@ export const PEACE_OF_MIND_DEAL_FLOOR = -10;
 export const PEACE_OF_MIND_FLOOR_EFFECT: 'none' | 'excluded' = 'none';
 
 // cheapest_runner_up: how much pricier than the cheapest pick a car may be and still count as "a little more money".
-// guess — measured from the recorded price_over_pct distribution. Recorded only.
+// guess — measured from the recorded price_over_pct distribution. Forms the band; whether the band's best car is named is the gap rule (rules v9).
 export const RUNNER_UP_PRICE_BAND_PCT = 5;
 
 // cheapest_runner_up: how many deal_score points above the cheapest pick count as "clearly better".
-// guess — measured from the recorded gap distribution. Recorded only.
+// guess — measured from the recorded gap distribution (still recorded below the gap). Acts from rules v9: below it the search has no runner-up.
 export const RUNNER_UP_DEAL_GAP = 2;
 
 // unverified_history: a pick requires registry ownership history — the invoice's history row must be a real

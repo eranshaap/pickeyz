@@ -195,7 +195,7 @@ export type ViewCard = DrawnCar & {
 // PlaceCard the bottom list draws, from the same row view, so there is one row type and not two: `ListRow`
 // (src/lib/search/list.ts), whose `place` is the DISPLAYED place of §1 rather than the stored rank.
 
-/** The runner-up strip's data — only ever set when the cheapest pick recorded one. */
+/** The runner-up strip's data — only ever set when the cheapest pick's record names a runner-up AND its verdict is true (rules v9). */
 export type ViewRunnerUp = {
   public_id: string;
   model: string;
@@ -330,8 +330,9 @@ function traceOf(row: ResultRow): RuleTrace[] {
  * cheapest pick's row is recommended by definition — so the one `cheapest_runner_up` record it carries is in
  * the column.
  *
- *   no cheapest pick / no record          → null (§2.1: present whenever the record exists)
+ *   no cheapest pick / no record          → null (present only when the record exists and its verdict is true)
  *   the record says it was not evaluated  → null
+ *   the record's triggered is false       → null (rules v9: recorded, not named)
  *   two records                           → a throw; one row can only have been measured once
  */
 export function storedRunnerUpListing(rows: readonly ResultRow[]): number | null {
@@ -344,6 +345,7 @@ export function storedRunnerUpListing(rows: readonly ResultRow[]): number | null
   }
   const entry = entries[0];
   if (entry.context.evaluated === false) return null; // no candidate in the band
+  if (entry.triggered !== true) return null; // rules v9 — the verdict: the band's best car is not RUNNER_UP_DEAL_GAP better, so the search has no runner-up
   const listing_id = entry.context.runner_up;
   if (typeof listing_id !== "number") {
     throw new Error(`storedRunnerUpListing: listing ${cheapest.listing_id}'s ${RUNNER_UP_RULE} record was evaluated but names no runner_up`);
@@ -560,7 +562,7 @@ export function resultsViewFrom(input: {
     color: card.color,
   }));
 
-  // §2.1 — the runner-up, whenever the cheapest pick recorded one. Also when `cheapest` is one label of a
+  // §2.1 — the runner-up, whenever the cheapest pick's record is triggered (rules v9). Also when `cheapest` is one label of a
   // multi-winner card: the record sits on that pick's row whatever else it won.
   let runner_up: ViewRunnerUp | null = null;
   const runnerUpId = storedRunnerUpListing(rows);

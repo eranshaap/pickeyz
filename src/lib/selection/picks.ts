@@ -126,7 +126,10 @@ function blockedFirst(shown: Work[], picks: Record<Category, number | null>): vo
 // pick (any of the three; a double winner is one row) is never a candidate. With no candidate outside the picks
 // the outcome is the same as an empty band. P1's also_won is gone with it — the case it recorded cannot occur.
 // priced in (C.price, C.price * (1 + band/100)], the one with the highest deal_score (ties → lower price → earlier
-// first_seen_at → lower listing_id). Recorded on C; value = its deal_score − C's, threshold RUNNER_UP_DEAL_GAP. Never acts.
+// first_seen_at → lower listing_id). Recorded on C; value = its deal_score − C's, threshold RUNNER_UP_DEAL_GAP.
+// Acts from rules v9 (Days 22–23): the runner-up is named (runner_ups.cheapest set) only when triggered — gap >= RUNNER_UP_DEAL_GAP;
+// below it, gap 0 and negative gaps included, runner_ups.cheapest is null. The record on C is written in full in every case,
+// so the gap distribution stays measurable and the screen (search/load.ts) reads the verdict off it.
 function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionResult["runner_ups"]["cheapest"] {
   if (cheapestId === null) return null; // no C → not evaluated, nothing recorded
   const C = shown.find((w) => w.input.listing_id === cheapestId);
@@ -178,5 +181,5 @@ function cheapestRunnerUp(shown: Work[], cheapestId: number | null): SelectionRe
     effect: "none",
     context: { runner_up: ru.input.listing_id, price_over_pct, band_pct: RUNNER_UP_PRICE_BAND_PCT },
   });
-  return { listing_id: ru.input.listing_id, gap, price_over_pct, triggered };
+  return triggered ? { listing_id: ru.input.listing_id, gap, price_over_pct, triggered } : null;
 }

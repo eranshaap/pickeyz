@@ -249,12 +249,18 @@ describe("crowning §1.9(8) — the runner-up is never one of the picks (§1.5)"
   // Y: in the band, deal 10 (price_advantage 6 + history 4) and reality 4 -> wins nothing.
   const Y = () => cand({ id: 3, car: 3, price: 94000, history: 4 });
 
-  it("a band holding one pick and one non-pick -> the non-pick, whatever their deal scores", () => {
+  it("a band holding one pick and one non-pick -> the record names the non-pick; with gap 0 it is not named (rules v9)", () => {
     const res = selectThree({ listings: [C(), X(), Y()] }, OFF);
     assert.equal(res.picks.cheapest, 1);
     assert.deepEqual(byId(res, 2).categories, ["best_value", "peace_of_mind"]); // the higher deal, and a pick
     assert.deepEqual(byId(res, 3).categories, []);
-    assert.deepEqual(res.runner_ups.cheapest, { listing_id: 3, gap: 0, price_over_pct: 4.4, triggered: false });
+    assert.equal(res.runner_ups.cheapest, null);
+    // the case's point lives on in the record: the candidate is the non-pick Y, never the pick X
+    const e = byId(res, 1).trace.filter((t) => t.rule === "cheapest_runner_up");
+    assert.equal(e.length, 1);
+    assert.equal(e[0].context.runner_up, 3);
+    assert.equal(e[0].value, 0);
+    assert.equal(e[0].triggered, false);
   });
 
   it("a band holding only picks -> no runner-up, and the record says no candidate", () => {
@@ -276,7 +282,11 @@ describe("crowning §1.9(8) — the runner-up is never one of the picks (§1.5)"
   });
 
   it("nothing recorded carries also_won any more", () => {
-    const res = selectThree({ listings: [C(), X(), Y()] }, OFF);
+    // rules v9: this case needs a NAMED runner-up for the last assertion, so Y is built with history 6 here —
+    // deal 12, gap 2, 4.4% over, and still no category (X keeps both, C keeps cheapest).
+    const res = selectThree({ listings: [C(), X(), cand({ id: 3, car: 3, price: 94000, history: 6 })] }, OFF);
+    assert.deepEqual(byId(res, 3).categories, []);
+    assert.deepEqual(res.runner_ups.cheapest, { listing_id: 3, gap: 2, price_over_pct: 4.4, triggered: true });
     for (const r of res.results) for (const t of r.trace) assert.equal("also_won" in t.context, false, `${r.listing_id} ${t.rule}`);
     assert.equal("also_won" in (res.runner_ups.cheapest as object), false);
   });

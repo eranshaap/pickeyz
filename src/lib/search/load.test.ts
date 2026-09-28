@@ -201,6 +201,10 @@ function trace(over: Partial<RuleTrace> & Pick<RuleTrace, "rule">): Prisma.JsonV
 const runnerUpRecord = (listing_id: number): Prisma.JsonValue =>
   trace({ rule: "cheapest_runner_up", value: 3.2, threshold: 2, effect: "none", context: { runner_up: listing_id, price_over_pct: 4.1, band_pct: 5 } });
 
+/** The record the rule writes when the band's best car is below RUNNER_UP_DEAL_GAP — recorded, not named (rules v9). */
+const belowGapRecord = (listing_id: number): Prisma.JsonValue =>
+  trace({ rule: "cheapest_runner_up", value: 1.1, threshold: 2, triggered: false, effect: "none", context: { runner_up: listing_id, price_over_pct: 4.1, band_pct: 5 } });
+
 /** The record the rule writes when nothing stood in the band. */
 const noCandidateRecord = (): Prisma.JsonValue =>
   trace({ rule: "cheapest_runner_up", triggered: false, context: { evaluated: false, reason: "no_candidate_in_band", band_pct: 5 } });
@@ -288,6 +292,14 @@ describe("storedRunnerUpListing() (§0.3c)", () => {
       storedRunnerUpListing([resultRow({ listing_id: 20, rank: 1, recommendation_categories: ["cheapest"], stage_b_trace: [noCandidateRecord()] })]),
       null,
     );
+  });
+
+  it("the record names a runner-up but its verdict is false -> null (rules v9)", () => {
+    const rows = [
+      resultRow({ listing_id: 20, rank: 1, recommendation_categories: ["cheapest"], stage_b_trace: [belowGapRecord(30)] }),
+      resultRow({ listing_id: 30, rank: 2 }),
+    ];
+    assert.equal(storedRunnerUpListing(rows), null);
   });
 
   it("two records on one row is a contradiction, not a choice", () => {
@@ -466,6 +478,17 @@ describe("resultsViewFrom() — the cards (§2.1, §2.4)", () => {
   describe("the runner-up strip's data", () => {
     it("present, with the amount as the two SNAPSHOT prices' difference", () => {
       assert.deepEqual(view.runner_up, { public_id: "dddddddddd", model: "מאזדה 3", year: 2022, amount: 3400, fact: null });
+    });
+
+    it("absent when the record names a runner-up but its verdict is false (rules v9)", () => {
+      const v = resultsViewFrom({
+        question_public_id: QUESTION_ID,
+        rows: rows.map((r) => (r.listing_id === 30 ? { ...r, stage_b_trace: [belowGapRecord(40)] } : r)),
+        facts,
+        car_id_of,
+        new_price_of,
+      });
+      assert.equal(v.runner_up, null);
     });
 
     it("absent when the record says nothing stood in the band", () => {

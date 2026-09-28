@@ -40,7 +40,7 @@ export type SelectionOptions = {
 // output
 export type Category = (typeof CATEGORY_PRIORITY)[number];
 
-// The recorded runner-up of the cheapest pick (part 3, §2b): a little pricier, clearly better deal. null when none was recorded.
+// The recorded runner-up of the cheapest pick (part 3, §2b): a little pricier, clearly better deal. null when none was recorded and — rules v9 — when the band's best car is below RUNNER_UP_DEAL_GAP; a non-null value always has triggered === true.
 // Days 20–21 rules v7 (§1.5): a listing that won a category is never a candidate, so P1's also_won is gone — the
 // case it recorded cannot occur.
 export type RunnerUp = { listing_id: number; gap: number; price_over_pct: number; triggered: boolean };

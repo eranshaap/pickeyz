@@ -222,7 +222,7 @@ describe("2c. peace_of_mind deal floor, tracking only (part 3 §2c, part 4 §1)"
     assert.deepEqual(byId(res, 2).trace, []);
     assert.equal(entries(byId(res, 3), "overpriced").length, 1);
     assert.equal(res.rules_version, RULES_VERSION);
-    assert.equal(RULES_VERSION, 8); // §0 — the condition floor, the history-ordered tail and the three crowning counts
+    assert.equal(RULES_VERSION, 9); // §3 — cheapest_runner_up acts: a runner-up is named only at or above the gap
   });
 });
 
@@ -660,8 +660,14 @@ describe("14. finish test, synthetic (part 3 §3: a double win is reported, not 
     assert.equal(byId(res, 5).status, "shown");
     assert.deepEqual(byId(res, 5).categories, []);
     assert.equal(byId(res, 6).verify_availability, true);
-    // the runner-up of the cheapest pick: car 6 at 92,000 (2.2% over), deal 5 vs 14 -> recorded, not triggered
-    assert.deepEqual(res.runner_ups.cheapest, { listing_id: 7, gap: -9, price_over_pct: 2.2, triggered: false });
+    // the runner-up of the cheapest pick: car 6 at 92,000 (2.2% over), deal 5 vs 14 -> recorded, not triggered, so not named (rules v9)
+    assert.equal(res.runner_ups.cheapest, null);
+    const ruEntries14 = entries(byId(res, 1), "cheapest_runner_up");
+    assert.equal(ruEntries14.length, 1);
+    assert.equal(ruEntries14[0].value, -9);
+    assert.equal(ruEntries14[0].triggered, false);
+    assert.equal(ruEntries14[0].context.runner_up, 7);
+    assert.equal(ruEntries14[0].context.price_over_pct, 2.2);
     // ranked first, then the rest
     const ranks = res.results.map((r) => r.rank);
     const firstNull = ranks.indexOf(null);
@@ -781,6 +787,31 @@ describe("17. cheapest_runner_up (part 3 §2b)", () => {
     assert.equal(e[0].context.reason, "no_candidate_in_band");
   });
 
+  // rules v9: the gap acts. 17(a)'s pool with listing 2's history one point lower — deal 11, gap 1, still 3.3%
+  // over C and still winning no category. The record on C is written in full; the search has no runner-up.
+  it("(g) a candidate in the band with a POSITIVE gap below the constant -> recorded in full, runner_ups.cheapest null", () => {
+    const res = selectThree({
+      listings: [
+        C(),
+        ru(2, 93000, 4), // price_v 7 + cvt 4 = deal 11: 3.3% over C, gap 1
+        ru(3, 96000, 15), // deal 19, reality 15: best_value and peace_of_mind; outside the band
+      ],
+    }, { crowningThreshold: 0 });
+    assert.deepEqual(res.picks, { best_value: 3, peace_of_mind: 3, cheapest: 1 });
+    assert.deepEqual(byId(res, 2).categories, []); // a candidate, not a pick
+    assert.deepEqual(ruEntry(res), {
+      rule: "cheapest_runner_up",
+      type: "portfolio",
+      value: 1,
+      threshold: RUNNER_UP_DEAL_GAP,
+      triggered: false,
+      effect: "none",
+      context: { runner_up: 2, price_over_pct: 3.3, band_pct: RUNNER_UP_PRICE_BAND_PCT },
+    });
+    assert.equal(res.runner_ups.cheapest, null);
+    assert.equal(entries(byId(res, 2), "cheapest_runner_up").length, 0); // recorded on C only
+  });
+
   it("C's own car is never its runner-up: a second, pricier listing of C's car (merged into C) is not a candidate", () => {
     const res = selectThree({ listings: [C(), cand({ id: 5, car: 1, price: 92000, history: 9 }), ru(2, 93000, 5)] }, { crowningThreshold: 0 });
     assert.equal(byId(res, 5).status, "merged");
@@ -829,7 +860,7 @@ describe("18. above_new_price (part 5 §3)", () => {
     assert.equal(b.rank, 1);
     assert.deepEqual(shownRanks(res), [1]);
     assert.deepEqual(res.picks, { best_value: 2, peace_of_mind: 2, cheapest: 2 });
-    assert.equal(res.rules_version, 8); // §0
+    assert.equal(res.rules_version, 9); // §3
   });
 
   it("99.9 -> recorded, not triggered, shown; 120.0 -> triggered", () => {

@@ -397,7 +397,7 @@ async function main() {
   }
 
   // ---------- 4b. RUNNER-UP for cheapest (part 3 §2b / §4) ----------
-  log(`\n===== RUNNER-UP for cheapest (band ${RUNNER_UP_PRICE_BAND_PCT}%, gap ${RUNNER_UP_DEAL_GAP}; recorded only) =====`);
+  log(`\n===== RUNNER-UP for cheapest (band ${RUNNER_UP_PRICE_BAND_PCT}%, gap ${RUNNER_UP_DEAL_GAP}; acts from rules v9) =====`);
   const cId = res.picks.cheapest;
   if (cId === null) {
     log(`  no cheapest pick (${res.missing.cheapest}) — the rule was not evaluated, nothing recorded`);
