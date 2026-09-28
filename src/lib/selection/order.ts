@@ -3,8 +3,9 @@
 // Every order ends in listing_id, so it is total and the result is deterministic.
 
 import { NO_DEAL_ORDER } from "./constants";
+import { hasVerifiedHistory, isCancelled } from "./gate";
 import type { CandidateListing, Category } from "./types";
-import { cmpNullsLast, parseIso } from "./util";
+import { cmpNullsLast, invoiceRow, parseIso, scoredValue } from "./util";
 
 type Cmp = (a: CandidateListing, b: CandidateListing) => number;
 
@@ -33,8 +34,22 @@ const rankedOrder: Cmp = chain(byDealScoreDesc, byConditionDesc, byPriceAsc, byF
 
 // Day 14 rules v5 (§0.3): the tail — the listings with no deal score — is ordered by NO_DEAL_ORDER, ties by
 // first_seen_at (oldest first), then listing_id. The map makes the constant the thing that decides, not a comment.
+//
+// Days 22–23 rules v8 (§0b): the tail is ordered by THE HISTORY ROW, best first. The key is the PAPER value of a
+// REGISTRY reading and of nothing else — the row the unverified_history rule accepts, so the test is
+// hasVerifiedHistory()'s and there is no second definition of "a real reading" here. A `typical` row (the cell's
+// median standing in, engine §0.4), an `unavailable` row and a cancelled invoice are all "no reading": those rows
+// come after every row that has one, and among themselves by the same tie-break chain.
+const historyReading = (l: CandidateListing): number | null => {
+  if (isCancelled(l)) return null; // a cancelled invoice has no rows at all — asked before any row is read
+  if (!hasVerifiedHistory(l)) return null;
+  return scoredValue(invoiceRow(l.breakdown, "history", l.listing_id));
+};
+// A larger value first: positive is in the buyer's favour (scoring/types.ts:106). Nulls last, in both directions.
+const byHistoryDesc: Cmp = (a, b) => cmpNullsLast(historyReading(a), historyReading(b), "desc");
+
 const NO_DEAL_CMP: Readonly<Record<typeof NO_DEAL_ORDER, Cmp>> = {
-  price_asc: chain(byPriceAsc, byFirstSeenAsc, byListingIdAsc),
+  history_desc: chain(byHistoryDesc, byPriceAsc, byFirstSeenAsc, byListingIdAsc),
 };
 const noDealOrder: Cmp = NO_DEAL_CMP[NO_DEAL_ORDER];
 

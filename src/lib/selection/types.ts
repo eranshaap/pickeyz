@@ -50,13 +50,15 @@ export type RunnerUp = { listing_id: number; gap: number; price_over_pct: number
 export type MissingReason = "no_candidate" | "below_crowning_threshold";
 
 /**
- * Days 20–21 rules v7 (§1.7) — what the crowning gate saw, read off the same numbers its record carries.
+ * Days 20–21 rules v7 (§1.7), as Days 22–23 rules v8 (§0c) re-cut it — what the crowning gate saw, read off the same
+ * numbers its record carries. THREE counts now, each a subset of the one before it:
  *   with_comparison  the shown rows (one per car, after the merge) that have a deal score
- *   eligible         of those, the rows ELIGIBLE TO WIN (§1.2)
+ *   verified         of those, the rows no `unverified_history` and no `cancelled` verdict bars (v7's `eligible`)
+ *   eligible         of those, the rows no `condition_floor` verdict bars — what the gate decides on (§0c)
  *   threshold        CROWNING_THRESHOLD, or the test-only override
  *   crowned          eligible >= threshold — the picks were made
  */
-export type Crowning = { eligible: number; with_comparison: number; threshold: number; crowned: boolean };
+export type Crowning = { eligible: number; verified: number; with_comparison: number; threshold: number; crowned: boolean };
 
 export type SelectionResult = {
   rules_version: number;
@@ -79,6 +81,10 @@ export type Eligibility = {
   // car stays barred here too — rules v6) —
   // the counterfactual blocked_first reads, and the only place the pre-rule answer is kept.
   without_unverified_history: Record<Category, boolean>;
+  // Days 22–23 rules v8 (§0a): the same three flags with the condition_floor rule ignored and nothing else changed
+  // (verification still applies, and a cancelled or thin-cell car stays barred here too) — the other counterfactual
+  // blocked_first reads. One counterfactual per barring rule, and nothing else reads either of them.
+  without_condition_floor: Record<Category, boolean>;
 };
 
 export type ListingResult = {
@@ -105,7 +111,8 @@ export type RuleName =
   | "cheapest_runner_up"
   | "unverified_history" // Day 14 rules v5 (§0.1)
   | "cancelled" // Day 18 rules v6 (§8)
-  | "crowning_threshold"; // Days 20–21 rules v7 (§1.4)
+  | "crowning_threshold" // Days 20–21 rules v7 (§1.4)
+  | "condition_floor"; // Days 22–23 rules v8 (§0a)
 export type RuleType = "correctness" | "eligibility" | "portfolio";
 // Day 14 rules v5 (§0.1): 'ineligible' joins the vocabulary — the listing stays listed and ranked, wins no
 // category, and cannot be the runner-up. It is not 'excluded': nothing is hidden and no rank moves.
@@ -135,6 +142,9 @@ export const RULE_TYPE: Readonly<Record<RuleName, RuleType>> = {
   cheapest_runner_up: "portfolio",
   unverified_history: "eligibility",
   cancelled: "eligibility",
+  // Days 22–23 rules v8 (§0a): the same kind of rule as unverified_history — it decides this listing's eligibility
+  // for every category and moves no row.
+  condition_floor: "eligibility",
   // The gate is a rule about the SET of picks, like the other three portfolio rules — it moves no listing and
   // decides no listing's eligibility; it decides whether the search crowns anything at all.
   crowning_threshold: "portfolio",

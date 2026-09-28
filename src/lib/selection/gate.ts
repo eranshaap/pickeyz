@@ -1,7 +1,7 @@
 // The gate (BRIEF §4.1) and eligibility (§2; part 3 §2a and §2c; part 4 §1), read straight from the invoice. Nothing is recomputed.
 
 import { isCancelled as isCancelledInvoice } from "../scoring/types";
-import { CANCELLED_EFFECT, CHEAPEST_CONDITION_FLOOR, PEACE_OF_MIND_DEAL_FLOOR, UNVERIFIED_HISTORY_EFFECT } from "./constants";
+import { CANCELLED_EFFECT, CONDITION_FLOOR, CONDITION_FLOOR_EFFECT, PEACE_OF_MIND_DEAL_FLOOR, UNVERIFIED_HISTORY_EFFECT } from "./constants";
 import type { Work } from "./rules";
 import type { CandidateListing, Category, Eligibility, PeaceOfMindFloorEffect } from "./types";
 import { RULE_TYPE } from "./types";
@@ -46,32 +46,42 @@ export function eligibility(l: CandidateListing, floorEffect: PeaceOfMindFloorEf
   // Day 18 rules v6 (§8): a cancelled car is eligible for nothing — checked before the thin-cell gate, which reads a row.
   if (isCancelled(l)) {
     const none: Record<Category, boolean> = { best_value: false, peace_of_mind: false, cheapest: false };
-    return { ...none, reasons: ["cancelled"], without_unverified_history: { ...none } };
+    return { ...none, reasons: ["cancelled"], without_unverified_history: { ...none }, without_condition_floor: { ...none } };
   }
   // The gate (§4.1; Day 14 rules v5 §0.4): a thin cell is eligible for no category — before this rule and after it.
   if (isThinCell(l)) {
     const none: Record<Category, boolean> = { best_value: false, peace_of_mind: false, cheapest: false };
-    return { ...none, reasons: ["thin_cell"], without_unverified_history: { ...none } };
+    return { ...none, reasons: ["thin_cell"], without_unverified_history: { ...none }, without_condition_floor: { ...none } };
   }
   const b = l.breakdown;
-  const best_value = b.deal_score !== null;
+  // Days 22–23 rules v8 (§0a): the condition floor. STRICTLY below, so exactly CONDITION_FLOOR passes, as it always
+  // has. A null condition_vs_typical is NOT below the floor — the rule is about a condition below it, not an unknown
+  // one — so such a car keeps today's verdicts: not `cheapest` (reason no_condition_vs_typical), the other two as before.
+  const belowFloor = b.condition_vs_typical !== null && b.condition_vs_typical < CONDITION_FLOOR;
+  const best_value = b.deal_score !== null && !belowFloor;
   // part 4 §1: peace_of_mind is condition alone — condition_by_reality !== null. The deal floor (part 3 §2c) is recorded by
   // overpriced() below and does not bar. Under floor effect 'excluded' the part-3 behaviour is restored: deal_score below
   // PEACE_OF_MIND_DEAL_FLOOR → reason overpriced; deal_score null → reason no_deal_score (the same string best_value pushes;
   // it is pushed once).
-  const peace_of_mind =
+  // The three verdicts as they stand BEFORE the floor — the values the reasons below are read off, so that a
+  // below-floor car keeps exactly today's reasons instead of collecting a no_deal_score it does not deserve.
+  const hasDeal = b.deal_score !== null;
+  const peaceBase =
     b.condition_by_reality !== null && (floorEffect === "none" || (b.deal_score !== null && b.deal_score >= PEACE_OF_MIND_DEAL_FLOOR));
-  // part 3 §2a: a car more than CHEAPEST_CONDITION_FLOOR below its cell's typical condition is not eligible for cheapest
-  // (reason below_floor).
-  const cheapest = b.condition_vs_typical !== null && b.condition_vs_typical >= CHEAPEST_CONDITION_FLOOR;
+  // part 3 §2a, as rules v8 (§0a) generalises it: a car more than CONDITION_FLOOR below its cell's typical condition
+  // is not eligible for ANY category (reason below_floor) — and, through the three flags, not a runner-up either.
+  const cheapestBase = b.condition_vs_typical !== null;
+  const peace_of_mind = peaceBase && !belowFloor;
+  const cheapest = cheapestBase && !belowFloor; // identical to v7's `condition_vs_typical >= CONDITION_FLOOR`
   const reasons: string[] = [];
-  if (!best_value) reasons.push("no_deal_score");
+  if (!hasDeal) reasons.push("no_deal_score");
   if (b.condition_by_reality === null) reasons.push("no_condition_by_reality");
-  else if (!peace_of_mind && b.deal_score !== null) reasons.push("overpriced");
+  else if (!peaceBase && b.deal_score !== null) reasons.push("overpriced");
   if (b.condition_vs_typical === null) reasons.push("no_condition_vs_typical");
-  else if (!cheapest) reasons.push("below_floor");
+  else if (belowFloor) reasons.push("below_floor");
   // Day 14 rules v5 (§0.1): the rule bars all three categories — and, through them, the runner-up (§5.5). The
-  // pre-rule answer is kept beside it: §0.2's blocked_first is the only thing that reads it.
+  // pre-rule answer is kept beside it: §0.2's blocked_first is the only thing that reads it, and rules v8 keeps one
+  // such counterfactual per barring rule.
   const verified = hasVerifiedHistory(l);
   if (!verified) reasons.push("unverified_history");
   return {
@@ -79,7 +89,10 @@ export function eligibility(l: CandidateListing, floorEffect: PeaceOfMindFloorEf
     peace_of_mind: peace_of_mind && verified,
     cheapest: cheapest && verified,
     reasons,
+    // the base verdicts, the floor included (as it always was for `cheapest`)
     without_unverified_history: { best_value, peace_of_mind, cheapest },
+    // the verdicts with the FLOOR ignored and verification applied
+    without_condition_floor: { best_value: hasDeal && verified, peace_of_mind: peaceBase && verified, cheapest: cheapestBase && verified },
   };
 }
 
@@ -112,6 +125,28 @@ export function unverifiedHistory(w: Work): void {
     triggered,
     effect: triggered ? UNVERIFIED_HISTORY_EFFECT : "none",
     context: { evaluated: true, history_row_status: row.status, ...(row.status === "unavailable" ? { reason: row.reason ?? null } : {}) },
+  });
+}
+
+// Days 22–23 rules v8 (§0a) — the condition floor's record, written on exactly the rows and at exactly the place the
+// unverified_history record is written (index.ts runs both on everyone that passed the sold gate, for trace
+// completeness §3). value = condition_vs_typical as the invoice carries it (null when unknown); threshold =
+// CONDITION_FLOOR; effect = CONDITION_FLOOR_EFFECT when it triggered, 'none' otherwise. §0a's blocked_first is
+// written into this entry's context afterwards, on at most one listing per category, exactly as for the other rule.
+export function conditionFloor(w: Work): void {
+  // A cancelled invoice and a thin cell have no condition_vs_typical to judge (the engine leaves it null in both
+  // cases): the rule is recorded as not evaluated, so the trace stays complete, and the listing is already barred by
+  // its own rule. The cancelled test comes first — isThinCell() reads a row, and a cancelled invoice has none.
+  const cvt = isCancelled(w.input) || isThinCell(w.input) ? null : w.input.breakdown.condition_vs_typical;
+  const triggered = cvt !== null && cvt < CONDITION_FLOOR;
+  w.result.trace.push({
+    rule: "condition_floor",
+    type: RULE_TYPE.condition_floor,
+    value: cvt,
+    threshold: CONDITION_FLOOR,
+    triggered,
+    effect: triggered ? CONDITION_FLOOR_EFFECT : "none",
+    context: { evaluated: cvt !== null },
   });
 }
 

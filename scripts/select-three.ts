@@ -39,9 +39,13 @@
 // Rules v5 (Day 14 run B, §0.1–§0.4, P5): a pick requires registry ownership history — a listing whose invoice
 // history row is not sourced 'mot' stays listed and keeps its rank, wins nothing, and cannot be the runner-up. This
 // script adds: UNVERIFIED HISTORY (who the rule barred, and every blocked_first fact — the counterfactual winner the
-// rule kept out of a category) and the NO-DEAL TAIL in its new order (NO_DEAL_ORDER =
-// price_asc, ties first_seen_at then listing_id). The reader is unchanged: it never selected listings.condition_score
-// or listings.confidence — Stage B has always read the sums out of the invoice.
+// rule kept out of a category) and the NO-DEAL TAIL in its new order. The reader is unchanged: it never selected
+// listings.condition_score or listings.confidence — Stage B has always read the sums out of the invoice.
+// Rules v8 (Days 22–23, §0): the condition floor (CONDITION_FLOOR, renamed from CHEAPEST_CONDITION_FLOOR) bars ALL
+// THREE categories and the runner-up, and the crowning gate counts the cars at or above it. This script adds: the
+// CONDITION FLOOR tuning section under its new name (its sweep unchanged); the `condition_floor blocked_first` facts
+// under UNVERIFIED HISTORY; and the history key of every NO-DEAL TAIL row — NO_DEAL_ORDER = history_desc, the
+// registry reading best first, rows without one after them by price, ties price then first_seen_at then listing_id.
 // Rules v4 (part 5 §3–§4): each listing gets new_price = the latest published_at row of new_car_prices on the car's key. Since part 6
 // the key is three columns, no split: new_car_prices.degem_code = models.degem_code (the same makeDegemCode string), sug_degem =
 // models.vehicle_class, shnat_yitzur = cars.year; null when no row matches. The library's above_new_price rule (out at >= PRICE_VS_NEW_CEILING_PCT, effect ABOVE_NEW_PRICE_EFFECT) is reported as:
@@ -61,7 +65,7 @@ import { assemblePool, PoolAssemblyError, type PoolItem } from "@/lib/search/ass
 import {
   ABOVE_NEW_PRICE_EFFECT,
   CATEGORY_PRIORITY,
-  CHEAPEST_CONDITION_FLOOR,
+  CONDITION_FLOOR,
   CROWNING_THRESHOLD,
   DOUBLE_WINNER_EFFECT,
   PEACE_OF_MIND_DEAL_FLOOR,
@@ -78,6 +82,7 @@ import {
   crowningLine,
   distance,
   finishTest,
+  isCancelled,
   selectThree,
   type Category,
 } from "@/lib/selection";
@@ -159,6 +164,16 @@ function median(xs: number[]): number {
 // (--max-price, --years), which cut the assembled pool here, and everything it reports.
 type Loaded = PoolItem;
 
+// Days 22–23 rules v8 (§0b) — the key the no-deal tail is ordered by, as a word for the report: the value of a
+// REGISTRY reading, or what stands in its place. isCancelled() comes first — a cancelled invoice has no rows at all.
+function historyKeyOf(p: Loaded): string {
+  if (isCancelled(p.candidate)) return "cancelled";
+  const row = p.candidate.breakdown.rows.find((r) => r.row === "history");
+  if (row === undefined) throw new Error(`listing ${p.listing_id} (${p.plate}): invoice has no history row`);
+  if (row.status !== "scored") return "unavailable";
+  return row.source === "mot" ? `mot=${fmt(row.value)}` : "typical";
+}
+
 // The reasons that can block each category (the library's reason strings, §4.1, §11.3, part 3 §2a/§2c, part 4 §1), for the
 // eligibility counts. The deal floor blocks peace_of_mind only under floor effect 'excluded'; under 'none' it is recorded.
 // Day 14 rules v5: unverified_history bars all three (§0.1), so it is a reason under each of them.
@@ -209,7 +224,7 @@ async function main() {
     `select-three — now = ${now.toISOString()}, RULES_VERSION = ${RULES_VERSION}, ENGINE_VERSION = ${ENGINE_VERSION}, too_similar_effect = ${TOO_SIMILAR_EFFECT}, double_winner_effect = ${DOUBLE_WINNER_EFFECT}, peace_of_mind_floor_effect = ${PEACE_OF_MIND_FLOOR_EFFECT}, above_new_price_effect = ${ABOVE_NEW_PRICE_EFFECT}, unverified_history_effect = ${UNVERIFIED_HISTORY_EFFECT}, no_deal_order = ${NO_DEAL_ORDER}`,
   );
   log(
-    `constants: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}, CROWNING_THRESHOLD = ${CROWNING_THRESHOLD}`,
+    `constants: CONDITION_FLOOR = ${CONDITION_FLOOR}, PEACE_OF_MIND_DEAL_FLOOR = ${PEACE_OF_MIND_DEAL_FLOOR}, RUNNER_UP_PRICE_BAND_PCT = ${RUNNER_UP_PRICE_BAND_PCT}, RUNNER_UP_DEAL_GAP = ${RUNNER_UP_DEAL_GAP}, PRICE_VS_NEW_CEILING_PCT = ${PRICE_VS_NEW_CEILING_PCT}, CROWNING_THRESHOLD = ${CROWNING_THRESHOLD}`,
   );
   log(`model: ${modelDisplay}${MODEL === null ? " (the only model live; --model not given)" : ` (--model=${MODEL})`} — ${modelListings} live listing(s) of this model`);
   log(`filters: ${filters}; live listings: ${rowsLength}; pool after filters: ${pool.length}`);
@@ -428,7 +443,7 @@ async function main() {
   }
 
   // ---------- 4c. CHEAPEST BAR tuning (part 3 §2a / §4) ----------
-  log(`\n===== CHEAPEST BAR tuning (in force: CHEAPEST_CONDITION_FLOOR = ${CHEAPEST_CONDITION_FLOOR}) =====`);
+  log(`\n===== CONDITION FLOOR tuning (in force: CONDITION_FLOOR = ${CONDITION_FLOOR}) =====`);
   {
     const cheapestOrder = (a: number, b: number) => categoryOrder.cheapest(P(a).candidate, P(b).candidate);
     const overall = shown.map((x) => x.listing_id).sort(cheapestOrder)[0];
@@ -565,18 +580,28 @@ async function main() {
       log(`    ${c}: ${P(r.listing_id).plate} (listing ${r.listing_id}, rank ${r.rank ?? "-"}) would have won but for the rule; the pick is ${res.picks[c] === null ? "empty" : `${P(res.picks[c] as number).plate} (listing ${res.picks[c]})`}`);
     }
   }
+  // Days 22–23 rules v8 (§0a): the FLOOR's own counterfactual facts, beside the other rule's. A car barred by both
+  // rules is first in neither counterfactual and appears in neither list — only the sole-barred one is recorded.
+  const floorEntries = res.results.map((r) => ({ r, t: r.trace.find((x) => x.rule === "condition_floor") ?? null }));
+  const floorBlocked = floorEntries.filter((x) => ((x.t?.context.blocked_first as Category[] | undefined) ?? []).length > 0);
+  log(`  condition_floor blocked_first: ${floorBlocked.length === 0 ? "none — in every category the counterfactual winner is the actual winner" : ""}`);
+  for (const { r, t } of floorBlocked) {
+    for (const c of t?.context.blocked_first as Category[]) {
+      log(`    ${c}: ${P(r.listing_id).plate} (listing ${r.listing_id}, rank ${r.rank ?? "-"}, condition_vs_typical ${fmt(bd(r.listing_id).condition_vs_typical)}) would have won but for the floor; the pick is ${res.picks[c] === null ? "empty" : `${P(res.picks[c] as number).plate} (listing ${res.picks[c]})`}`);
+    }
+  }
 
-  // ---------- 6c. NO-DEAL TAIL (Day 14 rules v5 §0.3, P5) ----------
+  // ---------- 6c. NO-DEAL TAIL (Day 14 rules v5 §0.3, P5; Days 22–23 rules v8 §0b: the history row's order) ----------
   const tail = shown.filter((r) => bd(r.listing_id).deal_score === null);
   const ranked = shown.filter((r) => bd(r.listing_id).deal_score !== null);
-  log(`\n===== NO-DEAL TAIL (NO_DEAL_ORDER = ${NO_DEAL_ORDER}, ties first_seen_at then listing_id) =====`);
+  log(`\n===== NO-DEAL TAIL (NO_DEAL_ORDER = ${NO_DEAL_ORDER}: the registry history reading, best first; rows without one after them by price; ties price then first_seen_at then listing_id) =====`);
   log(`  ${ranked.length} shown listing(s) have a deal score and take ranks 1..${ranked.length}; ${tail.length} have none`);
   if (tail.length === 0) log(`  the tail is empty`);
   else {
-    log("rank | plate | listing | price | first_seen_at | condition_score | eligibility reasons");
+    log("rank | plate | listing | history key | price | first_seen_at | condition_score | eligibility reasons");
     for (const r of tail) {
       const p = P(r.listing_id);
-      log(`${r.rank} | ${p.plate} | ${r.listing_id} | ${p.candidate.price} | ${p.candidate.first_seen_at} | ${fmt(bd(r.listing_id).condition_score)} | ${r.eligibility.reasons.join(" + ") || "-"}`);
+      log(`${r.rank} | ${p.plate} | ${r.listing_id} | ${historyKeyOf(p)} | ${p.candidate.price} | ${p.candidate.first_seen_at} | ${fmt(bd(r.listing_id).condition_score)} | ${r.eligibility.reasons.join(" + ") || "-"}`);
     }
     const first = tail[0].rank as number;
     if (first !== ranked.length + 1) throw new Error(`no-deal tail starts at rank ${first}, but ${ranked.length} shown listings have a deal score — the tail must come after all of them`);

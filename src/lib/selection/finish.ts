@@ -16,32 +16,57 @@
 //   triggered  ⇒ every category is empty with `below_crowning_threshold`, and NO cheapest_runner_up record exists;
 //   not triggered ⇒ claims 1–3 as before ("best_value = the first eligible in order" is asserted only here).
 // Claim 4 (contiguous ranks) is asserted in BOTH branches: the gate moves no row.
+//
+// Days 22–23 rules v8 (§0c) — claim 0's recount counts and compares ALL THREE of the gate's numbers
+// (with_comparison / verified / eligible), and claims 2 and 3 read "a recorded ineligibility" off the one
+// INELIGIBLE_RULES list that crowning.ts counts by: a car below the condition floor, ranked above the winner, is
+// explained by its own `condition_floor` record.
 
 import { CATEGORY_PRIORITY } from "./constants";
+import { INELIGIBLE_RULES } from "./crowning";
 import type { ListingResult, RuleTrace, SelectionResult } from "./types";
 
 export type FinishCheck = { claim: string; ok: boolean; detail?: string };
 export type FinishTest = { checks: FinishCheck[]; pass: boolean };
 
+/** Did this rule fire on this row with the `ineligible` effect? The row's own record is the only source. */
+function firedIneligible(r: ListingResult, rule: string): boolean {
+  return r.trace.some((t) => t.rule === rule && t.effect === "ineligible");
+}
+
+/** Days 22–23 rules v8 (§0c) — the one of INELIGIBLE_RULES that separates `eligible` from `verified`. */
+const FLOOR_RULE: (typeof INELIGIBLE_RULES)[number] = "condition_floor";
+
+/** Does any barring rule's own record say this row wins nothing? Claims 2 and 3 read the ineligibility off here. */
+function recordedIneligible(r: ListingResult): boolean {
+  return INELIGIBLE_RULES.some((rule) => firedIneligible(r, rule));
+}
+
 /**
- * §1.6 — the recount the record's `value` is checked against, over the RESULT's own rows.
+ * §1.6, as Days 22–23 rules v8 (§0c) re-cuts it — the recount the record's counts are checked against, over the
+ * RESULT's own rows. All THREE numbers are recounted and all three are compared to the record.
  *
  * "has a deal score" is read off `without_unverified_history.best_value`, which gate.ts sets to
- * `deal_score !== null` and to nothing else (a cancelled or a thin-cell row is false there, and both have a
- * null deal score). The result carries no invoice, so this is the one reading of the invoice's own answer
- * that does not re-derive it.
+ * `deal_score !== null && not below the floor` and to nothing else (a cancelled or a thin-cell row is false there,
+ * and both have a null deal score). From v8 the floor is part of that flag, so a row the FLOOR barred is added back
+ * through its own record — written on exactly the rows whose condition_vs_typical is known and below the floor, all
+ * of which have a deal score (the engine derives it from the same condition_vs_typical). The result carries no
+ * invoice, so this stays a reading of the invoice's own answer and re-derives nothing.
  */
-function recount(res: SelectionResult): { eligible: number; with_comparison: number } {
+function recount(res: SelectionResult): { eligible: number; verified: number; with_comparison: number } {
   let with_comparison = 0;
+  let verified = 0;
   let eligible = 0;
   for (const r of res.results) {
     if (r.status !== "shown") continue;
-    if (!r.eligibility.without_unverified_history.best_value) continue;
+    const floorBarred = firedIneligible(r, FLOOR_RULE);
+    if (!r.eligibility.without_unverified_history.best_value && !floorBarred) continue;
     with_comparison += 1;
-    const barred = r.trace.some((t) => (t.rule === "unverified_history" || t.rule === "cancelled") && t.effect === "ineligible");
-    if (!barred) eligible += 1;
+    if (INELIGIBLE_RULES.some((rule) => rule !== FLOOR_RULE && firedIneligible(r, rule))) continue;
+    verified += 1;
+    if (!floorBarred) eligible += 1;
   }
-  return { eligible, with_comparison };
+  return { eligible, verified, with_comparison };
 }
 
 /** Every crowning_threshold record in a finished result. There is at most one (§1.4). */
@@ -79,11 +104,20 @@ export function finishTest(res: SelectionResult): FinishTest {
     if (record.entry.context.with_comparison !== counted.with_comparison) {
       recordProblems.push(`the record says with_comparison ${String(record.entry.context.with_comparison)}; a recount says ${counted.with_comparison}`);
     }
+    // §0c — the third count is checked like the other two: the record carries it, so the recount must agree with it.
+    if (record.entry.context.verified !== counted.verified) {
+      recordProblems.push(`the record says verified ${String(record.entry.context.verified)}; a recount says ${counted.verified}`);
+    }
+    if (record.entry.context.eligible !== counted.eligible) {
+      recordProblems.push(`the record's context says eligible ${String(record.entry.context.eligible)}; a recount says ${counted.eligible}`);
+    }
     if (record.entry.threshold !== res.crowning.threshold) recordProblems.push("the record's threshold and the result's crowning.threshold disagree");
     if (record.entry.triggered === res.crowning.crowned) recordProblems.push("the record's `triggered` and the result's crowning.crowned disagree");
   }
-  if (res.crowning.eligible !== counted.eligible || res.crowning.with_comparison !== counted.with_comparison) {
-    recordProblems.push(`crowning says ${res.crowning.eligible}/${res.crowning.with_comparison}; a recount says ${counted.eligible}/${counted.with_comparison}`);
+  if (res.crowning.eligible !== counted.eligible || res.crowning.verified !== counted.verified || res.crowning.with_comparison !== counted.with_comparison) {
+    recordProblems.push(
+      `crowning says ${res.crowning.eligible}/${res.crowning.verified}/${res.crowning.with_comparison}; a recount says ${counted.eligible}/${counted.verified}/${counted.with_comparison}`,
+    );
   }
   const crowningRecorded: FinishCheck = {
     claim: "the crowning gate is recorded on the rank-1 row, once, and its counts survive a recount",
@@ -131,8 +165,11 @@ export function finishTest(res: SelectionResult): FinishTest {
             .join("; ") || undefined,
   };
 
-  // 2. a winner that is not eligible is a FAIL
-  const badWinners = CATEGORY_PRIORITY.filter((c) => res.picks[c] !== null && !at(res.picks[c] as number).eligibility[c]);
+  // 2. a winner that is not eligible is a FAIL — and, from rules v8 (§0c), so is a winner carrying a recorded
+  //    ineligibility: the eligibility flag and the rules' own records must say the same thing about a pick.
+  const badWinners = CATEGORY_PRIORITY.filter(
+    (c) => res.picks[c] !== null && (!at(res.picks[c] as number).eligibility[c] || recordedIneligible(at(res.picks[c] as number))),
+  );
   const winnersEligible: FinishCheck = {
     claim: "every winner is eligible for the category it won",
     ok: badWinners.length === 0,
@@ -143,7 +180,10 @@ export function finishTest(res: SelectionResult): FinishTest {
   //    recorded as ineligible with a reason.
   const firstEligible = shown.find((r) => r.eligibility.best_value) ?? null;
   const above = firstEligible === null ? shown : shown.filter((r) => (r.rank as number) < (firstEligible.rank as number));
-  const unexplainedAbove = above.filter((r) => r.eligibility.best_value || r.eligibility.reasons.length === 0);
+  // §0c — "a recorded ineligibility" is either the row's own reasons or an `ineligible` verdict from one of
+  // INELIGIBLE_RULES: from rules v8 a below-floor car ranked above the winner is explained by its condition_floor
+  // record, exactly as an unverified one is explained by its unverified_history record.
+  const unexplainedAbove = above.filter((r) => r.eligibility.best_value || (r.eligibility.reasons.length === 0 && !recordedIneligible(r)));
   const isFirst = res.picks.best_value !== null && firstEligible !== null && firstEligible.listing_id === res.picks.best_value;
   const bestValueFirst: FinishCheck = {
     claim: "best_value winner is the first eligible listing in the list order; every listing above it is recorded ineligible with a reason",

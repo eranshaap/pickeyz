@@ -59,7 +59,8 @@ describe("crowning §1.9(1) — what `eligible` counts", () => {
     assert.equal(byId(res, 6).status, "merged"); // the dearer ad of car 5
     assert.equal(byId(res, 3).rank !== null, true); // a thin cell is shown, in the tail
     assert.equal(byId(res, 4).rank !== null, true); // a cancelled car is shown, in the tail
-    assert.deepEqual(res.crowning, { eligible: 2, with_comparison: 3, threshold: CROWNING_THRESHOLD, crowned: false });
+    // rules v8 (§0c): three counts. Nobody here is below the floor, so `eligible` equals `verified`.
+    assert.deepEqual(res.crowning, { eligible: 2, verified: 2, with_comparison: 3, threshold: CROWNING_THRESHOLD, crowned: false });
   });
 
   it("the unverified row is barred by its own rule's verdict, not by a second definition of verified", () => {
@@ -141,7 +142,7 @@ describe("crowning §1.9(4) — the record, on the rank-1 row and on no other", 
       threshold: CROWNING_THRESHOLD,
       triggered: true,
       effect: "none",
-      context: { eligible: 7, with_comparison: 7 },
+      context: { with_comparison: 7, verified: 7, eligible: 7 },
     });
   });
 });
@@ -152,8 +153,8 @@ describe("crowning §1.9(5) — 13 with a comparison, 3 of them eligible", () =>
   const res = selectThree({ listings: pool });
 
   it("with_comparison 13, eligible 3, triggered", () => {
-    assert.deepEqual(res.crowning, { eligible: 3, with_comparison: 13, threshold: CROWNING_THRESHOLD, crowned: false });
-    assert.deepEqual(theRecord(res).context, { eligible: 3, with_comparison: 13 });
+    assert.deepEqual(res.crowning, { eligible: 3, verified: 3, with_comparison: 13, threshold: CROWNING_THRESHOLD, crowned: false });
+    assert.deepEqual(theRecord(res).context, { with_comparison: 13, verified: 3, eligible: 3 });
     assert.equal(theRecord(res).value, 3);
     assert.equal(theRecord(res).triggered, true);
   });
@@ -167,15 +168,15 @@ describe("crowning §1.9(6) — a pool with only unscored rows", () => {
     assert.equal(found.length, 1);
     assert.equal(byId(res, found[0].listing_id).rank, 1);
     assert.equal(found[0].entry.value, 0);
-    assert.deepEqual(found[0].entry.context, { eligible: 0, with_comparison: 0 });
+    assert.deepEqual(found[0].entry.context, { with_comparison: 0, verified: 0, eligible: 0 });
     assert.equal(found[0].entry.triggered, true);
-    assert.deepEqual(res.crowning, { eligible: 0, with_comparison: 0, threshold: CROWNING_THRESHOLD, crowned: false });
+    assert.deepEqual(res.crowning, { eligible: 0, verified: 0, with_comparison: 0, threshold: CROWNING_THRESHOLD, crowned: false });
   });
 
   it("zero shown rows -> no record at all: there is nothing to write it on", () => {
     const empty = selectThree({ listings: [] });
     assert.deepEqual(crowningRecords(empty), []);
-    assert.deepEqual(empty.crowning, { eligible: 0, with_comparison: 0, threshold: CROWNING_THRESHOLD, crowned: false });
+    assert.deepEqual(empty.crowning, { eligible: 0, verified: 0, with_comparison: 0, threshold: CROWNING_THRESHOLD, crowned: false });
   });
 });
 
@@ -211,6 +212,28 @@ describe("crowning §1.9(7) — the finish test, in both branches", () => {
         r.rank === 1 ? { ...r, trace: r.trace.map((t) => (t.rule === "crowning_threshold" ? { ...t, value: 99 } : t)) } : r,
       ),
     };
+    assert.equal(finishTest(broken).pass, false);
+    assert.equal(claimOf(broken, "the crowning gate is recorded").ok, false);
+  });
+
+  // rules v8 (§0c): the recount counts THREE numbers and compares all three, so breaking any one of them fails.
+  it("fails on a record whose verified count disagrees with the recount", () => {
+    const res = selectThree({ listings: cars(7) });
+    const broken: SelectionResult = {
+      ...res,
+      results: res.results.map((r) =>
+        r.rank === 1
+          ? { ...r, trace: r.trace.map((t) => (t.rule === "crowning_threshold" ? { ...t, context: { ...t.context, verified: 99 } } : t)) }
+          : r,
+      ),
+    };
+    assert.equal(finishTest(broken).pass, false);
+    assert.equal(claimOf(broken, "the crowning gate is recorded").ok, false);
+  });
+
+  it("fails on a `crowning` whose verified count disagrees with the recount", () => {
+    const res = selectThree({ listings: cars(7) });
+    const broken: SelectionResult = { ...res, crowning: { ...res.crowning, verified: 99 } };
     assert.equal(finishTest(broken).pass, false);
     assert.equal(claimOf(broken, "the crowning gate is recorded").ok, false);
   });
@@ -259,6 +282,47 @@ describe("crowning §1.9(8) — the runner-up is never one of the picks (§1.5)"
   });
 });
 
+// ---------------------------------------------------------------------------
+// Days 22–23 rules v8 (§0c) — THE FLOOR JOINS THE COUNT. `car(i)` has history 0 and condition_vs_typical 0, so a
+// below-floor car is one built with a history below CONDITION_FLOOR: `floored(i)` has cvt -6.
+// ---------------------------------------------------------------------------
+
+describe("crowning v8 §0c — the crowning count excludes the cars below the floor", () => {
+  /** An otherwise eligible car whose condition_vs_typical is -6: a price comparison, registry history, below the floor. */
+  const floored = (i: number): CandidateListing => car(i, { history: -6 });
+
+  it("8 verified of which 3 are below the floor -> eligible 5, uncrowned, and no runner-up", () => {
+    const pool = cars(8).map((l) => (l.listing_id >= 6 ? floored(l.listing_id) : l));
+    const res = selectThree({ listings: pool });
+    assert.deepEqual(res.crowning, { eligible: 5, verified: 8, with_comparison: 8, threshold: CROWNING_THRESHOLD, crowned: false });
+    assert.deepEqual(res.picks, { best_value: null, peace_of_mind: null, cheapest: null });
+    assert.deepEqual(res.missing, {
+      best_value: "below_crowning_threshold",
+      peace_of_mind: "below_crowning_threshold",
+      cheapest: "below_crowning_threshold",
+    });
+    assert.equal(res.runner_ups.cheapest, null);
+    assert.equal(theRecord(res).value, 5);
+    assert.deepEqual(theRecord(res).context, { with_comparison: 8, verified: 8, eligible: 5 });
+    assert.equal(finishTest(res).pass, true, JSON.stringify(finishTest(res).checks));
+  });
+
+  it("8 verified, none below the floor -> crowned, exactly as before version 8", () => {
+    const res = selectThree({ listings: cars(8) });
+    assert.deepEqual(res.crowning, { eligible: 8, verified: 8, with_comparison: 8, threshold: CROWNING_THRESHOLD, crowned: true });
+    assert.equal(res.picks.best_value !== null, true);
+    assert.equal(finishTest(res).pass, true, JSON.stringify(finishTest(res).checks));
+  });
+
+  it("the finish test fails on a hand-broken `verified` in either of the two pools", () => {
+    for (const pool of [cars(8).map((l) => (l.listing_id >= 6 ? floored(l.listing_id) : l)), cars(8)]) {
+      const res = selectThree({ listings: pool });
+      const broken: SelectionResult = { ...res, crowning: { ...res.crowning, verified: res.crowning.verified + 1 } };
+      assert.equal(finishTest(broken).pass, false);
+    }
+  });
+});
+
 describe("crowning §1.9(9) — `crowning` on the result equals the record", () => {
   for (const [name, pool] of [
     ["uncrowned", () => cars(7)],
@@ -270,6 +334,8 @@ describe("crowning §1.9(9) — `crowning` on the result equals the record", () 
       const entry = theRecord(res);
       assert.equal(res.crowning.eligible, entry.value);
       assert.equal(res.crowning.with_comparison, entry.context.with_comparison);
+      assert.equal(res.crowning.verified, entry.context.verified); // §0c — the third count travels too
+      assert.equal(res.crowning.eligible, entry.context.eligible);
       assert.equal(res.crowning.threshold, entry.threshold);
       assert.equal(res.crowning.crowned, !entry.triggered);
       assert.equal(res.rules_version, RULES_VERSION);

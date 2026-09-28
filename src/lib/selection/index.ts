@@ -8,17 +8,22 @@
 //   4.1 gate      sold_strong -> excluded, no rules run; sold medium -> verify_availability; eligibility per §2
 //                 (part 4 §1: peace_of_mind is condition alone; the deal floor is recorded by the overpriced rule, it does not bar;
 //                 Day 14 rules v5 §0.1: unverified_history bars all three categories — the listing stays listed and keeps its rank;
-//                 Day 18 rules v6 §8: cancelled bars all three and the runner-up — checked before any invoice row is read)
+//                 Day 18 rules v6 §8: cancelled bars all three and the runner-up — checked before any invoice row is read;
+//                 Days 22–23 rules v8 §0a: the condition floor bars all three and the runner-up — a KNOWN condition_vs_typical
+//                 strictly below CONDITION_FLOOR; an unknown one is not below it)
 //   4.2 stage A   order everyone that passed the gate -> stage_a_place
 //   4.3 rule      below_threshold (price / median_price); above_new_price (price / new_price, part 5 §3) in the same pass;
 //                 overpriced recorded on every peace_of_mind-eligible listing (part 4 §1); unverified_history recorded
-//                 on everyone that passed the gate (Day 14 rules v5 §0.1)
+//                 on everyone that passed the gate (Day 14 rules v5 §0.1); condition_floor recorded on everyone that passed
+//                 the gate too (Days 22–23 rules v8 §0a)
 //   4.4 rule      dealer_not_visible
 //   4.5 merge     duplicate — one representative per car among the survivors
 //   4.6 rank      representatives in the Stage A order -> rank 1..n, status shown
 //   4.6b gate     THE CROWNING GATE (Days 20–21 rules v7 §1.3): the ranks are final, and the rows eligible to win
 //                 are counted. Fewer than CROWNING_THRESHOLD of them -> no pick in any category, no runner-up and
 //                 none of the tracking rules that need a pick; every rank and every status stay as they are.
+//                 Days 22–23 rules v8 (§0c): three counts — with_comparison, verified, eligible — and `eligible`,
+//                 which excludes the cars below the floor, is the one the gate decides on.
 //   4.7 picks     best_value -> peace_of_mind -> cheapest, with double_winner and too_similar traced; a car may win
 //                 more than one category (part 3 §1); then blocked_first (§0.2) and cheapest_runner_up recorded on the
 //                 cheapest pick (part 3 §2b)
@@ -29,7 +34,7 @@
 
 import { ABOVE_NEW_PRICE_EFFECT, CATEGORY_PRIORITY, CROWNING_THRESHOLD, DOUBLE_WINNER_EFFECT, PEACE_OF_MIND_FLOOR_EFFECT, RULES_VERSION, TOO_SIMILAR_EFFECT } from "./constants";
 import { crowningCounts, crowningOf, isGated } from "./crowning";
-import { cancelled, eligibility, isSoldMedium, isSoldStrong, overpriced, unverifiedHistory } from "./gate";
+import { cancelled, conditionFloor, eligibility, isSoldMedium, isSoldStrong, overpriced, unverifiedHistory } from "./gate";
 import { stageAOrder } from "./order";
 import { pick } from "./picks";
 import { aboveNewPrice, belowThreshold, dealerNotVisible, mergeByCar, type Work } from "./rules";
@@ -37,7 +42,7 @@ import type { Category, CandidateListing, ListingResult, MissingReason, PeaceOfM
 import { RULE_TYPE } from "./types";
 import { cmpNullsLast } from "./util";
 
-export { crowningCounts, crowningLine, crowningOf, hasComparison, isEligibleToWin, isGated } from "./crowning";
+export { INELIGIBLE_RULES, crowningCounts, crowningLine, crowningOf, hasComparison, isEligibleToWin, isGated, isVerified } from "./crowning";
 export { distance } from "./similarity";
 export { finishTest, type FinishCheck, type FinishTest } from "./finish";
 export { hasVerifiedHistory, historySource, isCancelled, isThinCell } from "./gate";
@@ -134,6 +139,7 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
   for (const w of passed) overpriced(w, floorEffect);
   for (const w of passed) cancelled(w); // Day 18 rules v6 (§8): recorded on everyone, acting through eligibility
   for (const w of passed) unverifiedHistory(w); // Day 14 rules v5 (§0.1): recorded on everyone, acting through eligibility
+  for (const w of passed) conditionFloor(w); // Days 22–23 rules v8 (§0a): recorded on everyone, acting through eligibility
   for (const w of passed) dealerNotVisible(w);
 
   // 4.5 merge by car, over the survivors
@@ -162,7 +168,9 @@ export function selectThree(input: SelectionInput, options: SelectionOptions = {
       threshold: crowningThreshold,
       triggered: gated,
       effect: "none", // the rule moves no row
-      context: { eligible: counts.eligible, with_comparison: counts.with_comparison },
+      // §0c — all three counts travel in the record: the site reads them back off it (load.ts) and the finish
+      // test recounts all three against it.
+      context: { with_comparison: counts.with_comparison, verified: counts.verified, eligible: counts.eligible },
     });
   }
 

@@ -47,21 +47,26 @@ export function noComparisonLine(n: number): string {
 const FEW_CARS_LINE = "כשנשארים מעט רכבים לא בוחרים מהם שלושה.";
 /** The grey line of reason B: enough cars with a comparison, too few with registry ownership history. */
 const FEW_VERIFIED_LINE = "ממליצים רק על רכב עם היסטוריית בעלויות, וכשיש מעט כאלה לא בוחרים מהם שלושה.";
+/** Days 22–23 rules v8 (§0d) — the grey line of reason C: enough of both, too many below the condition floor. */
+const BELOW_FLOOR_LINE = "רכב כזה לא מקבל תווית, וכשנשארים מעט רכבים לא בוחרים מהם שלושה.";
 
 /**
- * §2.1 — the uncrowned head, chosen by the REASON the search crowned nothing:
+ * §2.1, as Days 22–23 rules v8 (§0d) adds its third case — the uncrowned head, chosen by the REASON the search
+ * crowned nothing. The three counts nest: with_comparison (N) ⊇ verified ⊇ eligible.
  *
  *   reason A   with_comparison < threshold        too few cars have a price comparison
  *   reason B   with_comparison >= threshold and   enough have one, too few have registry ownership history
- *              eligible < threshold
+ *              verified < threshold
+ *   reason C   verified >= threshold and          enough have both, and K = verified − eligible of them are so far
+ *              eligible < threshold               below their year's typical condition that they win nothing
  *
- * `eligible >= threshold` throws: the screen is not uncrowned. `with_comparison === 0` throws: that is the
- * zero-scored screen, whose head is zeroScoredHead().
+ * `eligible >= threshold` throws: the screen is not uncrowned — and `eligible` is the count the gate decides on.
+ * `with_comparison === 0` throws: that is the zero-scored screen, whose head is zeroScoredHead().
  */
-export function uncrownedHead(counts: { with_comparison: number; eligible: number; threshold: number }): Head {
-  const { with_comparison: N, eligible: M, threshold } = counts;
-  if (M >= threshold) {
-    throw new Error(`uncrownedHead: ${M} cars are eligible to win against a threshold of ${threshold} — this search is crowned`);
+export function uncrownedHead(counts: { with_comparison: number; verified: number; eligible: number; threshold: number }): Head {
+  const { with_comparison: N, verified, eligible, threshold } = counts;
+  if (eligible >= threshold) {
+    throw new Error(`uncrownedHead: ${eligible} cars are eligible to win against a threshold of ${threshold} — this search is crowned`);
   }
   if (N === 0) throw new Error("uncrownedHead: no car has a price comparison — that is the zero-scored screen (zeroScoredHead)");
 
@@ -71,9 +76,18 @@ export function uncrownedHead(counts: { with_comparison: number; eligible: numbe
       line: FEW_CARS_LINE,
     };
   }
-  const middle =
-    M === 0 ? "ולאף אחד מהם אין היסטוריית בעלויות במשרד התחבורה" : M === 1 ? "ורק לאחד מהם יש היסטוריית בעלויות במשרד התחבורה" : `ורק ל-${num(M)} מהם יש היסטוריית בעלויות במשרד התחבורה`;
-  return { title: `${num(N)} רכבים עונים על מה שביקשת, ${middle}. הנה כולם.`, line: FEW_VERIFIED_LINE };
+  if (verified < threshold) {
+    const M = verified;
+    const middle =
+      M === 0 ? "ולאף אחד מהם אין היסטוריית בעלויות במשרד התחבורה" : M === 1 ? "ורק לאחד מהם יש היסטוריית בעלויות במשרד התחבורה" : `ורק ל-${num(M)} מהם יש היסטוריית בעלויות במשרד התחבורה`;
+    return { title: `${num(N)} רכבים עונים על מה שביקשת, ${middle}. הנה כולם.`, line: FEW_VERIFIED_LINE };
+  }
+  // reason C — K >= 1 here: verified >= threshold > eligible. N >= threshold too, so N is never 1 and has no
+  // singular form; K does. The km unit is the car page's own rubric heading, never a glyph chosen here.
+  const K = verified - eligible;
+  const many = `${num(N)} רכבים עונים על מה שביקשת, אבל ל-${num(K)} מהם בעלויות או ${RUBRIC_HEADINGS.km} נמוכים בהרבה מהממוצע לשנתון. הנה כולם.`;
+  const one = `${num(N)} רכבים עונים על מה שביקשת, אבל לאחד מהם בעלויות או ${RUBRIC_HEADINGS.km} נמוכים בהרבה מהממוצע לשנתון. הנה כולם.`;
+  return { title: K === 1 ? one : many, line: BELOW_FLOOR_LINE };
 }
 
 // ---------------------------------------------------------------------------

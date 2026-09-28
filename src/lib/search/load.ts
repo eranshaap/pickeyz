@@ -219,14 +219,17 @@ export type ResultsState = "zero_results" | "zero_scored" | "uncrowned" | "crown
  * Run 2 §3.2 — the three numbers the heads and the gate are read off, and where they came from.
  *   cars             the cars the screen displays (Run 1's `cars_shown`, per car after the merge)
  *   with_comparison  the shown rows with a deal score
- *   eligible         of those, the rows eligible to win (rules v7 §1.2)
+ *   verified         of those, the rows no `unverified_history` and no `cancelled` verdict bars (rules v7's `eligible`)
+ *   eligible         of THOSE, the rows the `condition_floor` verdict does not bar either (rules v8 §0c) — the
+ *                    count the gate decides on, and the one the three headlines are chosen by
  *   threshold        CROWNING_THRESHOLD, as the selection library holds it
- *   source           'record' — the rank-1 row's `crowning_threshold` record carried the two counts;
+ *   source           'record' — the rank-1 row's `crowning_threshold` record carried the three counts;
  *                    'recount' — it did not (rows written before version 7), so they were counted off the rows
  */
 export type ResultsCounts = {
   cars: number;
   with_comparison: number;
+  verified: number;
   eligible: number;
   threshold: number;
   source: "record" | "recount";
@@ -361,11 +364,14 @@ const firedIneligible = (row: ResultRow, rule: string): boolean => traceOf(row).
 /**
  * §3.2 — the counts, from the record when it is there and from a recount over the rows when it is not.
  *
- * `cars` is always Run 1's shownCarsCount over the rows (one per car, after the merge). The other two come from
+ * `cars` is always Run 1's shownCarsCount over the rows (one per car, after the merge). The other three come from
  * the rank-1 row's `crowning_threshold` record — which rows written by version 7 carry, and rows written before
  * it do not. The recount is the reading Run 1's read-back used: a shown row with a `total_score`, and among
  * those the rows on which neither `unverified_history` nor `cancelled` fired with the `ineligible` effect
- * (rules v7 §1.2 — the same two verdicts, so record and recount cannot disagree).
+ * (rules v7 §1.2 — the same two verdicts, so record and recount cannot disagree). Rules v8 (§0c) adds the third
+ * count on the recount path the same way: of the `verified` rows, those on which `condition_floor` did NOT fire.
+ * A row carrying no `condition_floor` record at all — every row written before version 8 — counts as NOT below the
+ * floor, which is the only reading that leaves a pre-v8 search looking exactly as it looked when it was written.
  */
 export function resultsCounts(rows: readonly ResultRow[], car_id_of: ReadonlyMap<number, number>): ResultsCounts {
   const cars = shownCarsCount(
@@ -378,18 +384,22 @@ export function resultsCounts(rows: readonly ResultRow[], car_id_of: ReadonlyMap
 
   const record = crowningRecord(rows);
   if (record !== null) {
-    const { eligible, with_comparison } = record.counts;
-    return { cars, with_comparison, eligible, threshold: CROWNING_THRESHOLD, source: "record" };
+    const { eligible, verified, with_comparison } = record.counts;
+    return { cars, with_comparison, verified, eligible, threshold: CROWNING_THRESHOLD, source: "record" };
   }
 
   let with_comparison = 0;
+  let verified = 0;
   let eligible = 0;
   for (const r of rows) {
     if (!hasComparison(r)) continue;
     with_comparison += 1;
-    if (!firedIneligible(r, "unverified_history") && !firedIneligible(r, "cancelled")) eligible += 1;
+    if (firedIneligible(r, "unverified_history") || firedIneligible(r, "cancelled")) continue;
+    verified += 1;
+    // §0c — a row with no `condition_floor` record at all (written before version 8) is not below the floor.
+    if (!firedIneligible(r, "condition_floor")) eligible += 1;
   }
-  return { cars, with_comparison, eligible, threshold: CROWNING_THRESHOLD, source: "recount" };
+  return { cars, with_comparison, verified, eligible, threshold: CROWNING_THRESHOLD, source: "recount" };
 }
 
 /**
@@ -397,7 +407,7 @@ export function resultsCounts(rows: readonly ResultRow[], car_id_of: ReadonlyMap
  * shown, or the rows were written before version 7 (the read-back's case, never the site's after deploy).
  * Two records on one row is a contradiction, not a choice — the gate is measured once.
  */
-function crowningRecord(rows: readonly ResultRow[]): { triggered: boolean; counts: { eligible: number; with_comparison: number } } | null {
+function crowningRecord(rows: readonly ResultRow[]): { triggered: boolean; counts: { eligible: number; verified: number; with_comparison: number } } | null {
   const first = rows.find((r) => r.rank === 1);
   if (first === undefined) return null;
   const entries = traceOf(first).filter((t) => t.rule === CROWNING_RULE);
@@ -407,11 +417,15 @@ function crowningRecord(rows: readonly ResultRow[]): { triggered: boolean; count
   }
   const e = entries[0];
   const eligible = e.context.eligible;
+  const verified = e.context.verified;
   const with_comparison = e.context.with_comparison;
-  if (typeof eligible !== "number" || typeof with_comparison !== "number") {
-    throw new Error(`resultsView: listing ${first.listing_id}'s ${CROWNING_RULE} record does not carry both counts`);
+  // §0c — ALL THREE counts, or none: a record written before version 8 carries no `verified`, and its question is
+  // re-run on load (the rules version differs = an update) before any screen reads it. So a missing count here is a
+  // fault in the writer, not a case to fall back from.
+  if (typeof eligible !== "number" || typeof verified !== "number" || typeof with_comparison !== "number") {
+    throw new Error(`resultsView: listing ${first.listing_id}'s ${CROWNING_RULE} record does not carry all three counts`);
   }
-  return { triggered: e.triggered, counts: { eligible, with_comparison } };
+  return { triggered: e.triggered, counts: { eligible, verified, with_comparison } };
 }
 
 /**

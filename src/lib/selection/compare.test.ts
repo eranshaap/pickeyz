@@ -15,12 +15,16 @@ const ALL_TRUE: Eligibility = {
   cheapest: true,
   reasons: [],
   without_unverified_history: { best_value: true, peace_of_mind: true, cheapest: true },
+  // rules v8 (§0a): the second counterfactual. Nothing in compare.ts reads either of them — these are hand-built
+  // sides — so it mirrors the flags beside it, exactly as the other one does.
+  without_condition_floor: { best_value: true, peace_of_mind: true, cheapest: true },
 };
 
 const eligibility = (over: Partial<Record<Category, boolean>> = {}): Eligibility => ({
   ...ALL_TRUE,
   ...over,
   without_unverified_history: { ...ALL_TRUE.without_unverified_history, ...over },
+  without_condition_floor: { ...ALL_TRUE.without_condition_floor, ...over },
 });
 
 const runnerUpTrace = (runner_up: number, gap: number, triggered = true): RuleTrace => ({
@@ -47,17 +51,18 @@ const listing = (over: Partial<ListingResult> & { listing_id: number }): Listing
 });
 
 /**
- * rules v7 (§1.4) — the crowning gate's record, as index.ts writes it on the rank-1 row. A hand-built side
- * needs it: the finish test reads it, and a side without it is not a v7 result.
+ * rules v7 (§1.4), as rules v8 (§0c) re-cuts it — the crowning gate's record, as index.ts writes it on the rank-1
+ * row. A hand-built side needs it: the finish test reads it, and a side without all THREE counts is not a v8 result.
+ * `verified` defaults to `eligible`: nobody in these hand-built sides is below the floor.
  */
-const crowningTrace = (eligible: number, with_comparison: number, threshold = 0): RuleTrace => ({
+const crowningTrace = (eligible: number, with_comparison: number, verified = eligible, threshold = 0): RuleTrace => ({
   rule: "crowning_threshold",
   type: "portfolio",
   value: eligible,
   threshold,
   triggered: eligible < threshold,
   effect: "none",
-  context: { eligible, with_comparison },
+  context: { with_comparison, verified, eligible },
 });
 
 /** Three shown listings ranked 1..3; best_value 1, peace_of_mind 2, cheapest 3, runner-up recorded on 3. */
@@ -69,12 +74,12 @@ function side(over: { picks?: Partial<SelectionResult["picks"]>; results?: Listi
     listing({ listing_id: 3, rank: 3, stage_a_place: 3, categories: ["cheapest"], trace: [runnerUpTrace(ru, 4)] }),
   ];
   return {
-    rules_version: 7,
+    rules_version: 8,
     picks: { best_value: 1, peace_of_mind: 2, cheapest: 3, ...over.picks },
     missing: {},
     // rules v7 (§1.7): the gate's own numbers ride on the result. These are hand-built sides, so they are
     // stated, not measured — this file compares two finished results and runs no selection.
-    crowning: { eligible: 3, with_comparison: 3, threshold: 0, crowned: true },
+    crowning: { eligible: 3, verified: 3, with_comparison: 3, threshold: 0, crowned: true },
     runner_ups: { cheapest: { listing_id: ru, gap: 4, price_over_pct: 3, triggered: true } },
     results,
   };

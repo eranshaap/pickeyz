@@ -67,7 +67,7 @@ function result(over: Partial<ListingResult> = {}): ListingResult {
     stage_a_place: 1,
     excluded_by: null,
     verify_availability: false,
-    eligibility: { best_value: true, peace_of_mind: true, cheapest: true, reasons: [], without_unverified_history: { best_value: true, peace_of_mind: true, cheapest: true } },
+    eligibility: { best_value: true, peace_of_mind: true, cheapest: true, reasons: [], without_unverified_history: { best_value: true, peace_of_mind: true, cheapest: true }, without_condition_floor: { best_value: true, peace_of_mind: true, cheapest: true } },
     categories: [],
     trace: [],
     ...over,
@@ -120,7 +120,7 @@ describe("poolVerdicts() — the library's own verdicts, never restated (§3.3)"
         trace({ rule: "unverified_history", type: RULE_TYPE.unverified_history, triggered: true, effect: "ineligible" }),
         trace({ rule: "cancelled", type: RULE_TYPE.cancelled, triggered: true, effect: "ineligible" }),
       ],
-      eligibility: { best_value: false, peace_of_mind: false, cheapest: false, reasons: ["cancelled", "thin_cell"], without_unverified_history: { best_value: false, peace_of_mind: false, cheapest: false } },
+      eligibility: { best_value: false, peace_of_mind: false, cheapest: false, reasons: ["cancelled", "thin_cell"], without_unverified_history: { best_value: false, peace_of_mind: false, cheapest: false }, without_condition_floor: { best_value: false, peace_of_mind: false, cheapest: false } },
     });
     assert.deepEqual(poolVerdicts(r), { sold_strong: false, dealer_not_visible: false, below_threshold: false, above_new_price: false });
     assert.deepEqual(decideVisibility({ exists: true, delisted: false, ...poolVerdicts(r) }), { shown: true });

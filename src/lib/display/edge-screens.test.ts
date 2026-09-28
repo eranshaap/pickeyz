@@ -11,25 +11,25 @@ const T = CROWNING_THRESHOLD;
 
 describe("uncrownedHead() — reason A: too few cars with a price comparison (§2.1)", () => {
   it("the plural", () => {
-    assert.deepEqual(uncrownedHead({ with_comparison: 6, eligible: 6, threshold: T }), {
+    assert.deepEqual(uncrownedHead({ with_comparison: 6, verified: 6, eligible: 6, threshold: T }), {
       title: "רק 6 רכבים עם השוואת מחיר עונים על מה שביקשת. הנה כולם.",
       line: "כשנשארים מעט רכבים לא בוחרים מהם שלושה.",
     });
   });
 
   it("the singular at one — the line unchanged (§2.5)", () => {
-    assert.deepEqual(uncrownedHead({ with_comparison: 1, eligible: 1, threshold: T }), {
+    assert.deepEqual(uncrownedHead({ with_comparison: 1, verified: 1, eligible: 1, threshold: T }), {
       title: "רק רכב אחד עם השוואת מחיר עונה על מה שביקשת. הנה הוא.",
       line: "כשנשארים מעט רכבים לא בוחרים מהם שלושה.",
     });
   });
 
   it("reason A also when fewer of them are eligible: N is what the head counts", () => {
-    assert.equal(uncrownedHead({ with_comparison: 5, eligible: 2, threshold: T }).title, "רק 5 רכבים עם השוואת מחיר עונים על מה שביקשת. הנה כולם.");
+    assert.equal(uncrownedHead({ with_comparison: 5, verified: 2, eligible: 2, threshold: T }).title, "רק 5 רכבים עם השוואת מחיר עונים על מה שביקשת. הנה כולם.");
   });
 
   it("the thousands separator is the site's", () => {
-    assert.equal(uncrownedHead({ with_comparison: 1200, eligible: 3, threshold: 2000 }).title.includes("1,200"), true);
+    assert.equal(uncrownedHead({ with_comparison: 1200, verified: 3, eligible: 3, threshold: 2000 }).title.includes("1,200"), true);
   });
 });
 
@@ -37,45 +37,99 @@ describe("uncrownedHead() — reason B: enough with a comparison, too few with r
   const LINE = "ממליצים רק על רכב עם היסטוריית בעלויות, וכשיש מעט כאלה לא בוחרים מהם שלושה.";
 
   it("the plural", () => {
-    assert.deepEqual(uncrownedHead({ with_comparison: 14, eligible: 3, threshold: T }), {
+    assert.deepEqual(uncrownedHead({ with_comparison: 14, verified: 3, eligible: 3, threshold: T }), {
       title: "14 רכבים עונים על מה שביקשת, ורק ל-3 מהם יש היסטוריית בעלויות במשרד התחבורה. הנה כולם.",
       line: LINE,
     });
   });
 
   it("one eligible car (§2.5)", () => {
-    assert.deepEqual(uncrownedHead({ with_comparison: 14, eligible: 1, threshold: T }), {
+    assert.deepEqual(uncrownedHead({ with_comparison: 14, verified: 1, eligible: 1, threshold: T }), {
       title: "14 רכבים עונים על מה שביקשת, ורק לאחד מהם יש היסטוריית בעלויות במשרד התחבורה. הנה כולם.",
       line: LINE,
     });
   });
 
   it("no eligible car at all (§2.5)", () => {
-    assert.deepEqual(uncrownedHead({ with_comparison: 14, eligible: 0, threshold: T }), {
+    assert.deepEqual(uncrownedHead({ with_comparison: 14, verified: 0, eligible: 0, threshold: T }), {
       title: "14 רכבים עונים על מה שביקשת, ולאף אחד מהם אין היסטוריית בעלויות במשרד התחבורה. הנה כולם.",
       line: LINE,
     });
   });
+
+  // rules v8 (§0d): reason B counts `verified`, not `eligible` — the cars below the floor HAVE registry history and
+  // this headline is not about them.
+  it("M is `verified`: the cars below the floor do not change this headline", () => {
+    assert.equal(
+      uncrownedHead({ with_comparison: 14, verified: 3, eligible: 1, threshold: T }).title,
+      "14 רכבים עונים על מה שביקשת, ורק ל-3 מהם יש היסטוריית בעלויות במשרד התחבורה. הנה כולם.",
+    );
+  });
 });
 
-describe("uncrownedHead() — the boundary and the throws (§2.1)", () => {
-  it("N: 7 -> reason A", () => {
-    assert.equal(uncrownedHead({ with_comparison: 7, eligible: 7, threshold: T }).line, "כשנשארים מעט רכבים לא בוחרים מהם שלושה.");
+// BRIEF Days 22–23, Run 1b §0d — THE THIRD HEADLINE: enough cars with a comparison and enough with registry
+// history, and the condition floor is what emptied the screen.
+describe("uncrownedHead() — reason C: the cars below the condition floor (§0d)", () => {
+  const LINE = "רכב כזה לא מקבל תווית, וכשנשארים מעט רכבים לא בוחרים מהם שלושה.";
+
+  it("K = 1 -> the singular form of K; N has no singular here (N >= threshold)", () => {
+    assert.deepEqual(uncrownedHead({ with_comparison: 8, verified: 8, eligible: 7, threshold: T }), {
+      title: '8 רכבים עונים על מה שביקשת, אבל לאחד מהם בעלויות או ק"מ נמוכים בהרבה מהממוצע לשנתון. הנה כולם.',
+      line: LINE,
+    });
   });
 
-  it("N: 8, M: 7 -> reason B", () => {
+  it("K = 4, and both numbers go through the site's num()", () => {
+    assert.deepEqual(uncrownedHead({ with_comparison: 13, verified: 9, eligible: 5, threshold: T }), {
+      title: '13 רכבים עונים על מה שביקשת, אבל ל-4 מהם בעלויות או ק"מ נמוכים בהרבה מהממוצע לשנתון. הנה כולם.',
+      line: LINE,
+    });
+  });
+
+  it("the km unit is the car page's own rubric heading, never a glyph chosen here", () => {
+    assert.equal(uncrownedHead({ with_comparison: 13, verified: 9, eligible: 5, threshold: T }).title.includes(RUBRIC_HEADINGS.km), true);
+  });
+
+  it("the thousands separator is the site's, on N and on K", () => {
+    const title = uncrownedHead({ with_comparison: 4000, verified: 4000, eligible: 2200, threshold: 4000 }).title;
+    assert.equal(title.includes("4,000"), true);
+    assert.equal(title.includes("1,800"), true);
+  });
+});
+
+describe("uncrownedHead() — the boundary and the throws (§2.1, §0d)", () => {
+  it("N: 7 -> reason A", () => {
+    assert.equal(uncrownedHead({ with_comparison: 7, verified: 7, eligible: 7, threshold: T }).line, "כשנשארים מעט רכבים לא בוחרים מהם שלושה.");
+  });
+
+  it("N: 6, all six eligible -> reason A (unchanged)", () => {
+    assert.equal(uncrownedHead({ with_comparison: 6, verified: 6, eligible: 6, threshold: T }).line, "כשנשארים מעט רכבים לא בוחרים מהם שלושה.");
+  });
+
+  it("N: 8, verified 7 -> reason B", () => {
     assert.equal(
-      uncrownedHead({ with_comparison: 8, eligible: 7, threshold: T }).line,
+      uncrownedHead({ with_comparison: 8, verified: 7, eligible: 7, threshold: T }).line,
       "ממליצים רק על רכב עם היסטוריית בעלויות, וכשיש מעט כאלה לא בוחרים מהם שלושה.",
     );
   });
 
-  it("N: 8, M: 8 -> a throw: the screen is not uncrowned", () => {
-    assert.throws(() => uncrownedHead({ with_comparison: 8, eligible: 8, threshold: T }), /crowned/);
+  it("N: 9, verified 7, eligible 5 -> reason B: the history count is the one below the threshold", () => {
+    assert.equal(
+      uncrownedHead({ with_comparison: 9, verified: 7, eligible: 5, threshold: T }).line,
+      "ממליצים רק על רכב עם היסטוריית בעלויות, וכשיש מעט כאלה לא בוחרים מהם שלושה.",
+    );
+  });
+
+  it("N: 8, verified 8, eligible 8 -> a throw: the screen is not uncrowned", () => {
+    assert.throws(() => uncrownedHead({ with_comparison: 8, verified: 8, eligible: 8, threshold: T }), /crowned/);
+  });
+
+  it("eligible is the count the guard reads: 8 of them throws even with a smaller with_comparison", () => {
+    assert.throws(() => uncrownedHead({ with_comparison: 8, verified: 9, eligible: 8, threshold: T }), /crowned/);
   });
 
   it("N: 0 -> a throw: that is the zero-scored screen", () => {
-    assert.throws(() => uncrownedHead({ with_comparison: 0, eligible: 0, threshold: T }), /zero-scored/);
+    assert.throws(() => uncrownedHead({ with_comparison: 0, verified: 0, eligible: 0, threshold: T }), /zero-scored/);
   });
 });
 

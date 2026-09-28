@@ -517,16 +517,23 @@ describe("resultsViewFrom() — the cards (§2.1, §2.4)", () => {
 // Still no database: resultsViewFrom() is the whole rule, on literal rows.
 // ---------------------------------------------------------------------------
 
-/** rules v7 §1.4 — the crowning gate's record, as index.ts writes it on the rank-1 row. */
-const crowningRecord = (eligible: number, with_comparison: number, threshold = CROWNING_THRESHOLD): Prisma.JsonValue =>
+/**
+ * rules v7 §1.4, as rules v8 §0c re-cuts it — the crowning gate's record, as index.ts writes it on the rank-1 row.
+ * `verified` defaults to `eligible`: in a fixture with nobody below the floor the two counts are the same number.
+ */
+const crowningRecord = (eligible: number, with_comparison: number, verified = eligible, threshold = CROWNING_THRESHOLD): Prisma.JsonValue =>
   trace({
     rule: "crowning_threshold",
     value: eligible,
     threshold,
     triggered: eligible < threshold,
     effect: "none",
-    context: { eligible, with_comparison },
+    context: { with_comparison, verified, eligible },
   });
+
+/** The `condition_floor` record as gate.ts writes it when the floor bars a listing (rules v8 §0a). */
+const conditionFloorRecord = (): Prisma.JsonValue =>
+  trace({ rule: "condition_floor", value: -9, threshold: -5, triggered: true, effect: "ineligible", context: { evaluated: true } });
 
 /** The `unverified_history` record as gate.ts writes it when the rule bars a listing. */
 const unverifiedRecord = (): Prisma.JsonValue =>
@@ -604,16 +611,43 @@ describe("resultsCounts() — the record and the recount agree (§3.2)", () => {
   const cars = carsFor([1, 2, 3, 4, 5, 6]);
 
   it("from a recount when no row carries the record", () => {
-    assert.deepEqual(resultsCounts(rows, cars), { cars: 5, with_comparison: 4, eligible: 2, threshold: CROWNING_THRESHOLD, source: "recount" });
+    assert.deepEqual(resultsCounts(rows, cars), { cars: 5, with_comparison: 4, verified: 2, eligible: 2, threshold: CROWNING_THRESHOLD, source: "recount" });
   });
 
   it("from the record when the rank-1 row carries it — the same numbers, on the same fixture", () => {
     const withRecord = rows.map((r) => (r.rank === 1 ? { ...r, stage_b_trace: [crowningRecord(2, 4)] } : r));
     const fromRecord = resultsCounts(withRecord, cars);
-    assert.deepEqual(fromRecord, { cars: 5, with_comparison: 4, eligible: 2, threshold: CROWNING_THRESHOLD, source: "record" });
+    assert.deepEqual(fromRecord, { cars: 5, with_comparison: 4, verified: 2, eligible: 2, threshold: CROWNING_THRESHOLD, source: "record" });
     const fromRecount = resultsCounts(rows, cars);
     assert.equal(fromRecord.with_comparison, fromRecount.with_comparison);
+    assert.equal(fromRecord.verified, fromRecount.verified);
     assert.equal(fromRecord.eligible, fromRecount.eligible);
+  });
+
+  // rules v8 (§0c) — the third count, on both paths.
+  it("the record carries all three counts, and a record missing `verified` is a fault, not a case", () => {
+    const withRecord = rows.map((r) => (r.rank === 1 ? { ...r, stage_b_trace: [crowningRecord(5, 13, 9)] } : r));
+    const c = resultsCounts(withRecord, cars);
+    assert.equal(c.source, "record");
+    assert.equal(c.with_comparison, 13);
+    assert.equal(c.verified, 9);
+    assert.equal(c.eligible, 5);
+
+    const preV8 = rows.map((r) => (r.rank === 1 ? { ...r, stage_b_trace: [trace({ rule: "crowning_threshold", value: 5, context: { eligible: 5, with_comparison: 13 } })] } : r));
+    assert.throws(() => resultsCounts(preV8, cars), /all three counts/);
+  });
+
+  it("the recount: `eligible` drops the rows a condition_floor record bars, and a row with no such record is not below the floor", () => {
+    // no crowning record anywhere, so this is the recount path
+    const withFloored = rows.map((r) => (r.listing_id === 4 ? { ...r, stage_b_trace: [conditionFloorRecord()] } : r));
+    const c = resultsCounts(withFloored, cars);
+    assert.equal(c.source, "recount");
+    assert.equal(c.with_comparison, 4);
+    assert.equal(c.verified, 2); // rows 1 and 4: rows 2 and 3 are unverified
+    assert.equal(c.eligible, 1); // row 4 is below the floor
+    // and with no condition_floor record anywhere at all, eligible === verified
+    const plain = resultsCounts(rows, cars);
+    assert.equal(plain.eligible, plain.verified);
   });
 
   it("a cancelled row has no comparison and is counted as a car all the same", () => {
@@ -621,6 +655,18 @@ describe("resultsCounts() — the record and the recount agree (§3.2)", () => {
     const c = resultsCounts(withCancelled, carsFor([1, 2, 3, 4, 5, 6, 7]));
     assert.equal(c.cars, 6);
     assert.equal(c.with_comparison, 4);
+  });
+});
+
+// BRIEF Days 22–23, Run 1b §0c/§0d — the third count travels from the record to the third headline.
+describe("resultsViewFrom() — a search the condition floor emptied draws reason C (§0d)", () => {
+  it("the record's three counts reach the head, and the head is the floor's", () => {
+    const rows = [scoredRow(10, 1, { stage_b_trace: [crowningRecord(5, 13, 9)] }), scoredRow(20, 2)];
+    const v = viewOf(rows);
+    assert.equal(v.state, "uncrowned");
+    assert.deepEqual(v.counts, { cars: 2, with_comparison: 13, verified: 9, eligible: 5, threshold: CROWNING_THRESHOLD, source: "record" });
+    assert.deepEqual(v.head, uncrownedHead({ with_comparison: 13, verified: 9, eligible: 5, threshold: CROWNING_THRESHOLD }));
+    assert.equal((v.head as { line: string }).line, "רכב כזה לא מקבל תווית, וכשנשארים מעט רכבים לא בוחרים מהם שלושה.");
   });
 });
 
@@ -638,7 +684,7 @@ describe("resultsViewFrom() — the places, the rows and the group (§3.5)", () 
 
   it("uncrowned, with the head of §2.1's reason A", () => {
     assert.equal(view.state, "uncrowned");
-    assert.deepEqual(view.head, uncrownedHead({ with_comparison: 3, eligible: 3, threshold: CROWNING_THRESHOLD }));
+    assert.deepEqual(view.head, uncrownedHead({ with_comparison: 3, verified: 3, eligible: 3, threshold: CROWNING_THRESHOLD }));
   });
 
   it("places: the shown rows with a comparison, in rank order, each labelled by its rank", () => {
@@ -713,7 +759,7 @@ describe("resultsViewFrom() — the places, the rows and the group (§3.5)", () 
     assert.deepEqual(v, {
       public_id: QUESTION_ID,
       state: "zero_results",
-      counts: { cars: 0, with_comparison: 0, eligible: 0, threshold: CROWNING_THRESHOLD, source: "recount" },
+      counts: { cars: 0, with_comparison: 0, verified: 0, eligible: 0, threshold: CROWNING_THRESHOLD, source: "recount" },
       head: null,
       cards: [],
       runner_up: null,
@@ -815,7 +861,7 @@ describe("§6.4 — the uncrowned headlines with a cancelled car on the screen",
     assert.equal(v.state, "uncrowned");
     assert.equal(v.counts.with_comparison, 5);
     assert.equal(v.counts.eligible, 5);
-    assert.deepEqual(v.head, uncrownedHead({ with_comparison: 5, eligible: 5, threshold: CROWNING_THRESHOLD }));
+    assert.deepEqual(v.head, uncrownedHead({ with_comparison: 5, verified: 5, eligible: 5, threshold: CROWNING_THRESHOLD }));
     // the floor, the no-price group and the cancelled group, each with its own rows
     assert.deepEqual(
       v.places.map((r) => r.place),

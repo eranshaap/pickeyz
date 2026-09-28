@@ -18,8 +18,9 @@ import type { Category, DoubleWinnerEffect, MissingReason, SelectionResult, TooS
 import { RULE_TYPE } from "./types";
 import { cmpNullsLast, parseIso, round } from "./util";
 
-// The candidate set for a category: exactly the shown listings eligible for it (§2; the cheapest bar is part of
-// eligibility since §11.3, its value CHEAPEST_CONDITION_FLOOR since part 3 §2a), in the category's order.
+// The candidate set for a category: exactly the shown listings eligible for it (§2; the condition floor is part of
+// eligibility since §11.3, its value CONDITION_FLOOR since part 3 §2a, and from Days 22–23 rules v8 §0a it bars
+// every category and not `cheapest` alone), in the category's order.
 function candidatesFor(category: Category, shown: Work[]): Work[] {
   return shown.filter((w) => w.result.eligibility[category]).sort((a, b) => categoryOrder[category](a.input, b.input));
 }
@@ -85,25 +86,36 @@ export function pick(
   return { picks, missing, runner_ups: { cheapest: cheapestRunnerUp(shown, picks.cheapest) } };
 }
 
-// Day 14 rules v5 (§0.2) — per category, the counterfactual winner: the first listing in that category's order that
-// passes every eligibility condition EXCEPT unverified_history. When it is not the actual winner, and the reason it is
-// not is this rule (it is otherwise eligible and the rule is what bars it), its unverified_history record carries
-// blocked_first: [category, ...]. One extra read of an order that already exists — no what-if machinery, no re-run.
-// At most one listing per category can carry it; one listing may carry several categories.
+// Day 14 rules v5 (§0.2), as Days 22–23 rules v8 (§0a) generalises it — per BARRING RULE and per category, the
+// counterfactual winner: the first listing in that category's order that passes every eligibility condition EXCEPT
+// that rule. When it is not the actual winner, and the reason it is not is that rule (it is otherwise eligible and
+// the rule is what bars it), THAT RULE's record carries blocked_first: [category, ...]. One extra read, per rule, of
+// an order that already exists — no what-if machinery, no re-run. At most one listing per category PER RULE can
+// carry it; one listing may carry several categories.
+//
+// A car barred by BOTH rules is first in NEITHER counterfactual set and carries nothing — which is the documents'
+// "only the floor stopped it" read literally: the fact recorded is that this rule ALONE kept the car out.
+const BARRING_RULES: readonly { rule: "unverified_history" | "condition_floor"; counterfactual: "without_unverified_history" | "without_condition_floor" }[] = [
+  { rule: "unverified_history", counterfactual: "without_unverified_history" },
+  { rule: "condition_floor", counterfactual: "without_condition_floor" },
+];
+
 function blockedFirst(shown: Work[], picks: Record<Category, number | null>): void {
-  for (const category of CATEGORY_PRIORITY) {
-    const first = shown
-      .filter((w) => w.result.eligibility.without_unverified_history[category])
-      .sort((a, b) => categoryOrder[category](a.input, b.input))[0];
-    if (first === undefined) continue;
-    if (first.input.listing_id === picks[category]) continue; // it won — nothing was blocked
-    if (first.result.eligibility[category]) continue; // it is eligible and still did not win: some other rule, not this one
-    const entry = first.result.trace.find((t) => t.rule === "unverified_history");
-    if (entry === undefined) {
-      throw new Error(`selection: listing ${first.input.listing_id} was first for ${category} but for unverified_history, and carries no record of the rule`);
+  for (const { rule, counterfactual } of BARRING_RULES) {
+    for (const category of CATEGORY_PRIORITY) {
+      const first = shown
+        .filter((w) => w.result.eligibility[counterfactual][category])
+        .sort((a, b) => categoryOrder[category](a.input, b.input))[0];
+      if (first === undefined) continue;
+      if (first.input.listing_id === picks[category]) continue; // it won — nothing was blocked
+      if (first.result.eligibility[category]) continue; // it is eligible and still did not win: some other rule, not this one
+      const entry = first.result.trace.find((t) => t.rule === rule);
+      if (entry === undefined) {
+        throw new Error(`selection: listing ${first.input.listing_id} was first for ${category} but for ${rule}, and carries no record of the rule`);
+      }
+      const so_far = (entry.context.blocked_first as Category[] | undefined) ?? [];
+      entry.context = { ...entry.context, blocked_first: [...so_far, category] };
     }
-    const so_far = (entry.context.blocked_first as Category[] | undefined) ?? [];
-    entry.context = { ...entry.context, blocked_first: [...so_far, category] };
   }
 }
 
