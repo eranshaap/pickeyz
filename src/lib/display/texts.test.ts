@@ -68,10 +68,11 @@ describe("the fair number (§8.2)", () => {
 });
 
 describe("the thin-cell line (§8.2)", () => {
-  // Run 9 §4.1 — comparedToLine() and its two cases are gone with the sentence itself. The thin-cell
-  // sentence is the one line here that §4.2 leaves untouched.
-  it("the thin-cell line is fixed", () => {
-    assert.equal(thinCellLine(), "אין השוואת מחיר — פחות מ-5 רכבים דומים הוצעו למכירה");
+  // Run 9 §4.1 — comparedToLine() and its two cases are gone with the sentence itself.
+  // Run 5c §4 — and the thin-cell line itself is now the bare statement: Eran's ruling of 29/09 drops the
+  // second half of the Day 19 wording, so what the car page draws in place of the fair number is this alone.
+  it("the thin-cell line is the bare statement, with no reason after it", () => {
+    assert.equal(thinCellLine(), "אין השוואת מחיר");
   });
 });
 
@@ -86,7 +87,15 @@ describe("priceBlock() (§8.2)", () => {
     assert.deepEqual(priceBlock({ ...scored, thin_cell: true }), { thin: thinCellLine() });
   });
 
-  it("an unscored listing gets NOTHING under the % row — no fair, no compared, no thin line", () => {
+  // Run 5c §4 — the car page's case, end to end: a car with no price comparison and no score (the no-price
+  // group's car, whose page drew nothing at all under the price) yields the line itself.
+  it("a thin cell with no score yields 'אין השוואת מחיר'", () => {
+    assert.deepEqual(priceBlock({ ...scored, thin_cell: true, score: null, median_price: null, sample_size: null, window_days: null }), {
+      thin: "אין השוואת מחיר",
+    });
+  });
+
+  it("an unscored listing that is NOT a thin cell gets nothing under the % row — a cancelled car is the case", () => {
     assert.equal(priceBlock({ ...scored, score: null }), null);
     assert.equal(priceBlock({ ...scored, median_price: null }), null);
     assert.equal(priceBlock({ ...scored, sample_size: null }), null);

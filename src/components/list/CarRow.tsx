@@ -7,7 +7,7 @@
 // table has ONE structure wherever it is drawn.
 //
 // TWO COMPLETE TREES, split by the site's `md` breakpoint (§4.2) — not one tree that reflows:
-//   desktop   a table row: a grid of eight cells, 48px high, and only the "לעמוד הרכב" link navigates. The row
+//   desktop   a table row: a grid of eight cells, 48px high at the least, and only the "לעמוד הרכב" link navigates. The row
 //             body has no click and keeps the default cursor (findCar-now.md, "לחיצות במסך התוצאות").
 //   phone     the WHOLE row is the link: one stacked data line and no link text, tapped anywhere, dimming whole.
 // The visibility classes are Tailwind's because a media query cannot live in a style attribute; everything the
@@ -71,7 +71,7 @@ function DesktopRow({ row }: CarRowProps) {
         gap: GAP,
         minWidth: MIN_WIDTH,
         alignItems: "center",
-        height: 48,
+        minHeight: 48,
         fontSize: 15,
         color: DARK,
       }}
@@ -86,8 +86,12 @@ function DesktopRow({ row }: CarRowProps) {
       <span style={{ textAlign: ALIGN[3], fontVariantNumeric: "tabular-nums" }}>{value(row.km)}</span>
       <span style={{ textAlign: ALIGN[4] }}>{value(row.hand)}</span>
       <span style={{ textAlign: ALIGN[5] }}>{row.ownership_word ?? EMPTY_VALUE}</span>
+      {/* Run 5c §1 — THE ONE CELL THAT WRAPS. It carried `whiteSpace: "nowrap"` with `overflow: "hidden"`, so
+          between the phone boundary and the full container width the sentence was cut mid-word with no ellipsis.
+          The truncation is gone and the row height above is a MINIMUM, so a two-line cell grows ITS OWN row and
+          no other column moves. The other seven cells are numbers and single words and keep their one line. */}
       {/* §4.6 — the generator's cell. Empty while the tag and the sentence are: the cell stays, the text does not. */}
-      <span style={{ textAlign: ALIGN[6], fontSize: 14, color: DARK, whiteSpace: "nowrap", overflow: "hidden" }}>
+      <span style={{ textAlign: ALIGN[6], fontSize: 14, color: DARK }}>
         <SentenceLine tag={row.tag} sentence={row.sentence} />
       </span>
       <span style={{ textAlign: ALIGN[7] }}>
@@ -202,7 +206,8 @@ export function MoreRow({ text, onOpen }: { text: string; onOpen: () => void }) 
 /**
  * §4.4 (Run 2 §4.4) — the white box the rows sit in. Every row but the last gets the hairline, so the last row
  * has no rule under it and the box's own border closes the list. The header row, when there is one, is the first
- * of those rows and carries the hairline under it like any other.
+ * of those rows and carries the hairline under it like any other. Below the phone boundary the header, its
+ * wrapper and that hairline all go away together (Run 5c §2), so the phone box opens on its first row.
  */
 export function CarRows({ header = false, sentenceLabel = false, children }: { header?: boolean; sentenceLabel?: boolean; children: React.ReactNode }) {
   const rows = [...(header ? [<HeaderRow key="header" sentenceLabel={sentenceLabel} />] : []), ...Children.toArray(children)];
@@ -216,7 +221,14 @@ export function CarRows({ header = false, sentenceLabel = false, children }: { h
       {rows.map((child, i) => (
         // The index IS this wrapper's identity: it is the hairline's position in the list, not a row. The row
         // inside it carries its own key (its listing's public_id).
-        <div key={i} style={i === rows.length - 1 ? undefined : { borderBottom: `1px solid ${HAIRLINE}` }}>
+        //
+        // Run 5c §2 — THE HEADER'S WRAPPER GOES WHERE THE HEADER GOES. `HeaderRow` is `hidden md:grid`, so below the
+        // boundary the header itself drew nothing — but THIS wrapper still drew, and with it the hairline of the
+        // row under the header: an empty band with a grey line at the top of the phone box. The whole header
+        // element is now one thing that goes away — the wrapper and its border with the row itself — and the first
+        // phone row starts at the box's own 4px top padding, exactly like the rows of the no-price group. Above
+        // the boundary nothing changed: the wrapper is `md:block` and carries the same hairline it always did.
+        <div key={i} className={header && i === 0 ? "hidden md:block" : undefined} style={i === rows.length - 1 ? undefined : { borderBottom: `1px solid ${HAIRLINE}` }}>
           {child}
         </div>
       ))}

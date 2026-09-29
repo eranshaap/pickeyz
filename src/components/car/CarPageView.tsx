@@ -188,7 +188,11 @@ function RegionLine({ region, color, size }: { region: string | null; color: str
 /**
  * §5.1 — the price block: a 4px column. The price row as it was, then the fair number ALONE (§4.1 — the
  * grey "הושווה ל-…" line that used to share its baseline row is deleted, so the fair number is a line of
- * its own and no longer wraps against anything), or the thin-cell sentence, and last the region line.
+ * its own and no longer wraps against anything), or the thin-cell line, and last the region line.
+ *
+ * Run 5c §4 — THE TWO ARE ONE ROW, NOT TWO STYLES. The thin-cell line stands IN PLACE OF the fair number, so
+ * it is drawn in the fair number's place, size and weight; it used to be a smaller grey line of its own.
+ * A page with neither — a cancelled car — still draws nothing between the price row and the region line.
  */
 function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "desktop" }) {
   const b = data.priceBlock;
@@ -204,14 +208,9 @@ function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "de
           </span>
         )}
       </div>
-      {b !== null && "fair" in b && (
+      {b !== null && (
         <span className={`font-bold tabular-nums ${size === "phone" ? "text-[15px]" : "text-[16px]"}`} style={{ color: DARK }}>
-          {b.fair}
-        </span>
-      )}
-      {b !== null && "thin" in b && (
-        <span className={size === "phone" ? "text-[12px]" : "text-[13px]"} style={{ color: GREY }}>
-          {b.thin}
+          {"fair" in b ? b.fair : b.thin}
         </span>
       )}
       {/* §4.3 — always the LAST line of the block: after the fair number, after the thin-cell sentence, and

@@ -51,7 +51,16 @@ import { useLayoutEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useLinkStatus } from "next/link";
 import type { AskResult } from "@/app/actions/search";
-import { CATEGORY_ORDER, LABEL_TEXT, cardColor, ownershipWord, runnerUpParts, runnerUpTint } from "@/lib/display/cards";
+import {
+  CATEGORY_ORDER,
+  LABEL_TEXT,
+  RUNNER_UP_DASH,
+  RUNNER_UP_SEPARATOR,
+  cardColor,
+  ownershipWord,
+  runnerUpParts,
+  runnerUpTint,
+} from "@/lib/display/cards";
 import {
   applyFirstScreen,
   firstScreen,
@@ -258,7 +267,7 @@ function Rubrics({ card }: { card: Card }) {
  */
 function RunnerUpStrip({ card, runnerUp, questionPublicId }: { card: Card; runnerUp: RunnerUp; questionPublicId: string }) {
   const tint = runnerUpTint(card.color);
-  const { lead, rest } = runnerUpParts({ amount: runnerUp.amount, model: runnerUp.model, year: runnerUp.year, fact: runnerUp.fact });
+  const { lead, car, fact } = runnerUpParts({ amount: runnerUp.amount, model: runnerUp.model, year: runnerUp.year, fact: runnerUp.fact });
   return (
     <Link
       href={`/listing/${runnerUp.public_id}?s=${questionPublicId}`}
@@ -266,11 +275,22 @@ function RunnerUpStrip({ card, runnerUp, questionPublicId }: { card: Card; runne
       style={{ background: tint.bg, border: `1px solid ${tint.border}` }}
     >
       <LinkPending />
+      {/* Run 5c §3 — THREE PARTS AND TWO SEPARATORS, never one string. <bdi> seals the identification's
+          left-to-right run, so the fact that follows it stays where it was written: on screen the strip reads,
+          right to left, the amount, the car, " · ", the fact. With no fact the line ends at the car and no
+          separator is drawn. The whole strip is still ONE click target to the runner-up's page. */}
       <span className="text-[13px] leading-[1.4] pick-compact:text-[12px]" style={{ color: DARK }}>
         <span className="font-bold" style={{ color: card.color }}>
           {lead}
         </span>
-        {rest}
+        {RUNNER_UP_DASH}
+        <bdi>{car}</bdi>
+        {fact !== null && (
+          <>
+            {RUNNER_UP_SEPARATOR}
+            <span>{fact}</span>
+          </>
+        )}
       </span>
       {/* RTL: the chevron points to the inline end, which is the left. */}
       <svg

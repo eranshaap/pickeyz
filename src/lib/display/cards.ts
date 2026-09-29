@@ -89,20 +89,39 @@ export function countLine(carsShown: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * §1.5 — the strip's one line, in two parts: the amount, which the strip weights and colours, and the rest,
- * which it does not. `fact` is the justification generator's seam (Days 22–23) — absent today, and then the
- * line ends at the identification with no comma left hanging.
+ * §1.5 — THE TWO SEPARATORS, as strings and never as a join: the strip renders the parts around them so each
+ * part keeps its own weight, colour and bidi isolation (Run 5c §3). The middle one was ", " until that run.
+ */
+export const RUNNER_UP_DASH = " — ";
+export const RUNNER_UP_SEPARATOR = " · ";
+
+/**
+ * §1.5 — the strip's one line, in THREE PARTS (Run 5c §3): the amount, which the strip weights and colours;
+ * the identification — the model and the year — which the strip seals into one piece; and the fact, which is
+ * the justification generator's seam (Days 22–23) and is null on a strip that has none.
+ *
+ * WHY PARTS AND NOT ONE STRING. The identification is Latin inside an RTL line, so a number written straight
+ * after it — "IONIQ HYBRID 2021, 13,300 ₪ מתחת לשווי השוק" — is pulled into its left-to-right run, and on
+ * screen the fact's number came BEFORE the car with its shekel sign after it. PickCards.tsx renders the
+ * identification inside a <bdi> and the fact inside a span of its own, so each reads where it was written and
+ * no Unicode control character is needed inside any string here.
+ *
+ * With no fact the line ends at the identification: no separator is drawn and nothing is left hanging.
  *
  * The year is allowed on this line as part of the identification and nowhere else on the strip
  * (findCar-now.md, "פס הסגן"). A runner-up is pricier than the pick by rule (part 3 §2b: the band lies above
  * C's price), so a non-positive amount is a broken record and not a strip that reads oddly.
  */
-export function runnerUpParts(input: { amount: number; model: string; year: number | null; fact: string | null }): { lead: string; rest: string } {
+export function runnerUpParts(input: { amount: number; model: string; year: number | null; fact: string | null }): {
+  lead: string;
+  car: string;
+  fact: string | null;
+} {
   if (input.amount <= 0) throw new Error(`runnerUpParts: amount ${input.amount} — the runner-up is pricier than the pick by rule`);
-  const identification = input.year === null ? input.model : `${input.model} ${input.year}`;
   return {
     lead: `בעוד ${shekel(input.amount)}`,
-    rest: ` — ${identification}${input.fact === null ? "" : `, ${input.fact}`}`,
+    car: input.year === null ? input.model : `${input.model} ${input.year}`,
+    fact: input.fact,
   };
 }
 

@@ -84,7 +84,11 @@ export function pageColor(labels: Category[]): string {
 
 // Run 9 §4.2 — THE SHORT FORM. "של רכבים כאלה" is gone from all three: the comparison sentence that used
 // to name the comparison group went with it (§4.1), and the phrase has to stand on one line under the price.
-const THIN_CELL_LINE = "אין השוואת מחיר — פחות מ-5 רכבים דומים הוצעו למכירה";
+//
+// Run 5c §4 (Eran's ruling of 29/09) — SHORTER STILL: the second half, "— פחות מ-5 רכבים דומים הוצעו למכירה",
+// is dropped. The line is the bare statement that there is no price comparison, and it sits in the place and
+// the style of the fair number it stands in for.
+const THIN_CELL_LINE = "אין השוואת מחיר";
 
 // Days 22–23 (Run 2 §7) — THE PRICE EXPRESSION MOVED. fairAmount() and fairLine() now live in
 // src/lib/justification/price.ts, and the three wordings they used to keep here as module-private constants live
@@ -118,6 +122,14 @@ export function percentOfNewLine(price: number, new_price: number): string {
  *   otherwise            the fair number, alone (Run 9 §4.1 — the compared-to line no longer exists)
  *
  * A cancelled car has no invoice at all (§7.1), so it lands on `null` like any other unscored listing.
+ *
+ * Run 5c §4 — WHAT `thin_cell` MEANS HERE: "this car has no price comparison to show", which is the page's
+ * question and not the selection gate's. The gate's isThinCell() asks whether the PRICE ROW is unavailable
+ * with reason `thin_cell` — and a thin cell whose price row was scored off the anchor curve (scoring/price.ts,
+ * §0.5) answers no while still having no km row, no history typical and therefore no deal score. Those cars
+ * are exactly the no-price group of the results list, and asking the gate's question left them on `null`
+ * here — nothing at all under the price. The caller now passes the absence of a deal score, so the group and
+ * the line are the same set of cars. A cancelled car is still `null`: the page never asks it this.
  */
 export type PriceBlock = { fair: string } | { thin: string } | null;
 

@@ -50,7 +50,7 @@ import { liveModels } from "@/lib/search/models";
 import { resolveListing } from "@/lib/search/visibility";
 // Days 22–23 (Run 5 §6) — the "למה" section's lines, recomputed from the displayed run's stored rows.
 import { storedWhyLines } from "@/lib/search/why";
-import { isThinCell, type Category } from "@/lib/selection";
+import type { Category } from "@/lib/selection";
 import { BRAND } from "@/lib/brand";
 import CarPageView, { type CarPageData, type PageQuestion } from "@/components/car/CarPageView";
 import type { FilterName } from "@/app/actions/search";
@@ -229,9 +229,17 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     price: listing.price,
     percentOfNew: newPrice === null ? null : percentOfNewLine(listing.price, newPrice),
     // A cancelled car has no invoice rows at all, so the thin-cell question is not asked of it (§7.1).
+    //
+    // Run 5c §4 — THE FLAG IS "NO PRICE COMPARISON", AND IT IS THE ABSENCE OF A DEAL SCORE. It used to be the
+    // selection gate's isThinCell() — the price row unavailable with reason `thin_cell` — which a thin cell
+    // whose price row was scored off the anchor curve does not satisfy (scoring/price.ts §0.5). Such a car has
+    // no km row and no history typical, so it has no deal score, it lands in the results list's no-price group,
+    // and on its page BOTH branches of priceBlock() missed it: the flag was false and the score was null, so
+    // nothing at all was drawn between "% ממחיר החדש" and the region line. `listing.score === null` is the same
+    // set of cars the no-price group is, which is the set §4 names.
     priceBlock: priceBlock({
       score: cancelled ? null : listing.score,
-      thin_cell: !cancelled && isThinCell(item.candidate),
+      thin_cell: !cancelled && listing.score === null,
       median_price: norm?.median_price ?? null,
       sample_size: norm?.sample_size ?? null,
       window_days: norm?.window_days ?? null,

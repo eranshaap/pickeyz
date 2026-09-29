@@ -11,6 +11,8 @@ import {
   CATEGORY_ORDER,
   LABEL_TEXT,
   MULTI_COLOR,
+  RUNNER_UP_DASH,
+  RUNNER_UP_SEPARATOR,
   cardColor,
   countLine,
   currentOwnershipType,
@@ -72,23 +74,33 @@ describe("§1.4 — countLine()", () => {
 });
 
 describe("§1.5 — runnerUpParts()", () => {
-  it("the amount carries the separators; the identification is model then year", () => {
+  // Run 5c §3 — THE PARTS, not one string: the identification is sealed on screen inside a <bdi> and the fact
+  // is a span of its own, so nothing here joins them and the separators are asserted where they live.
+  it("three parts: the amount, the identification — model then year — and the fact", () => {
     assert.deepEqual(runnerUpParts({ amount: 3400, model: "מאזדה 3", year: 2022, fact: null }), {
       lead: "בעוד 3,400 ₪",
-      rest: " — מאזדה 3 2022",
+      car: "מאזדה 3 2022",
+      fact: null,
     });
   });
 
-  it("a fact is appended after a comma", () => {
+  it("a fact comes back as its own part and is never joined to the identification", () => {
     const parts = runnerUpParts({ amount: 3400, model: "מאזדה 3", year: 2022, fact: "יד ראשונה" });
-    assert.equal(parts.rest, " — מאזדה 3 2022, יד ראשונה");
+    assert.equal(parts.car, "מאזדה 3 2022");
+    assert.equal(parts.fact, "יד ראשונה");
   });
 
-  it("no year -> the model alone, and no fact -> nothing after the identification", () => {
+  it("no year -> the model alone; no fact -> a null part, and the strip draws no separator after the car", () => {
     assert.deepEqual(runnerUpParts({ amount: 900, model: "מאזדה 3", year: null, fact: null }), {
       lead: "בעוד 900 ₪",
-      rest: " — מאזדה 3",
+      car: "מאזדה 3",
+      fact: null,
     });
+  });
+
+  it("the two separators: the dash before the car, and ' · ' — no longer a comma — before the fact", () => {
+    assert.equal(RUNNER_UP_DASH, " — ");
+    assert.equal(RUNNER_UP_SEPARATOR, " · ");
   });
 
   it("an amount that is not positive throws — the runner-up is pricier by rule", () => {
