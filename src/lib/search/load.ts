@@ -329,8 +329,9 @@ const CROWNING_RULE = "crowning_threshold";
 /** The category the runner-up rule is recorded on (selection/types.ts, Category). */
 const CHEAPEST: Category = "cheapest";
 
-/** A stored row's rule records, narrowed. The column is JSON; a row written by results.ts holds an array. */
-function traceOf(row: ResultRow): RuleTrace[] {
+/** A stored row's rule records, narrowed. The column is JSON; a row written by results.ts holds an array.
+ * Days 22–23 (Run 5 §6.1) — exported: why.ts narrows the same column for the generator's stored input. */
+export function traceOf(row: ResultRow): RuleTrace[] {
   return Array.isArray(row.stage_b_trace) ? (row.stage_b_trace as unknown as RuleTrace[]) : [];
 }
 
@@ -454,6 +455,22 @@ export function resultsState(rows: readonly ResultRow[], counts: Pick<ResultsCou
   const record = crowningRecord(rows);
   if (record !== null) return record.triggered ? "uncrowned" : "crowned";
   return rows.some((r) => r.recommendation_categories.length > 0) ? "crowned" : "uncrowned";
+}
+
+/**
+ * Days 22–23 (Run 5 §6.1) — the crowning verdict off the stored rows alone, for the car page's justification
+ * input: THE SAME verdict resultsViewFrom() stores in ResultsView.state, on the same rows, so the car page and
+ * the results screen can never disagree about whether a search was crowned.
+ *
+ * It lives here and not in why.ts because resultsState() reads one count, `with_comparison`, and both of that
+ * count's sources — the rank-1 row's crowning record, else the shown rows that carry a deal score — are this
+ * file's (resultsCounts() reads them the same way). The car page holds no car_id map, so it cannot call
+ * resultsCounts() itself; the other three counts that function returns are of no interest to the state.
+ */
+export function storedCrowned(rows: readonly ResultRow[]): boolean {
+  const record = crowningRecord(rows);
+  const with_comparison = record !== null ? record.counts.with_comparison : rows.filter(hasComparison).length;
+  return resultsState(rows, { with_comparison }) === "crowned";
 }
 
 /**

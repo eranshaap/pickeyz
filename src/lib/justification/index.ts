@@ -50,7 +50,7 @@ export * from "./constants";
 export * from "./wordings";
 export { fairAmount, fairLine, kmSentence, priceExpression } from "./price";
 export { carFacts, largestComponent, type CarFacts, type ComponentName } from "./facts";
-export { carsFromSelection, crownedOf } from "./input";
+export { carsFromSelection, carsFromStoredRows, crownedOf, type StoredRow } from "./input";
 export { buildContext, cheaperThanCheapest, countOwnership, form, holds, lowestKm, type Form, type OwnershipFact, type SearchContext } from "./claims";
 export type {
   CarJustification,

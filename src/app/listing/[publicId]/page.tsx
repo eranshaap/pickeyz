@@ -48,6 +48,8 @@ import { loadForAddress, photoFor, storedFilters, viewerFromCookies } from "@/li
 import { displayedPlaces } from "@/lib/search/places";
 import { liveModels } from "@/lib/search/models";
 import { resolveListing } from "@/lib/search/visibility";
+// Days 22–23 (Run 5 §6) — the "למה" section's lines, recomputed from the displayed run's stored rows.
+import { storedWhyLines } from "@/lib/search/why";
 import { isThinCell, type Category } from "@/lib/selection";
 import { BRAND } from "@/lib/brand";
 import CarPageView, { type CarPageData, type PageQuestion } from "@/components/car/CarPageView";
@@ -123,6 +125,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
   let labels: Category[] = [];
   let place: number | null = null;
   let question: PageQuestion | null = null;
+  let whyLines: string[] = [];
 
   if (s !== null && isPublicId(s)) {
     const loaded = await loadForAddress(s, await viewerFromCookies());
@@ -139,6 +142,10 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
         //   no price / cancelled → null: no place at all. Before this run both showed their tail rank.
         //   rank null         → absent from the map, so null, exactly as before
         place = displayedPlaces(loaded.results).get(listing.id) ?? null;
+        // Days 22–23 (Run 5 §6) — the generator, over the stored rows of this same run: the lines are
+        // RECOMPUTED here and no page line is stored (justification/types.ts:8-9). A run whose rows are broken
+        // logs and yields [] — the section is not drawn and the page renders as always (why.ts §6.2).
+        whyLines = await storedWhyLines(loaded, listing.id);
       }
       const filters = storedFilters(loaded.question.filters);
       // Run 7c §11.2 — the row is TEXT here, so the live list is read for ONE thing: the model's display
@@ -238,7 +245,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     noHistory,
     zeroKmExplanation:
       historyRaw.zero_km_deal === true && typeof historyRaw.months_to_first_private === "number" ? zeroKmExplanation(historyRaw.months_to_first_private) : null,
-    whyLines: [], // §7.7 — ALWAYS empty in this run; the justification generator is Days 22–23
+    whyLines, // Days 22–23 (Run 5 §6) — the generator's lines from the stored rows of the displayed run; [] without a question
   };
 
   return <CarPageView data={data} />;
