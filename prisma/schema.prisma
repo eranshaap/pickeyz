@@ -329,6 +329,7 @@ model searches {
   pool_count     Int? // the cut pool — listings after the filters, before selectThree (the number on the "עדכן" button); results_count keeps its meaning: ranked + tail
   rerun_of       Int? // Day 19 (Run 6a): null = a question a person asked (the search count counts only these). Set = the site re-ran a stored question after an update; it ALWAYS points at the person's search (a row whose own rerun_of is null), never at another re-run. Written from Run 6b on.
   created_at     DateTime @default(now()) @db.Timestamptz(3)
+  generator_version Int? // Days 22–23 (Run 4): JUSTIFICATION_GENERATOR_VERSION at this run — the wordings file changes over time, and the version says which one the person saw; null = the search ran before the generator existed (no backfill). Written from Run 5 on
 
   family         model_families?  @relation(fields: [family_id], references: [id], onDelete: SetNull)
   search_results search_results[]
@@ -363,6 +364,12 @@ model search_results {
   stage_b_trace             Json // array of rule records, one fixed shape (findCar-schema.md §D8); full for rank <= TRACE_FULL_RANK (10) or a recommended row, triggered-only for other ranked rows, acted-only (+ triggered) for rank null
   price_snapshot            Int // listings.price at that moment
   km_snapshot               Int? // listings.km_declared at that moment
+  sentence_kind             String? // Days 22–23 (Run 4): which case wrote this row's one sentence — the library's SentenceKind codes (src/lib/justification/types.ts): rule_cancelled | rule_no_history | rule_floor | pick_reason | max_effect | no_price_ownership | no_price_km | empty; English codes, the Hebrew lives on the screen only; null = before the generator (no backfill). Written from Run 5 on
+  sentence_fact             String? // the fact family the sentence rests on: price | ownership | km | date; null when the sentence is empty, and before the generator
+  sentence_text             String? // the sentence exactly as shown — the wordings file changes over time, and the text is what the person saw; null when the sentence is empty, and before the generator
+  sentence_values           Json? // the numbers inside the sentence, e.g. { ils, km, one_of, of } — for the measurement queries, without parsing text; null when the sentence carries no number, and before the generator
+  cheaper_than_cheapest     Boolean  @default(false) // the recognition tag זול מ"הכי חסכוני" was shown on this row (a list car cheaper than the "הכי חסכוני" pick); false on every row written before the generator
+  runner_up_fact            String? // on the runner-up's OWN row: the fact the "הכי חסכוני" card's bar showed about this car; null on every other row, and before the generator
 
   searches searches @relation(fields: [search_id], references: [id], onDelete: Restrict)
   listings listings @relation(fields: [listing_id], references: [id], onDelete: Restrict)
