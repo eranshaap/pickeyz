@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { selectThree, type Category, type RuleTrace, type SelectionResult } from "@/lib/selection";
 import { cand, type Spec } from "@/lib/selection/fixtures";
+import { TAG_CHEAPER_THAN_CHEAPEST, type CarJustification, type JustificationOutput } from "@/lib/justification";
 import {
   TRACE_FULL_RANK,
   latestScoreIdByListing,
@@ -80,6 +81,29 @@ function latePickPool(): Fixture[] {
   return items;
 }
 
+// Days 22–23 (Run 5 §2) — the generator's output, hand-made: what is under test here is the MAPPING, not the
+// library. One CarJustification per SHOWN listing and none for a hidden one, which is what justify() writes
+// (justification/types.ts:17-18).
+function carJust(over: Partial<CarJustification> & Pick<CarJustification, "listing_id">): CarJustification {
+  return {
+    kind: "max_effect",
+    fact: "price",
+    sentence: `sentence ${over.listing_id}`,
+    tag: "",
+    values: { ils: 1000 },
+    page: { price_line: null, why_lines: [] },
+    ...over,
+  };
+}
+
+function justificationFor(selection: SelectionResult, runner_up_fact: string | null = null): JustificationOutput {
+  return {
+    generator_version: 1,
+    cars: selection.results.filter((r) => r.rank !== null).map((r) => carJust({ listing_id: r.listing_id })),
+    runner_up_fact,
+  };
+}
+
 function rowsOf(items: Fixture[]): { selection: SelectionResult; rows: SearchResultRow[] } {
   const selection = selectThree({ listings: items.map((f) => f.candidate) });
   return {
@@ -88,6 +112,7 @@ function rowsOf(items: Fixture[]): { selection: SelectionResult; rows: SearchRes
       SEARCH_ID,
       items.map((f) => f.snapshot),
       selection,
+      justificationFor(selection),
     ),
   };
 }
@@ -117,7 +142,8 @@ describe("toSearchResultRows — the pool (§4)", () => {
   });
 
   it("an empty cut pool produces no rows at all", () => {
-    assert.deepEqual(toSearchResultRows(SEARCH_ID, [], selectThree({ listings: [] })), []);
+    const empty = selectThree({ listings: [] });
+    assert.deepEqual(toSearchResultRows(SEARCH_ID, [], empty, justificationFor(empty)), []);
   });
 
   it("a pool and a selection that are not the same pool is a stop, not a skipped row", () => {
@@ -129,12 +155,13 @@ describe("toSearchResultRows — the pool (§4)", () => {
           SEARCH_ID,
           items.slice(1).map((f) => f.snapshot),
           selection,
+          justificationFor(selection),
         ),
       /not the same pool/,
     );
     const swapped = items.map((f) => f.snapshot);
     swapped[0] = { ...swapped[0], listing_id: 999 };
-    assert.throws(() => toSearchResultRows(SEARCH_ID, swapped, selection), /no result for it/);
+    assert.throws(() => toSearchResultRows(SEARCH_ID, swapped, selection, justificationFor(selection)), /no result for it/);
   });
 });
 
@@ -313,6 +340,7 @@ describe("toSearchResultRows — the snapshot (§4, Run 2c §5)", () => {
       SEARCH_ID,
       items.map((f) => f.snapshot),
       selection,
+      justificationFor(selection),
     );
     assert.equal(rows.length, 2);
     assert.equal(rowOf(rows, 2).total_score, null);
@@ -323,7 +351,7 @@ describe("toSearchResultRows — the snapshot (§4, Run 2c §5)", () => {
   it("Day 18: a cancelled car's invoice has no confidence — the row stores null and is still written", () => {
     const items = [fixture(1), fixture(2, { cancelled: "2026-09-10" }, { score: null })];
     const selection = selectThree({ listings: items.map((f) => f.candidate) });
-    const rows = toSearchResultRows(SEARCH_ID, items.map((f) => f.snapshot), selection);
+    const rows = toSearchResultRows(SEARCH_ID, items.map((f) => f.snapshot), selection, justificationFor(selection));
     assert.equal(rows.length, 2);
     assert.equal(rowOf(rows, 2).confidence, null);
     assert.equal(rowOf(rows, 2).total_score, null);
@@ -337,8 +365,100 @@ describe("toSearchResultRows — the snapshot (§4, Run 2c §5)", () => {
       SEARCH_ID,
       items.map((f) => f.snapshot),
       selection,
+      justificationFor(selection),
     );
     assert.equal(rows[0].km_snapshot, null);
+  });
+});
+
+describe("toSearchResultRows — the recording columns (Days 22–23, Run 5 §2)", () => {
+  // The runner-up is the selection's own field; a literal RunnerUp is enough to place the fact on one row.
+  const withRunnerUp = (selection: SelectionResult, listing_id: number): SelectionResult => ({
+    ...selection,
+    runner_ups: { cheapest: { listing_id, gap: 3.2, price_over_pct: 4.1, triggered: true } },
+  });
+  const withoutRunnerUp = (selection: SelectionResult): SelectionResult => ({ ...selection, runner_ups: { cheapest: null } });
+
+  const mapped = (items: Fixture[], selection: SelectionResult, out: JustificationOutput): SearchResultRow[] =>
+    toSearchResultRows(
+      SEARCH_ID,
+      items.map((f) => f.snapshot),
+      selection,
+      out,
+    );
+
+  it("the six columns are copied field by field from the generator's output", () => {
+    const { items, selection } = run();
+    const out = justificationFor(selection);
+    out.cars[0] = carJust({
+      listing_id: out.cars[0].listing_id,
+      kind: "pick_reason",
+      fact: "ownership",
+      sentence: "אחת מ-2 מ-5 שעברו רק בבעלות פרטית",
+      tag: TAG_CHEAPER_THAN_CHEAPEST,
+      values: { one_of: 2, of: 5 },
+    });
+    const row = rowOf(mapped(items, selection, out), out.cars[0].listing_id);
+    assert.equal(row.sentence_kind, "pick_reason");
+    assert.equal(row.sentence_fact, "ownership");
+    assert.equal(row.sentence_text, "אחת מ-2 מ-5 שעברו רק בבעלות פרטית");
+    assert.deepEqual(row.sentence_values, { one_of: 2, of: 5 });
+    assert.equal(row.cheaper_than_cheapest, true); // the tag is stored as the boolean, never as its text
+  });
+
+  it("an empty sentence -> sentence_text null, kind 'empty', fact null, values null", () => {
+    const { items, selection } = run();
+    const out = justificationFor(selection);
+    const id = out.cars[0].listing_id;
+    out.cars[0] = carJust({ listing_id: id, kind: "empty", fact: null, sentence: "", values: {} });
+    const row = rowOf(mapped(items, selection, out), id);
+    assert.equal(row.sentence_kind, "empty");
+    assert.equal(row.sentence_fact, null);
+    assert.equal(row.sentence_text, null);
+    assert.equal(row.sentence_values, null); // the library's `values` is {} there — the column stores null
+    assert.equal(row.cheaper_than_cheapest, false);
+  });
+
+  it("a hidden row is absent from the output and gets the six defaults", () => {
+    const { items, selection } = run();
+    const rows = mapped(items, selection, justificationFor(selection));
+    for (const id of [MERGED, EXCLUDED]) {
+      const row = rowOf(rows, id);
+      assert.equal(row.rank, null);
+      assert.deepEqual(
+        [row.sentence_kind, row.sentence_fact, row.sentence_text, row.sentence_values, row.cheaper_than_cheapest, row.runner_up_fact],
+        [null, null, null, null, false, null],
+      );
+    }
+  });
+
+  it("runner_up_fact lands on the runner-up's OWN row and on no other", () => {
+    const items = pool();
+    const selection = withRunnerUp(selectThree({ listings: items.map((f) => f.candidate) }), 4);
+    const rows = mapped(items, selection, justificationFor(selection, "יד ראשונה"));
+    assert.equal(rowOf(rows, 4).runner_up_fact, "יד ראשונה");
+    for (const r of rows.filter((x) => x.listing_id !== 4)) assert.equal(r.runner_up_fact, null);
+  });
+
+  it("no runner-up -> every row's runner_up_fact is null", () => {
+    const items = pool();
+    const selection = withoutRunnerUp(selectThree({ listings: items.map((f) => f.candidate) }));
+    const rows = mapped(items, selection, justificationFor(selection, "יד ראשונה"));
+    for (const r of rows) assert.equal(r.runner_up_fact, null);
+  });
+
+  it("a shown listing missing from the output is a stop", () => {
+    const { items, selection } = run();
+    const out = justificationFor(selection);
+    out.cars = out.cars.filter((c) => c.listing_id !== 1);
+    assert.throws(() => mapped(items, selection, out), /listing 1 is shown but the generator wrote no row for it/);
+  });
+
+  it("a hidden listing present in the output is a stop", () => {
+    const { items, selection } = run();
+    const out = justificationFor(selection);
+    out.cars.push(carJust({ listing_id: MERGED }));
+    assert.throws(() => mapped(items, selection, out), new RegExp(`listing ${MERGED} is hidden but the generator wrote a sentence for it`));
   });
 });
 

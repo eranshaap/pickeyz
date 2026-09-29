@@ -22,6 +22,8 @@ import type { Prisma } from "@/generated/prisma/client";
 import { currentOwnershipType, groupCards, ownershipWord, shownCarsCount } from "@/lib/display/cards";
 import { groupHead, uncrownedHead, zeroScoredHead, type Head } from "@/lib/display/edge-screens";
 import { israelDay, percentOfNewLine } from "@/lib/display/texts";
+// Days 22–23 (Run 5 §3) — the tag is STORED as a boolean; its text is the library's wordings file, by design.
+import { TAG_CHEAPER_THAN_CHEAPEST } from "@/lib/justification";
 import { CROWNING_THRESHOLD } from "@/lib/selection/constants";
 import type { Category, RuleTrace } from "@/lib/selection";
 import type { ModelRows } from "./chip-state";
@@ -45,6 +47,7 @@ export type SearchRow = {
   priority: string | null;
   engine_version: number;
   rules_version: number;
+  generator_version: number | null; // Days 22–23 (Run 5 §4) — null = the run is older than the generator
   results_count: number;
   pool_count: number | null;
 };
@@ -70,13 +73,18 @@ export type ResultRow = {
   new_car_price_id: number | null;
   /** The rule records of this row, as `results.ts` truncated them. A recommended row carries its full set. */
   stage_b_trace: Prisma.JsonValue;
+  // Days 22–23 (Run 5 §3) — the three recording columns the SCREEN reads back. The other three
+  // (`sentence_kind`, `sentence_fact`, `sentence_values`) are for the measurement queries and are not selected.
+  sentence_text: string | null;
+  cheaper_than_cheapest: boolean;
+  runner_up_fact: string | null;
 };
 
 /** The two ids a re-run records for the viewer whose load triggered it. Either may be absent (§4). */
 export type Viewer = { visitor_id: string | null; session_id: string | null };
 
 /** The versions in force right now — the `version` signal compares the run's against these. */
-export type CurrentVersions = { engineVersion: number; rulesVersion: number };
+export type CurrentVersions = { engineVersion: number; rulesVersion: number; generatorVersion: number };
 
 export type UpdateSignals = { data: boolean; day: boolean; version: boolean };
 
@@ -109,10 +117,10 @@ export function latestRun(question: SearchRow, reruns: SearchRow[]): SearchRow {
  *            insert and update (Run 6a), so a hand edit in the Supabase editor counts. A null max on either
  *            side does not fire that side — nothing to compare is not a change.
  *   day      the calendar day of `now` differs from the run's, IN ISRAEL TIME.
- *   version  the engine or the rules moved under the stored verdict.
+ *   version  the engine, the rules or the generator moved under the stored verdict.
  */
 export function updateSignals(
-  run: Pick<SearchRow, "created_at" | "engine_version" | "rules_version">,
+  run: Pick<SearchRow, "created_at" | "engine_version" | "rules_version" | "generator_version">,
   now: Date,
   current: CurrentVersions,
   maxModelListingUpdatedAt: Date | null,
@@ -122,7 +130,12 @@ export function updateSignals(
   return {
     data: after(maxModelListingUpdatedAt) || after(maxDealerCommercialUpdatedAt),
     day: israelDay(now) !== israelDay(run.created_at),
-    version: run.engine_version !== current.engineVersion || run.rules_version !== current.rulesVersion,
+    // Eran, 29/09 (decision 2): the generator's version is a version like the other two — a stored null (the search
+    // ran before the generator) or a different number is an update, so the question is re-run on its next load.
+    version:
+      run.engine_version !== current.engineVersion ||
+      run.rules_version !== current.rulesVersion ||
+      run.generator_version !== current.generatorVersion,
   };
 }
 
@@ -509,10 +522,13 @@ export function resultsViewFrom(input: {
       hand: f.hand_declared ?? f.registry_hand,
       ownership_type: currentOwnershipType(f.ownership_history),
       image: f.image,
-      // THE SEAM — Days 22–23 / Days 24–25 §3. The justification generator fills FOUR fields and they are all
-      // here, in this one place: a card's `sentence` (below), the runner-up strip's `fact` (further down), and
-      // every list row's `sentence` and `tag` (listRowData, below). Nothing else fills any of them.
-      sentence: null,
+      // THE SEAM — Days 22–23 (Run 5 §3). The FOUR fields the justification generator fills are all read back
+      // from the RECORDING COLUMNS of this run's own `search_results` rows, written at search time (results.ts):
+      // a card's `sentence` (below, `sentence_text`), the runner-up strip's `fact` (further down,
+      // `runner_up_fact`), and every list row's `sentence` and `tag` (listRowData, below, `sentence_text` and
+      // `cheaper_than_cheapest`). Nothing else fills any of them — not this module, and no component.
+      // A card's empty sentence is null; a list row's is "" (two conventions, one source).
+      sentence: row.sentence_text,
     };
   };
   const drawn = (listing_id: number, what: string): DrawnCar => {
@@ -528,6 +544,9 @@ export function resultsViewFrom(input: {
    */
   const listRowData = (listing_id: number): ListRowData => {
     const car = drawn(listing_id, "list row");
+    // Run 5 §3 — the row itself, through the same `rowOfListing` lookup `drawn()` just went through.
+    const row = rowOfListing.get(listing_id);
+    if (row === undefined) throw new Error(`resultsView: list row listing ${listing_id} is not among the search's rows`);
     return {
       public_id: car.public_id,
       href: `/listing/${car.public_id}?s=${input.question_public_id}`,
@@ -538,8 +557,8 @@ export function resultsViewFrom(input: {
       hand: car.hand,
       ownership_word: car.ownership_type === null ? null : ownershipWord(car.ownership_type),
       image: car.image,
-      sentence: "", // §3 — the generator's
-      tag: "", // §3 — the generator's
+      sentence: row.sentence_text ?? "", // Run 5 §3 — the recording column; a list row's empty sentence is ""
+      tag: row.cheaper_than_cheapest ? TAG_CHEAPER_THAN_CHEAPEST : "", // Run 5 §3 — stored as a boolean, worded here
     };
   };
 
@@ -580,7 +599,7 @@ export function resultsViewFrom(input: {
       model: f.model,
       year: f.year,
       amount: runnerUpRow.price_snapshot - cheapestRow.price_snapshot,
-      fact: null, // Days 22–23: the justification generator fills this
+      fact: runnerUpRow.runner_up_fact, // Run 5 §3 — the recording column on the runner-up's OWN row
     };
   }
 
@@ -636,6 +655,7 @@ const SEARCH_COLUMNS = {
   priority: true,
   engine_version: true,
   rules_version: true,
+  generator_version: true, // Days 22–23 (Run 5 §4) — the third version of the update signal
   results_count: true,
   pool_count: true,
 } as const;
@@ -652,6 +672,9 @@ const RESULT_COLUMNS = {
   listing_scores_id: true,
   new_car_price_id: true, // §2.3 — added for the card's "X% ממחיר החדש"
   stage_b_trace: true, // §2.3 — added for the cheapest pick's cheapest_runner_up record
+  sentence_text: true, // Days 22–23 (Run 5 §3) — a card's and a list row's sentence
+  cheaper_than_cheapest: true, // Days 22–23 (Run 5 §3) — a list row's recognition tag
+  runner_up_fact: true, // Days 22–23 (Run 5 §3) — the runner-up strip's fact, on the runner-up's own row
 } as const;
 
 export type ResolvedQuestion = { question: SearchRow; reruns: SearchRow[] };
@@ -711,8 +734,12 @@ export async function maxDealerCommercialUpdatedAt(): Promise<Date | null> {
 }
 
 export async function currentVersions(): Promise<CurrentVersions> {
-  const [{ ENGINE_VERSION }, { RULES_VERSION }] = await Promise.all([import("@/lib/scoring/constants"), import("@/lib/selection/constants")]);
-  return { engineVersion: ENGINE_VERSION, rulesVersion: RULES_VERSION };
+  const [{ ENGINE_VERSION }, { RULES_VERSION }, { JUSTIFICATION_GENERATOR_VERSION }] = await Promise.all([
+    import("@/lib/scoring/constants"),
+    import("@/lib/selection/constants"),
+    import("@/lib/justification/constants"),
+  ]);
+  return { engineVersion: ENGINE_VERSION, rulesVersion: RULES_VERSION, generatorVersion: JUSTIFICATION_GENERATOR_VERSION };
 }
 
 export async function resultsOf(search_id: number): Promise<ResultRow[]> {

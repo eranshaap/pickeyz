@@ -40,6 +40,7 @@ import {
   type ListingResult,
   type MissingReason,
 } from "@/lib/selection";
+import { carsFromSelection, checkOutput, crownedOf, justify, type JustificationSearch } from "@/lib/justification";
 import { assemblePool } from "./assemble";
 import { passes, type SearchFilters } from "./filters";
 import { latestScoreIdByListing, toSearchResultRows, type ResultSnapshot } from "./results";
@@ -248,6 +249,26 @@ export async function runSearch(input: {
       (failed.length ? `: ${failed.map((c) => c.claim).join("; ")}` : ""),
   );
 
+  // Days 22–23 (Run 5 §1) — the justification generator, on the same cut and the same selection, before the
+  // transaction: pure, no database. The screen never reads these from memory: they are written with the rows
+  // (results.ts) and read back by resultsViewFrom() (load.ts). measure-justifications.ts builds the same input.
+  const justificationSearch: JustificationSearch = {
+    crowned: crownedOf(res),
+    runner_up: res.runner_ups.cheapest?.listing_id ?? null,
+    has_price_ceiling: filters.priceMax !== undefined,
+    cars: carsFromSelection(cut, res),
+  };
+  const justification = justify(justificationSearch);
+  const findings = checkOutput(justificationSearch, justification);
+
+  // Eran, 29/09 (decision 3): a finding never costs a search its sentences — they show as they are; one line for the logs.
+  if (findings.length > 0) {
+    console.log(
+      `[justify] ${assembled.model_display} | filters ${JSON.stringify(filters)} | ${findings.length} finding(s): ` +
+        findings.map((f) => `${f.check}${f.listing_id === null ? "" : ` ${f.listing_id}`} — ${f.detail}`).join("; "),
+    );
+  }
+
   // §3.4 — one row per invocation, written whatever the answer was.
   // Day 15 Run 2b (§4): the row AND its `search_results` rows are written in ONE transaction. A `searches`
   // row that exists without its result rows would be a search nobody can reconstruct, so either both land or
@@ -300,16 +321,19 @@ export async function runSearch(input: {
         rerun_of: rerun === undefined ? undefined : rerun.question_id,
         engine_version: ENGINE_VERSION,
         rules_version: RULES_VERSION,
+        generator_version: justification.generator_version, // Run 5 §1 — this invocation's, like the two above it
         results_count: shown.length,
         pool_count: cut.length, // the cut pool, before selectThree — the same number filterCounts() puts on "עדכן"
       },
       select: { id: true, public_id: true },
     });
-    const rows = toSearchResultRows(created.id, snapshots, res);
+    const rows = toSearchResultRows(created.id, snapshots, res, justification);
     if (rows.length !== cut.length) throw new Error(`runSearch: ${rows.length} result row(s) for a cut pool of ${cut.length} — the two must be equal`);
     if (rows.length > 0) {
       const written = await tx.search_results.createMany({
-        data: rows.map((r) => ({ ...r, stage_b_trace: r.stage_b_trace as unknown as object[] })),
+        // Run 5 §1 — `sentence_values` is spelled the way `filters` is spelled above: `undefined` is the column
+        // default (a DB NULL), never a JSON null. The other five recording columns pass through the spread.
+        data: rows.map((r) => ({ ...r, stage_b_trace: r.stage_b_trace as unknown as object[], sentence_values: r.sentence_values ?? undefined })),
       });
       if (written.count !== rows.length) throw new Error(`runSearch: createMany wrote ${written.count} of ${rows.length} search_results rows`);
     }

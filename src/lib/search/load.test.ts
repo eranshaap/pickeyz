@@ -27,9 +27,12 @@ import { MULTI_COLOR } from "@/lib/display/cards";
 import { cancelledGroupHead, groupHead, noComparisonLine, uncrownedHead, zeroScoredHead } from "@/lib/display/edge-screens";
 import { listHeading, OWNERSHIP_WORD } from "@/lib/display/texts";
 import { CROWNING_THRESHOLD, RULE_TYPE, type RuleTrace } from "@/lib/selection";
+import { JUSTIFICATION_GENERATOR_VERSION, TAG_CHEAPER_THAN_CHEAPEST } from "@/lib/justification";
 import type { Prisma } from "@/generated/prisma/client";
 
-const CURRENT: CurrentVersions = { engineVersion: 5, rulesVersion: 6 };
+// Days 22–23 (Run 5 §4) — the generator's version joins the two. It is the REAL constant, not a made-up number
+// like the other two: `row()` stores it, so every existing fixture keeps `version: false` and means what it meant.
+const CURRENT: CurrentVersions = { engineVersion: 5, rulesVersion: 6, generatorVersion: JUSTIFICATION_GENERATOR_VERSION };
 
 function row(over: Partial<SearchRow> = {}): SearchRow {
   return {
@@ -43,6 +46,7 @@ function row(over: Partial<SearchRow> = {}): SearchRow {
     priority: null,
     engine_version: CURRENT.engineVersion,
     rules_version: CURRENT.rulesVersion,
+    generator_version: CURRENT.generatorVersion, // Run 5 §4
     results_count: 10,
     pool_count: 12,
     ...over,
@@ -117,6 +121,27 @@ describe("updateSignals() — each signal alone (§3.2)", () => {
 
   it("version, from the rules alone", () => {
     assert.deepEqual(updateSignals(row({ rules_version: 5 }), now, CURRENT, before, before), { data: false, day: false, version: true });
+  });
+
+  // Days 22–23 (Run 5 §4) — Eran, 29/09 (decision 2): the generator is a version like the other two.
+  it("version, from the generator alone — a stored null (the search ran before the generator)", () => {
+    assert.deepEqual(updateSignals(row({ generator_version: null }), now, CURRENT, before, before), { data: false, day: false, version: true });
+  });
+
+  it("the current generator version, with the other two equal, fires nothing", () => {
+    assert.deepEqual(updateSignals(row({ generator_version: CURRENT.generatorVersion }), now, CURRENT, before, before), {
+      data: false,
+      day: false,
+      version: false,
+    });
+  });
+
+  it("version, from the generator alone — a DIFFERENT number", () => {
+    assert.deepEqual(updateSignals(row({ generator_version: CURRENT.generatorVersion + 1 }), now, CURRENT, before, before), {
+      data: false,
+      day: false,
+      version: true,
+    });
   });
 
   it("the same instant fires nothing at all", () => {
@@ -221,6 +246,10 @@ function resultRow(over: Partial<ResultRow> & Pick<ResultRow, "listing_id">): Re
     listing_scores_id: 1,
     new_car_price_id: null,
     stage_b_trace: [],
+    // Days 22–23 (Run 5 §3) — the recording columns as a row written before the generator carries them.
+    sentence_text: null,
+    cheaper_than_cheapest: false,
+    runner_up_fact: null,
     ...over,
   };
 }
@@ -531,6 +560,53 @@ describe("resultsViewFrom() — the cards (§2.1, §2.4)", () => {
     it("the per-car count is untouched and still counts two ads of one car once", () => {
       // §1.7's rule itself — shownCarsCount over the rows — is unchanged and still on the view.
       assert.equal(view.counts.cars, 4);
+    });
+  });
+
+  describe("resultsViewFrom — the recording columns (Days 22–23, Run 5 §3)", () => {
+    // The same fixture, with the three columns filled: the four seams read them back and nothing else fills them.
+    const viewWith = (over: Map<number, Partial<ResultRow>>) =>
+      resultsViewFrom({
+        question_public_id: QUESTION_ID,
+        rows: rows.map((r) => ({ ...r, ...(over.get(r.listing_id) ?? {}) })),
+        facts,
+        car_id_of,
+        new_price_of,
+      });
+    const listRowOf = (v: ReturnType<typeof viewWith>, public_id: string) =>
+      [...v.list.cards, ...v.list.table, ...v.list.restRanked, ...v.list.noPrice, ...v.list.cancelled].find((r) => r.public_id === public_id);
+
+    it("a pick row's sentence_text is the card's sentence; null stays null", () => {
+      const v = viewWith(new Map([[10, { sentence_text: "‎12,000 ₪ מתחת למחיר האופייני" }]]));
+      assert.equal(v.cards[0].sentence, "‎12,000 ₪ מתחת למחיר האופייני");
+      assert.equal(v.cards[1].sentence, null); // a card's empty sentence is null
+    });
+
+    it("a ranked row's sentence_text and cheaper_than_cheapest become the list row's sentence and tag", () => {
+      const v = viewWith(new Map([[40, { sentence_text: "‎20,000 ק\"מ, הכי נמוך בחיפוש", cheaper_than_cheapest: true }]]));
+      const listRow = listRowOf(v, "dddddddddd");
+      assert.ok(listRow !== undefined);
+      assert.equal(listRow.sentence, "‎20,000 ק\"מ, הכי נמוך בחיפוש");
+      assert.equal(listRow.tag, TAG_CHEAPER_THAN_CHEAPEST); // stored as a boolean, worded from the library
+    });
+
+    it("null / false -> the list row's two fields are both the empty string", () => {
+      const listRow = listRowOf(viewWith(new Map()), "dddddddddd");
+      assert.ok(listRow !== undefined);
+      assert.equal(listRow.sentence, ""); // a list row's empty sentence is "", not null
+      assert.equal(listRow.tag, "");
+    });
+
+    it("the runner-up's own row carries the strip's fact; null stays null", () => {
+      const v = viewWith(new Map([[40, { runner_up_fact: "יד ראשונה" }]]));
+      assert.equal(v.runner_up?.fact, "יד ראשונה");
+      assert.equal(viewWith(new Map()).runner_up?.fact, null);
+    });
+
+    it("the fact is read off the RUNNER-UP's row, not the cheapest pick's", () => {
+      // Row 30 is the cheapest pick and row 40 its runner-up: a fact stored on 30 is not the strip's.
+      const v = viewWith(new Map([[30, { runner_up_fact: "יד ראשונה" }]]));
+      assert.equal(v.runner_up?.fact, null);
     });
   });
 });

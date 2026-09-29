@@ -23,6 +23,7 @@
 
 import type { Category, ListingResult, RuleTrace, SelectionResult } from "@/lib/selection";
 import type { Invoice } from "@/lib/scoring/types";
+import type { FactFamily, JustificationOutput, SentenceKind, SentenceValues } from "@/lib/justification";
 
 // ledger: Stage B rules block, TRACE_FULL_RANK — a guess
 //
@@ -50,6 +51,7 @@ export type ResultSnapshot = {
 
 // One `search_results` row, column for column (prisma/schema.prisma, model search_results). `id` is the
 // database's. stage_b_trace is the JSON column and is handed over as read.
+// Days 22–23 (Run 5 §2): the six recording columns of migration 20260929054623 come from the generator's output, joined by listing_id.
 export type SearchResultRow = {
   search_id: number;
   listing_id: number;
@@ -65,6 +67,12 @@ export type SearchResultRow = {
   stage_b_trace: RuleTrace[];
   price_snapshot: number;
   km_snapshot: number | null;
+  sentence_kind: SentenceKind | null;
+  sentence_fact: FactFamily | null;
+  sentence_text: string | null;
+  sentence_values: SentenceValues | null;
+  cheaper_than_cheapest: boolean;
+  runner_up_fact: string | null;
 };
 
 /** §4 — how much of one listing's trace the row carries. */
@@ -106,13 +114,24 @@ export function latestScoreIdByListing(rows: ScoreRowRef[], now: Date): Map<numb
  * @param searchId       the `searches` row these belong to — written in the same transaction, never before it
  * @param poolListings   the CUT pool, in the order the rows should be written; one row comes out per entry
  * @param selection      selectThree()'s output over exactly that pool
+ * @param justification  the generator's output over exactly that cut and that selection (Run 5 §2)
  *
  * Every pool listing must have a result and every result must be a pool listing. A mismatch is a stop, not a
  * skipped row: a `search_results` set that is missing a listing is a silently wrong answer to "what did this
  * search see", and that is the one thing this table exists to make impossible.
+ *
+ * Run 5 §2 — the generator's output is joined by listing_id and the same rule holds for it: a shown row with no
+ * sentence, or a hidden row with one, means the two were not built from the same selection, and that is a stop.
  */
-export function toSearchResultRows(searchId: number, poolListings: ResultSnapshot[], selection: SelectionResult): SearchResultRow[] {
+export function toSearchResultRows(
+  searchId: number,
+  poolListings: ResultSnapshot[],
+  selection: SelectionResult,
+  justification: JustificationOutput,
+): SearchResultRow[] {
   const resultOf = new Map(selection.results.map((r) => [r.listing_id, r]));
+  const sentenceOf = new Map(justification.cars.map((c) => [c.listing_id, c]));
+  const runnerUpId = selection.runner_ups.cheapest?.listing_id ?? null;
   if (resultOf.size !== selection.results.length) throw new Error("toSearchResultRows: selectThree returned two results for one listing_id");
   if (poolListings.length !== selection.results.length) {
     throw new Error(`toSearchResultRows: the cut pool has ${poolListings.length} listing(s) but selectThree returned ${selection.results.length} result(s) — they are not the same pool`);
@@ -125,6 +144,17 @@ export function toSearchResultRows(searchId: number, poolListings: ResultSnapsho
     seen.add(p.listing_id);
     const r = resultOf.get(p.listing_id);
     if (r === undefined) throw new Error(`toSearchResultRows: listing ${p.listing_id} is in the cut pool but selectThree returned no result for it`);
+    // Run 5 §2 — the library writes no row for a hidden car (justification/types.ts:17-18), and exactly one for
+    // every shown one. Either side of that is a stop.
+    const j = sentenceOf.get(p.listing_id);
+    if (r.rank === null && j !== undefined) {
+      throw new Error(`toSearchResultRows: listing ${p.listing_id} is hidden but the generator wrote a sentence for it`);
+    }
+    if (r.rank !== null && j === undefined) {
+      throw new Error(
+        `toSearchResultRows: listing ${p.listing_id} is shown but the generator wrote no row for it — the two were not built from the same selection`,
+      );
+    }
     rows.push({
       search_id: searchId,
       listing_id: p.listing_id,
@@ -140,6 +170,14 @@ export function toSearchResultRows(searchId: number, poolListings: ResultSnapsho
       stage_b_trace: traceFor(r),
       price_snapshot: p.price,
       km_snapshot: p.km_declared,
+      sentence_kind: j === undefined ? null : j.kind,
+      sentence_fact: j === undefined ? null : j.fact,
+      sentence_text: j === undefined || j.sentence === "" ? null : j.sentence,
+      sentence_values: j === undefined || Object.keys(j.values).length === 0 ? null : j.values,
+      cheaper_than_cheapest: j === undefined ? false : j.tag !== "",
+      // The fact lives on the runner-up's OWN row (schema.prisma, runner_up_fact); on every other row — and on
+      // a hidden row, which is never a runner-up — null.
+      runner_up_fact: j !== undefined && p.listing_id === runnerUpId ? justification.runner_up_fact : null,
     });
   }
   return rows;
