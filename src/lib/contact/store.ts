@@ -15,11 +15,11 @@ import type { Prisma } from "@/generated/prisma/client";
 export function latestRequestFor(
   visitor_id: string,
   listing_id: number,
-): Promise<{ kind: string; visit_at: Date | null; created_at: Date; buyer_name: string | null; buyer_phone: string | null; buyer_email: string | null } | null> {
+): Promise<{ kind: string; visit_at: Date | null; created_at: Date; buyer_name: string | null; buyer_phone: string | null } | null> {
   return db.contact_requests.findFirst({
     where: { visitor_id, listing_id },
     orderBy: { created_at: "desc" },
-    select: { kind: true, visit_at: true, created_at: true, buyer_name: true, buyer_phone: true, buyer_email: true },
+    select: { kind: true, visit_at: true, created_at: true, buyer_name: true, buyer_phone: true },
   });
 }
 
@@ -97,7 +97,6 @@ export type RequestRow = {
   opened_event_id: string | null;
   buyer_name: string;
   buyer_phone: string;
-  buyer_email: string;
   buyer_phone_fp: string;
   visitor_id: string | null;
   session_id: string | null;

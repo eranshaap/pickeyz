@@ -45,8 +45,8 @@ export type ContactView = "closed" | "form" | "sending" | "sent" | "gone";
 /** What the window can DRAW. It is never "closed": a window that is closing still has its last view on it. */
 export type OpenContactView = Exclude<ContactView, "closed">;
 
-/** The three typed fields — the ones a focus marks the form as started on. */
-export type ContactField = "name" | "phone" | "email";
+/** The two typed fields — the ones a focus marks the form as started on. */
+export type ContactField = "name" | "phone";
 
 /** The car as the window draws it: the page's own values, nothing looked up here. */
 export type ContactCar = { model: string; year: number | null; imageSrc: string | null; price: number; region: string | null };
@@ -67,7 +67,7 @@ export function useContact(): ContactContextValue {
 }
 
 /** The form as the window opens for the first time: a visit, and nothing typed. */
-const EMPTY_FORM: FormInput = { kind: "visit", day: null, hour: null, name: "", phone: "", email: "" };
+const EMPTY_FORM: FormInput = { kind: "visit", day: null, hour: null, name: "", phone: "" };
 
 /**
  * §4.5 — an event id, or null. newEventId() falls back to getRandomValues() where randomUUID is missing
@@ -131,6 +131,13 @@ export default function ContactProvider({
   const [errors, setErrors] = useState<FormErrors>({});
   const [failLine, setFailLine] = useState<string | null>(null);
   const [sent, setSent] = useState<SentRequest | null>(contact.sent);
+
+  // Run 12 §2.2 — HOW MANY CLICKS ON "שלח" HAVE FAILED THE VALIDATION, over the page's whole life. A
+  // COUNTER AND NOT A FLAG: the window scrolls to the first missing field on every one of them, including
+  // two clicks that produce the very same errors, and a flag's second write would be no write at all.
+  // Nothing resets it — openWindow(), newRequest() and close() leave it where it is, and the window's own
+  // effect remembers the value it mounted on, so a reopening never scrolls by itself (§2.3).
+  const [errorClick, setErrorClick] = useState(0);
 
   // What the window keeps drawing while it fades out. The machine is `closed` from the click, but the fade
   // lasts WINDOW_FADE_MS after it and a window that faded out empty would be a flash of white; close() is the
@@ -214,7 +221,6 @@ export default function ContactProvider({
           hour: slot === null ? null : slot.hour,
           name: sent.name,
           phone: sent.phone,
-          email: sent.email,
         },
         row,
       ),
@@ -224,7 +230,7 @@ export default function ContactProvider({
     setView("form");
   }, [view, sent]);
 
-  /** §4.5 — the first interaction of an opening with one of the five fields. Once per opening. */
+  /** §4.5 — the first interaction of an opening with one of the four fields. Once per opening. */
   const markStarted = useCallback(() => {
     if (started.current) return;
     started.current = true;
@@ -245,6 +251,7 @@ export default function ContactProvider({
     const found = validateForm(form);
     if (Object.keys(found).length > 0) {
       setErrors(found);
+      setErrorClick((n) => n + 1);
       for (const field of Object.keys(found) as (keyof FormErrors)[]) {
         const id = makeId();
         if (id !== null) fire("contact_form_error", id, { opening: openingId.current, field, error: found[field], kind: form.kind });
@@ -265,7 +272,6 @@ export default function ContactProvider({
         visit_at,
         name: form.name,
         phone: form.phone,
-        email: form.email,
         honeypot: honeypot.current?.value ?? "",
       });
 
@@ -275,7 +281,6 @@ export default function ContactProvider({
           visitAt: result.visit_at,
           name: result.name,
           phone: result.phone,
-          email: result.email,
           createdAt: result.created_at,
         });
       } else if (result.status === "dropped") {
@@ -288,7 +293,6 @@ export default function ContactProvider({
           visitAt: visit_at,
           name: form.name.trim(),
           phone: normalizePhone(form.phone.trim()),
-          email: form.email.trim(),
           createdAt: new Date().toISOString(),
         });
       }
@@ -427,6 +431,7 @@ export default function ContactProvider({
         form={form}
         days={days}
         errors={errors}
+        errorClick={errorClick}
         failLine={failLine}
         sent={sent}
         color={color}

@@ -1,4 +1,4 @@
-// BRIEF Day 19b Run 11a §1.2 — the contact window's three fields.
+// BRIEF Day 19b Run 11a §1.2 — the contact window's two typed fields, and the day and the hour above them.
 //
 // PURE: no node:*, no next/*, no @/lib/db. The window validates in the browser BEFORE the send, and the
 // action validates again on the server; both call these functions, so the two answers cannot disagree.
@@ -7,8 +7,8 @@
 // chosen day the hours are not on screen at all, so "no hour" is not yet a mistake the buyer made.
 
 export type FieldError = "missing" | "invalid";
-export type FormInput = { kind: "visit" | "callback"; day: string | null; hour: number | null; name: string; phone: string; email: string };
-export type FormErrors = Partial<Record<"day" | "hour" | "name" | "phone" | "email", FieldError>>;
+export type FormInput = { kind: "visit" | "callback"; day: string | null; hour: number | null; name: string; phone: string };
+export type FormErrors = Partial<Record<"day" | "hour" | "name" | "phone", FieldError>>;
 
 /**
  * Digits only, and an international prefix folded back to the local form: "+972 52-765-4321" is the same
@@ -26,11 +26,6 @@ export function isIsraeliPhone(digits: string): boolean {
   return /^0[2-9]\d{7,8}$/.test(digits);
 }
 
-/** Deliberately the loose shape check and nothing more: an address is proved by mail, not by a regex. */
-export function isEmail(s: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
-}
-
 /** The errors of one filled form. An empty object is a valid form. */
 export function validateForm(f: FormInput): FormErrors {
   const errors: FormErrors = {};
@@ -46,9 +41,26 @@ export function validateForm(f: FormInput): FormErrors {
   if (phone === "") errors.phone = "missing";
   else if (!isIsraeliPhone(normalizePhone(phone))) errors.phone = "invalid";
 
-  const email = f.email.trim();
-  if (email === "") errors.email = "missing";
-  else if (!isEmail(email)) errors.email = "invalid";
-
   return errors;
+}
+
+// ---------------------------------------------------------------------------
+// BRIEF Day 19b Run 12 §2.1 — which note the window scrolls to
+// ---------------------------------------------------------------------------
+
+export type FormField = "day" | "hour" | "name" | "phone";
+
+/** The screen's order, top to bottom: the day, the hour, then the two typed fields. */
+export const FIELD_ORDER: readonly FormField[] = ["day", "hour", "name", "phone"];
+
+/**
+ * The first field of FIELD_ORDER that has an error, or null when there is none. The window scrolls to that
+ * one after a click on the send button, so a note below the visible area is seen; the order is the screen's,
+ * not the order Object.keys happens to give.
+ */
+export function firstErrorField(errors: FormErrors): FormField | null {
+  for (const field of FIELD_ORDER) {
+    if (errors[field] !== undefined) return field;
+  }
+  return null;
 }

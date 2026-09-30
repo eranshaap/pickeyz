@@ -1,7 +1,7 @@
 // BRIEF Day 19b Run 11a §1.6 — the phone's fingerprint. SERVER ONLY (node:crypto): never import this from
 // a client component, or the browser bundle stops building.
 //
-// contact_requests.buyer_phone, buyer_name and buyer_email are emptied after six months; buyer_phone_fp
+// contact_requests.buyer_phone and buyer_name are emptied after six months; buyer_phone_fp
 // stays for ever, and the counting rules ("the same person on the same car = one lead") work on it. So the
 // fingerprint has to be stable for ever and must not let anyone walk back from it to a number: a keyed
 // HMAC over the NORMALISED digits, with a secret that never leaves the server.

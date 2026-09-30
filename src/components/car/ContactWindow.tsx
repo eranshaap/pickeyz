@@ -23,18 +23,16 @@
 // Geometry and type are Tailwind; the page colour, its tint and the three board colours are inline styles,
 // exactly as the car page paints itself.
 
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { WINDOW_FADE_MS } from "@/lib/display/timing";
 import { Spinner } from "@/components/search/FilterPanel";
 import { israelNow, type DayOption } from "@/lib/contact/schedule";
-import type { FormErrors, FormInput } from "@/lib/contact/validate";
+import { firstErrorField, type FormErrors, type FormInput } from "@/lib/contact/validate";
 import {
   CALLBACK,
   CALLBACK_NOTE,
   CLOSE,
   CLOSE_BUTTON,
-  EMAIL,
-  EMAIL_NOTE,
   ERROR_TEXT,
   GONE_LINE,
   GONE_TITLE,
@@ -275,47 +273,43 @@ function OptionCard({
 }
 
 /**
- * One of the three text fields. The label row holds the label, the e-mail's aside and the field's note; the
- * input in error takes `aria-invalid` and the red frame, and loses both the moment it is valid again (§4.3).
+ * One of the two text fields. The label row holds the label and the field's note; the input in error takes
+ * `aria-invalid` and the red frame, and loses both the moment it is valid again (§4.3).
+ *
+ * `blockRef` is Run 12 §2.3's: the whole block — the label row and the input — is what the window scrolls
+ * to when this is the first field a failed click on "שלח" found empty.
  */
 function TextField({
   field,
   label,
-  note,
   value,
   error,
   type,
   ltr = false,
   autoComplete,
-  className = "",
+  blockRef,
   onChange,
   onFocus,
 }: {
   field: ContactField;
   label: string;
-  note?: string;
   value: string;
   error?: "missing" | "invalid";
   type: string;
   ltr?: boolean;
   autoComplete: string;
-  className?: string;
+  blockRef: RefObject<HTMLDivElement | null>;
   onChange: (value: string) => void;
   onFocus: () => void;
 }) {
   const id = `fc-contact-${field}`;
   const bad = error !== undefined;
   return (
-    <div className={`flex flex-col gap-1.5 ${className}`}>
+    <div ref={blockRef} className="flex flex-col gap-1.5">
       <div className="flex items-baseline gap-2">
         <label htmlFor={id} className="text-[13px] font-semibold" style={{ color: DARK }}>
           {label}
         </label>
-        {note !== undefined && (
-          <span className="text-[13px]" style={{ color: GREY }}>
-            {note}
-          </span>
-        )}
         {bad && (
           <span role="alert" className="text-[13px] font-semibold" style={{ color: RED }}>
             {ERROR_TEXT[field][error]}
@@ -353,6 +347,7 @@ export default function ContactWindow({
   form,
   days,
   errors,
+  errorClick,
   failLine,
   sent,
   color,
@@ -375,6 +370,8 @@ export default function ContactWindow({
   form: FormInput;
   days: DayOption[];
   errors: FormErrors;
+  /** §2.2 — how many clicks on "שלח" have failed the validation. A counter, never reset: see the effect below. */
+  errorClick: number;
   failLine: string | null;
   sent: SentRequest | null;
   color: string;
@@ -399,6 +396,20 @@ export default function ContactWindow({
 
   /** What <html>'s inline `overflow` was before the lock; null = the page is not locked. */
   const locked = useRef<string | null>(null);
+
+  // Run 12 §2.3 — the four field blocks, in the screen's order. Each is the whole block, heading row and
+  // all, because the note the buyer has to read sits in that heading row.
+  const dayBlock = useRef<HTMLDivElement>(null);
+  const hourBlock = useRef<HTMLDivElement>(null);
+  const nameBlock = useRef<HTMLDivElement>(null);
+  const phoneBlock = useRef<HTMLDivElement>(null);
+
+  /** The errorClick this component came up on. Set ON MOUNT: see the effect below. */
+  const handled = useRef(errorClick);
+
+  /** Run 12 §3.2 — the scroll box, and whether anything is still below its visible area. */
+  const box = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
 
   // THE ONE OPEN/CLOSE SEQUENCE, FiltersWindow's (§3.7), and every close path goes down it because every one
   // of them does the same single thing: it sets `open` to false.
@@ -442,6 +453,64 @@ export default function ContactWindow({
   // The gone view's button navigates away in the same click, so this component can go with the old page
   // before the fade's timer fires. The lock is the PAGE'S: it has to come off whatever takes the window away.
   useEffect(() => () => unlockPage(locked), []);
+
+  // Run 12 §2.3 — AFTER A CLICK ON "שלח" THAT FAILED, THE WINDOW SCROLLS TO THE FIRST MISSING DETAIL, so
+  // that its note is seen even when it sits below the visible area. The notes themselves appear where they
+  // already live (§4.3) and nothing jumps; this is the one deliberate movement, after them.
+  //
+  // WHAT MAKES IT RUN IS THE COUNTER, NOT THE ERRORS. Two clicks that find the very same missing fields
+  // leave `errors` identical, and the second click has to scroll as the first one did. `handled` carries the
+  // counter this component came up on and is moved forward only here, so nothing but a NEW failed click ever
+  // scrolls: an opening leaves the counter where it is, and the window that comes back up stays where the
+  // buyer left it. Nothing here fires an event.
+  //
+  // `block: "nearest"` moves the scroll box only as far as it must, and not at all when the block is
+  // already fully in view: on a tall desktop screen nothing moves.
+  useEffect(() => {
+    if (errorClick === handled.current) return;
+    handled.current = errorClick;
+    const field = firstErrorField(errors);
+    if (field === null) return;
+    const el = { day: dayBlock, hour: hourBlock, name: nameBlock, phone: phoneBlock }[field].current;
+    if (el === null) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+  }, [errorClick]); // eslint-disable-line react-hooks/exhaustive-deps -- the counter alone decides; `errors` is read at that moment
+
+  /** §3.2 — is anything left below the visible area? One pixel of slack, for the sub-pixel heights. */
+  const measure = useCallback(() => {
+    const el = box.current;
+    setMore(el !== null && el.scrollHeight - el.scrollTop - el.clientHeight > 1);
+  }, []);
+
+  // The scroll and the window's resize. Both are put on with the mounted content and taken off with it, so
+  // nothing listens while the window is closed; the scroll listener is passive because it only reads.
+  useEffect(() => {
+    const el = box.current;
+    if (el === null) return;
+    el.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [mounted, measure]);
+
+  // AFTER EVERY RENDER, with no dependency list: a chosen day adds the hours, a kind switch removes them
+  // and a view replaces everything, and not one of those is a scroll or a resize. setMore with the value it
+  // already holds re-renders nothing, so a measurement that finds no change costs one read.
+  //
+  // The ResizeObserver is re-pointed here too, over the box and everything in it: a size that changes with
+  // no render behind it is the one thing this effect cannot see by itself.
+  useEffect(() => {
+    measure();
+    const el = box.current;
+    if (el === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    for (const child of Array.from(el.children)) observer.observe(child);
+    return () => observer.disconnect();
+  });
 
   const sending = view === "sending";
   const isForm = view === "form" || sending;
@@ -500,11 +569,23 @@ export default function ContactWindow({
         // `flex` only while the element is open — an unconditional display would beat the UA's
         // `dialog:not([open]) { display: none }` and the window would stand there on every screen.
         "[&[open]]:flex flex-col overflow-hidden bg-white",
-        // the phone (< 900): the whole screen, no radius, no shadow
+        // the phone (< 900): the whole screen, no radius, no shadow — every view, unchanged
         "fixed inset-0 h-full w-full rounded-none",
         // the desktop (≥ 900): 720 wide, centred on both axes by the platform's `inset: 0` and the `m-auto`
         // above, at most the window's height less 80
-        "md:h-auto md:max-h-[calc(100vh-80px)] md:w-[720px] md:rounded-[14px] md:shadow-[0_20px_48px_rgba(34,31,28,0.24)]",
+        "md:max-h-[calc(100vh-80px)] md:w-[720px] md:rounded-[14px] md:shadow-[0_20px_48px_rgba(34,31,28,0.24)]",
+        // Run 12 §4 — THE DESKTOP'S HEIGHT, and the one class that differs between the views.
+        //
+        // `inset: 0` with `height: auto` is over-constrained: top and bottom are both 0 and the height is
+        // the auto, so the height is what gets solved for (CSS 2.1 §10.6.4 rule 5, auto margins zeroed) and
+        // the box comes out the full viewport, clamped here to 100vh-80 — 720 in a 1280×800 frame. That is
+        // what kept the confirmation and the gone view as tall as the form, and it is not the form's own
+        // height at all. `height: fit-content` is not `auto`, so the equation is solved for the two auto
+        // margins instead: the box is as tall as its content and `m-auto` centres it, the max-height still
+        // holds, and the middle still scrolls on a low screen.
+        //
+        // THE FORM KEEPS EXACTLY THE HEIGHT IT HAS TODAY, visit and callback alike: `md:h-auto`, as before.
+        isForm ? "md:h-auto" : "md:h-fit",
         "backdrop:bg-[rgba(34,31,28,0.42)]",
         FADE,
         "opacity-0 backdrop:opacity-0 [&[data-shown]]:opacity-100 [&[data-shown]]:backdrop:opacity-100",
@@ -529,155 +610,165 @@ export default function ContactWindow({
             <CloseCross onClick={() => onClose("button")} />
           </div>
 
-          {/* The middle: the only region that scrolls, on both screens. */}
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 md:gap-[14px] md:p-0">
-            <CarBlock car={car} sellerName={sellerName} dim={view === "gone"} />
+          {/* Run 12 §3.1 — the wrapper takes the place the scroll box had in the column, so the header, the
+              footer and the bar sit exactly where they sat; it is the fade's positioned ancestor and nothing
+              else. EVERY VIEW GOES THROUGH THE ONE SCROLL BOX, so every view has the fade — on the two short
+              ones it simply never shows. */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            {/* The middle: the only region that scrolls, on both screens. */}
+            <div ref={box} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 md:gap-[14px] md:p-0">
+              <CarBlock car={car} sellerName={sellerName} dim={view === "gone"} />
 
-            {isForm && (
-              <>
-                <div className="flex flex-col gap-2">
-                  <HeadingRow text={WHAT_SUITS} />
-                  <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-3">
-                    <OptionCard
-                      selected={form.kind === "visit"}
-                      title={VISIT}
-                      note={VISIT_NOTE}
-                      color={color}
-                      tint={tint}
-                      onClick={() => onKind("visit")}
-                    />
-                    <OptionCard
-                      selected={form.kind === "callback"}
-                      title={CALLBACK}
-                      note={CALLBACK_NOTE}
-                      color={color}
-                      tint={tint}
-                      onClick={() => onKind("callback")}
-                    />
-                  </div>
-                </div>
-
-                {form.kind === "visit" && (
+              {isForm && (
+                <>
                   <div className="flex flex-col gap-2">
-                    <HeadingRow text={WHICH_DAY} error={errors.day === undefined ? undefined : ERROR_TEXT.day[errors.day]} />
-                    {/* The phone's row does not wrap: it scrolls sideways and reaches the screen's edge
-                        through the negative inline-end margin (the body's own 16px padding, cancelled). */}
-                    <div className="-me-4 flex flex-nowrap gap-2 overflow-x-auto md:me-0 md:flex-wrap md:overflow-x-visible">
-                      {days.map((d) => (
-                        <Chip
-                          key={d.day}
-                          label={dayChipLabel(d)}
-                          selected={form.day === d.day}
-                          closed={d.closed}
-                          color={color}
-                          onClick={() => onDay(d.day)}
-                        />
-                      ))}
+                    <HeadingRow text={WHAT_SUITS} />
+                    <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-3">
+                      <OptionCard
+                        selected={form.kind === "visit"}
+                        title={VISIT}
+                        note={VISIT_NOTE}
+                        color={color}
+                        tint={tint}
+                        onClick={() => onKind("visit")}
+                      />
+                      <OptionCard
+                        selected={form.kind === "callback"}
+                        title={CALLBACK}
+                        note={CALLBACK_NOTE}
+                        color={color}
+                        tint={tint}
+                        onClick={() => onKind("callback")}
+                      />
                     </div>
                   </div>
-                )}
 
-                {form.kind === "visit" && chosenDay !== undefined && (
-                  <div className="flex flex-col gap-2">
-                    <HeadingRow text={WHICH_HOUR} error={errors.hour === undefined ? undefined : ERROR_TEXT.hour[errors.hour]} />
-                    <div className="flex flex-wrap gap-2">
-                      {chosenDay.hours.map((h) => (
-                        <Chip key={h} label={hourLabel(h)} selected={form.hour === h} color={color} onClick={() => onHour(h)} />
-                      ))}
+                  {form.kind === "visit" && (
+                    <div ref={dayBlock} className="flex flex-col gap-2">
+                      <HeadingRow text={WHICH_DAY} error={errors.day === undefined ? undefined : ERROR_TEXT.day[errors.day]} />
+                      {/* The phone's row does not wrap: it scrolls sideways and reaches the screen's edge
+                          through the negative inline-end margin (the body's own 16px padding, cancelled). */}
+                      <div className="-me-4 flex flex-nowrap gap-2 overflow-x-auto md:me-0 md:flex-wrap md:overflow-x-visible">
+                        {days.map((d) => (
+                          <Chip
+                            key={d.day}
+                            label={dayChipLabel(d)}
+                            selected={form.day === d.day}
+                            closed={d.closed}
+                            color={color}
+                            onClick={() => onDay(d.day)}
+                          />
+                        ))}
+                      </div>
                     </div>
+                  )}
+
+                  {form.kind === "visit" && chosenDay !== undefined && (
+                    <div ref={hourBlock} className="flex flex-col gap-2">
+                      <HeadingRow text={WHICH_HOUR} error={errors.hour === undefined ? undefined : ERROR_TEXT.hour[errors.hour]} />
+                      <div className="flex flex-wrap gap-2">
+                        {chosenDay.hours.map((h) => (
+                          <Chip key={h} label={hourLabel(h)} selected={form.hour === h} color={color} onClick={() => onHour(h)} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Run 12 §1.8 — the desktop keeps its two columns: the name and the phone side by side,
+                      one row, nothing spanning both. The phone stacks the two, gap 12 as before. */}
+                  <div className="flex flex-col gap-3 md:grid md:grid-cols-2">
+                    <TextField
+                      field="name"
+                      label={NAME}
+                      value={form.name}
+                      error={errors.name}
+                      type="text"
+                      autoComplete="name"
+                      blockRef={nameBlock}
+                      onChange={(v) => onField("name", v)}
+                      onFocus={onFieldFocus}
+                    />
+                    <TextField
+                      field="phone"
+                      label={PHONE}
+                      value={form.phone}
+                      error={errors.phone}
+                      type="tel"
+                      ltr
+                      autoComplete="tel"
+                      blockRef={phoneBlock}
+                      onChange={(v) => onField("phone", v)}
+                      onFocus={onFieldFocus}
+                    />
                   </div>
-                )}
 
-                {/* The desktop puts the name and the phone side by side and the e-mail across both; the
-                    phone stacks all three. */}
-                <div className="flex flex-col gap-3 md:grid md:grid-cols-2">
-                  <TextField
-                    field="name"
-                    label={NAME}
-                    value={form.name}
-                    error={errors.name}
-                    type="text"
-                    autoComplete="name"
-                    onChange={(v) => onField("name", v)}
-                    onFocus={onFieldFocus}
-                  />
-                  <TextField
-                    field="phone"
-                    label={PHONE}
-                    value={form.phone}
-                    error={errors.phone}
-                    type="tel"
-                    ltr
-                    autoComplete="tel"
-                    onChange={(v) => onField("phone", v)}
-                    onFocus={onFieldFocus}
-                  />
-                  <TextField
-                    field="email"
-                    label={EMAIL}
-                    note={EMAIL_NOTE}
-                    value={form.email}
-                    error={errors.email}
-                    type="email"
-                    ltr
-                    autoComplete="email"
-                    className="md:col-span-2"
-                    onChange={(v) => onField("email", v)}
-                    onFocus={onFieldFocus}
-                  />
-                </div>
-
-                <p className="text-[13px]" style={{ color: GREY, lineHeight: 1.5 }}>
-                  {privacyLine(sellerName)}
-                </p>
-
-                {/* The phone's copy of the failed-send line: the end of the body, above the bar. */}
-                {failLine !== null && (
-                  <p role="alert" className="text-[14px] font-semibold md:hidden" style={{ color: RED }}>
-                    {failLine}
+                  <p className="text-[13px]" style={{ color: GREY, lineHeight: 1.5 }}>
+                    {privacyLine(sellerName)}
                   </p>
-                )}
-              </>
-            )}
 
-            {view === "sent" && sent !== null && followUp !== null && (
-              <>
-                {/* The visit's own line, then the follow-up; a callback has the follow-up alone. */}
-                {sent.kind === "visit" && visitLine !== null && (
+                  {/* The phone's copy of the failed-send line: the end of the body, above the bar. */}
+                  {failLine !== null && (
+                    <p role="alert" className="text-[14px] font-semibold md:hidden" style={{ color: RED }}>
+                      {failLine}
+                    </p>
+                  )}
+                </>
+              )}
+
+              {view === "sent" && sent !== null && followUp !== null && (
+                <>
+                  {/* The visit's own line, then the follow-up; a callback has the follow-up alone. */}
+                  {sent.kind === "visit" && visitLine !== null && (
+                    <p className="text-[16px]" style={{ color: DARK, lineHeight: 1.5 }}>
+                      {visitLine.before}
+                      <strong className="font-bold tabular-nums">{visitLine.strong}</strong>
+                      {visitLine.after}
+                    </p>
+                  )}
                   <p className="text-[16px]" style={{ color: DARK, lineHeight: 1.5 }}>
-                    {visitLine.before}
-                    <strong className="font-bold tabular-nums">{visitLine.strong}</strong>
-                    {visitLine.after}
+                    {followUp.before}
+                    <span dir="ltr">{followUp.phone}</span>
+                    {followUp.after}
                   </p>
-                )}
+
+                  <p className="text-[14px]" style={{ color: GREY, lineHeight: 1.5 }}>
+                    {INSPECTION_NOTE}
+                  </p>
+
+                  {/* On the phone "לשלוח בקשה חדשה" is the body's last line; on the desktop it sits in the
+                      footer beside "סגור". */}
+                  <button
+                    type="button"
+                    onClick={onNewRequest}
+                    className="self-start text-[15px] font-semibold underline underline-offset-[3px] md:hidden"
+                    style={{ color: DARK }}
+                  >
+                    {NEW_REQUEST}
+                  </button>
+                </>
+              )}
+
+              {view === "gone" && (
                 <p className="text-[16px]" style={{ color: DARK, lineHeight: 1.5 }}>
-                  {followUp.before}
-                  <span dir="ltr">{followUp.phone}</span>
-                  {followUp.after}
+                  {GONE_LINE}
                 </p>
+              )}
+            </div>
 
-                <p className="text-[14px]" style={{ color: GREY, lineHeight: 1.5 }}>
-                  {INSPECTION_NOTE}
-                </p>
-
-                {/* On the phone "לשלוח בקשה חדשה" is the body's last line; on the desktop it sits in the
-                    footer beside "סגור". */}
-                <button
-                  type="button"
-                  onClick={onNewRequest}
-                  className="self-start text-[15px] font-semibold underline underline-offset-[3px] md:hidden"
-                  style={{ color: DARK }}
-                >
-                  {NEW_REQUEST}
-                </button>
-              </>
-            )}
-
-            {view === "gone" && (
-              <p className="text-[16px]" style={{ color: DARK, lineHeight: 1.5 }}>
-                {GONE_LINE}
-              </p>
-            )}
+            {/* Run 12 §3.1 — THE FADE AT THE BOTTOM: white to transparent over the scroll box's last 40px,
+                on while there is content below the visible area and off the moment the end is reached. It
+                sits ON the box's bottom edge — on the desktop above the footer's send button, on the phone
+                above the bar — takes no pointer and does not scroll with the content. It fades in and out
+                over the window's own WINDOW_FADE_MS. */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-10 transition-opacity"
+              style={{
+                background: "linear-gradient(to top, #ffffff, rgba(255,255,255,0))",
+                opacity: more ? 1 : 0,
+                transitionDuration: `${WINDOW_FADE_MS}ms`,
+              }}
+            />
           </div>
 
           {/* The footer stays put too. Its content is the view's one action; on the phone it is the bar. */}

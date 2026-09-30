@@ -15,8 +15,6 @@ import {
   CLOSE,
   CLOSE_BUTTON,
   CLOSED_SUFFIX,
-  EMAIL,
-  EMAIL_NOTE,
   ERROR_TEXT,
   GONE_LINE,
   GONE_TITLE,
@@ -74,11 +72,9 @@ describe("the form's words (§1.3)", () => {
     assert.equal(CLOSED_SUFFIX, " · סגור");
   });
 
-  it("the three labels, the e-mail's note and the send button", () => {
+  it("the two labels and the send button", () => {
     assert.equal(NAME, "שם");
     assert.equal(PHONE, "טלפון");
-    assert.equal(EMAIL, "מייל");
-    assert.equal(EMAIL_NOTE, "מבטיחים לא לחפור במייל");
     assert.equal(SEND, "שלח למוכר");
   });
 
@@ -89,14 +85,12 @@ describe("the form's words (§1.3)", () => {
 });
 
 describe("what goes wrong (§1.3)", () => {
-  it("the five fields' seven messages", () => {
+  it("the four fields' five messages", () => {
     assert.equal(ERROR_TEXT.day.missing, "יש לבחור יום");
     assert.equal(ERROR_TEXT.hour.missing, "יש לבחור שעה");
     assert.equal(ERROR_TEXT.name.missing, "יש להזין שם");
     assert.equal(ERROR_TEXT.phone.missing, "יש להזין מספר טלפון");
     assert.equal(ERROR_TEXT.phone.invalid, "המספר לא תקין");
-    assert.equal(ERROR_TEXT.email.missing, "יש להזין מייל");
-    assert.equal(ERROR_TEXT.email.invalid, "המייל לא תקין");
   });
 
   it("an 'invalid' that is never produced repeats the 'missing' text", () => {
@@ -105,8 +99,8 @@ describe("what goes wrong (§1.3)", () => {
     }
   });
 
-  it("every field has both keys and there are exactly five fields", () => {
-    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ["day", "email", "hour", "name", "phone"]);
+  it("every field has both keys and there are exactly four fields", () => {
+    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ["day", "hour", "name", "phone"]);
   });
 
   it("the two lines above the send button", () => {

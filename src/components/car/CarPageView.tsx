@@ -95,7 +95,7 @@ export type PageQuestion = {
  * Day 19b Run 11a §3 — the request this browser last sent on THIS listing, when it is still in force
  * (src/lib/contact/memory.ts). ISO strings, not Dates: this crosses to a client component.
  */
-export type SentRequest = { kind: "visit" | "callback"; visitAt: string | null; name: string; phone: string; email: string; createdAt: string };
+export type SentRequest = { kind: "visit" | "callback"; visitAt: string | null; name: string; phone: string; createdAt: string };
 
 /**
  * Day 19b Run 11a §3 — what the contact window is given. The five measurement values (`listingId`, `carId`,

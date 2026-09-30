@@ -12,11 +12,11 @@
 // limit, a car that went off the site, a bot) is RETURNED, typed, because the window draws each of them
 // differently. No redirect, no revalidatePath: the page behind the window does not change.
 //
-// NO NAME, PHONE OR E-MAIL EVER APPEARS IN A LOG LINE. The buyer's three fields live in one closed table
-// with their own deletion rule (findCar-schema.md §D19); a log line carries the listing's public id, the
-// kind and the row id, and nothing else.
+// NO NAME OR PHONE EVER APPEARS IN A LOG LINE. The buyer's two fields live in one closed table with their
+// own deletion rule (findCar-schema.md §D19); a log line carries the listing's public id, the kind and the
+// row id, and nothing else.
 //
-// NO RULE IS DECIDED HERE THAT THE LIBRARY ALREADY HOLDS: the slot check is schedule.ts's, the three
+// NO RULE IS DECIDED HERE THAT THE LIBRARY ALREADY HOLDS: the slot check is schedule.ts's, the two
 // fields are validate.ts's, the fingerprint is fingerprint.ts's, and "is this listing still shown" is the
 // very rule that gives a reader the not-found page — resolveListing(), called again at the send.
 
@@ -106,7 +106,6 @@ export type SendInput = {
   visit_at: string | null;
   name: string;
   phone: string;
-  email: string;
   honeypot: string;
 };
 
@@ -119,7 +118,6 @@ export type SendResult =
       name: string;
       /** The normalised digits — what the confirmation reads back, through displayPhone(). */
       phone: string;
-      email: string;
       created_at: string;
     }
   | { status: "too_many" }
@@ -142,9 +140,9 @@ export async function sendContactRequest(input: SendInput): Promise<SendResult> 
     return { status: "dropped" };
   }
 
-  // 3. The three fields, through the library the window itself validated with. The day and the hour are
+  // 3. The two fields, through the library the window itself validated with. The day and the hour are
   //    not sent and not judged here; the chosen slot is judged as an instant, by the anti-tamper check.
-  const errors = validateForm({ kind: "callback", day: null, hour: null, name: input.name, phone: input.phone, email: input.email });
+  const errors = validateForm({ kind: "callback", day: null, hour: null, name: input.name, phone: input.phone });
   if (Object.keys(errors).length > 0) throw new Error("invalid request");
 
   // 4. One `now` for the whole send: the limit's hour, the agreement in force and the slot check are all
@@ -194,13 +192,12 @@ export async function sendContactRequest(input: SendInput): Promise<SendResult> 
       ? input.opened_event_id
       : null;
 
-  // 9. The buyer. The phone is stored as digits, and its fingerprint — the value that outlives the three
+  // 9. The buyer. The phone is stored as digits, and its fingerprint — the value that outlives the two
   //    fields' deletion — is taken over those same digits. The secret is read HERE: a missing one fails
   //    this send, loudly, and nothing else on the site.
   const buyer_phone = normalizePhone(input.phone);
   const buyer_phone_fp = phoneFingerprint(buyer_phone, phoneSecret());
   const buyer_name = input.name.trim();
-  const buyer_email = input.email.trim();
 
   // 10. One insert, no transaction — there is nothing for it to be atomic with.
   const written = await insertRequest({
@@ -213,7 +210,6 @@ export async function sendContactRequest(input: SendInput): Promise<SendResult> 
     opened_event_id,
     buyer_name,
     buyer_phone,
-    buyer_email,
     buyer_phone_fp,
     visitor_id: identity.visitor_id,
     session_id: identity.session_id,
@@ -227,7 +223,6 @@ export async function sendContactRequest(input: SendInput): Promise<SendResult> 
     visit_at: visitAt === null ? null : visitAt.toISOString(),
     name: buyer_name,
     phone: buyer_phone,
-    email: buyer_email,
     created_at: written.created_at.toISOString(),
   };
 }

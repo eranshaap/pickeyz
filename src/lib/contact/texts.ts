@@ -41,8 +41,6 @@ export const WHICH_HOUR = "באיזו שעה?";
 export const CLOSED_SUFFIX = " · סגור";
 export const NAME = "שם";
 export const PHONE = "טלפון";
-export const EMAIL = "מייל";
-export const EMAIL_NOTE = "מבטיחים לא לחפור במייל";
 export const SEND = "שלח למוכר";
 
 /** The privacy line under the fields. No link: there is no policy page to link to yet. */
@@ -58,12 +56,11 @@ export function privacyLine(sellerName: string): string {
  * One message per field per error. A field whose "invalid" can never be produced (a day, an hour, a name)
  * repeats its "missing" text rather than inventing a second wording nobody will ever read.
  */
-export const ERROR_TEXT: Record<"day" | "hour" | "name" | "phone" | "email", Record<"missing" | "invalid", string>> = {
+export const ERROR_TEXT: Record<"day" | "hour" | "name" | "phone", Record<"missing" | "invalid", string>> = {
   day: { missing: "יש לבחור יום", invalid: "יש לבחור יום" },
   hour: { missing: "יש לבחור שעה", invalid: "יש לבחור שעה" },
   name: { missing: "יש להזין שם", invalid: "יש להזין שם" },
   phone: { missing: "יש להזין מספר טלפון", invalid: "המספר לא תקין" },
-  email: { missing: "יש להזין מייל", invalid: "המייל לא תקין" },
 };
 
 export const SEND_FAILED = "השליחה לא הצליחה. נסה שוב.";

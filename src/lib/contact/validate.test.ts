@@ -1,10 +1,11 @@
-// BRIEF Day 19b Run 11a §1.2 — the three fields, the phone's normalisation, and the seven errors.
+// BRIEF Day 19b Run 11a §1.2 — the two typed fields, the phone's normalisation, and the five errors.
+// BRIEF Day 19b Run 12 §2.1 — and the field the window scrolls to.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isEmail, isIsraeliPhone, normalizePhone, validateForm, type FormInput } from "./validate";
+import { firstErrorField, isIsraeliPhone, normalizePhone, validateForm, type FormInput } from "./validate";
 
-const FILLED: FormInput = { kind: "callback", day: null, hour: null, name: "Dana", phone: "052-7654321", email: "dana@example.com" };
+const FILLED: FormInput = { kind: "callback", day: null, hour: null, name: "Dana", phone: "052-7654321" };
 
 describe("normalizePhone() — every spelling of one number (§1.2)", () => {
   it("the four spellings of the same mobile all come out as 0527654321", () => {
@@ -41,19 +42,6 @@ describe("isIsraeliPhone() — 9 or 10 digits after normalisation (§1.2)", () =
   });
 });
 
-describe("isEmail() — the shape and nothing more (§1.2)", () => {
-  it("an ordinary address passes, with or without surrounding spaces", () => {
-    assert.equal(isEmail("dana@example.com"), true);
-    assert.equal(isEmail("  dana@example.com  "), true);
-  });
-
-  it("refuses a missing host, a missing @ and an empty value", () => {
-    for (const s of ["dana@", "dana example.com", "", "@example.com", "dana@example"]) {
-      assert.equal(isEmail(s), false, JSON.stringify(s));
-    }
-  });
-});
-
 describe("validateForm() (§1.2)", () => {
   it("a filled callback is valid: {}", () => {
     assert.deepEqual(validateForm(FILLED), {});
@@ -85,29 +73,40 @@ describe("validateForm() (§1.2)", () => {
     assert.deepEqual(validateForm({ ...FILLED, phone: "05271" }), { phone: "invalid" });
   });
 
-  it("an empty e-mail is missing; a badly shaped one is invalid", () => {
-    assert.deepEqual(validateForm({ ...FILLED, email: "" }), { email: "missing" });
-    assert.deepEqual(validateForm({ ...FILLED, email: "dana@" }), { email: "invalid" });
-  });
-
   it("every field can be wrong at once", () => {
-    assert.deepEqual(validateForm({ kind: "visit", day: null, hour: null, name: "", phone: "", email: "" }), {
+    assert.deepEqual(validateForm({ kind: "visit", day: null, hour: null, name: "", phone: "" }), {
       day: "missing",
       name: "missing",
       phone: "missing",
-      email: "missing",
     });
   });
 
-  it("each of the seven messages of §1.3 is reachable from some form", () => {
+  it("each of the five messages of §1.3 is reachable from some form", () => {
     const reached = new Set<string>();
     const forms: FormInput[] = [
-      { kind: "visit", day: null, hour: null, name: "", phone: "", email: "" },
+      { kind: "visit", day: null, hour: null, name: "", phone: "" },
       { ...FILLED, kind: "visit", day: "2026-09-24", hour: null },
       { ...FILLED, phone: "05271" },
-      { ...FILLED, email: "dana@" },
     ];
     for (const f of forms) for (const [field, error] of Object.entries(validateForm(f))) reached.add(`${field}.${error}`);
-    assert.deepEqual([...reached].sort(), ["day.missing", "email.invalid", "email.missing", "hour.missing", "name.missing", "phone.invalid", "phone.missing"]);
+    assert.deepEqual([...reached].sort(), ["day.missing", "hour.missing", "name.missing", "phone.invalid", "phone.missing"]);
+  });
+});
+
+describe("firstErrorField() — the note the window scrolls to (§2.1)", () => {
+  it("a phone error under a day error is the day: FIELD_ORDER decides, not the order the keys were written in", () => {
+    assert.equal(firstErrorField({ phone: "invalid", day: "missing" }), "day");
+  });
+
+  it("a name error under an hour error is the hour", () => {
+    assert.equal(firstErrorField({ hour: "missing", name: "missing" }), "hour");
+  });
+
+  it("one error alone is that error's own field", () => {
+    assert.equal(firstErrorField({ phone: "missing" }), "phone");
+  });
+
+  it("no error at all is null", () => {
+    assert.equal(firstErrorField({}), null);
   });
 });

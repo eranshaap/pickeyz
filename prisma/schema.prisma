@@ -444,9 +444,9 @@ model events {
 }
 
 // 16. contact_requests — one row per request SENT from the contact window (findCar-schema.md part A and part D §19):
-// a visit (day and hour) or a callback, with name, phone and email. This is the lead — the dealer pays for it, not
-// for the click. Kept apart from events on purpose: there, nameless actions for ever, for measurement; here, names,
-// phones and emails in one closed place with their own deletion rule (the three buyer fields are emptied after
+// a visit (day and hour) or a callback, with name and phone. This is the lead — the dealer pays for it, not
+// for the click. Kept apart from events on purpose: there, nameless actions for ever, for measurement; here, names
+// and phones in one closed place with their own deletion rule (the two buyer fields are emptied after
 // 6 months — built before the public opening, not now; the row and the phone fingerprint stay). The car and the
 // dealer are NOT copied — they come through the listing; the price IS copied, because it changes. "Counted or not"
 // is not stored — the counting code computes it from the rows, the agreement row and the feed's sale date.
@@ -464,7 +464,6 @@ model contact_requests {
   opened_event_id  String? // the contact_opened row the request was sent from (ON DELETE SET NULL); null when the opening was not recorded — measurement never stops a send
   buyer_name       String? // emptied after 6 months
   buyer_phone      String? // digits only (0527654321); emptied after 6 months
-  buyer_email      String? // emptied after 6 months
   buyer_phone_fp   String // required: fingerprint of the phone (HMAC, server-side secret) — stays for ever; the counting rules work on it
   visitor_id       String? // the visitor cookie — the button that remembers; null when the browser keeps no cookie
   session_id       String? // one visit — for measurement

@@ -200,7 +200,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
 
   // Day 19b Run 11a §3 — the button that remembers. The NEWEST request this browser sent on this listing
   // ("several requests on one ad — the last one decides"), kept only while it is still in force
-  // (src/lib/contact/memory.ts), judged against the page's one `now`. The three buyer fields are emptied
+  // (src/lib/contact/memory.ts), judged against the page's one `now`. The two buyer fields are emptied
   // six months after the send, so a row that has been through that becomes empty strings, not null.
   let sent: SentRequest | null = null;
   if (viewer.visitor_id !== null) {
@@ -216,7 +216,6 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
           visitAt: last.visit_at === null ? null : last.visit_at.toISOString(),
           name: last.buyer_name ?? "",
           phone: last.buyer_phone ?? "",
-          email: last.buyer_email ?? "",
           createdAt: last.created_at.toISOString(),
         };
       }
