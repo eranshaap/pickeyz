@@ -1,5 +1,6 @@
 // BRIEF Day 19b Run 11a §1.2 — the two typed fields, the phone's normalisation, and the five errors.
 // BRIEF Day 19b Run 12 §2.1 — and the field the window scrolls to.
+// BRIEF Day 19b Run 12b §1.2 — and the numbering plan: 05/07 in ten digits, 02/03/04/08/09 in nine.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -25,7 +26,7 @@ describe("normalizePhone() — every spelling of one number (§1.2)", () => {
   });
 });
 
-describe("isIsraeliPhone() — 9 or 10 digits after normalisation (§1.2)", () => {
+describe("isIsraeliPhone() — the Israeli numbering plan after normalisation (§1.2)", () => {
   it("accepts a 10-digit mobile and a 9-digit landline", () => {
     assert.equal(isIsraeliPhone("0527654321"), true);
     assert.equal(isIsraeliPhone("031234567"), true);
@@ -39,6 +40,31 @@ describe("isIsraeliPhone() — 9 or 10 digits after normalisation (§1.2)", () =
 
   it("refuses a second zero after the leading one", () => {
     assert.equal(isIsraeliPhone("0012345678"), false);
+  });
+
+  it("a mobile and an 07 number are valid in ten digits, a landline in nine", () => {
+    for (const s of ["0521234567", "0771234567", "021234567"]) {
+      assert.equal(isIsraeliPhone(normalizePhone(s)), true, s);
+    }
+  });
+
+  it("the international spellings fold to the local form and are valid", () => {
+    assert.equal(normalizePhone("+972 3-123-4567"), "031234567");
+    assert.equal(isIsraeliPhone(normalizePhone("+972 3-123-4567")), true);
+    assert.equal(normalizePhone("+972 77-123-4567"), "0771234567");
+    assert.equal(isIsraeliPhone(normalizePhone("+972 77-123-4567")), true);
+  });
+
+  it("a mobile one digit short is not a landline: the 9-digit 05 number the site let through is invalid", () => {
+    for (const s of ["057863410", "052765432"]) {
+      assert.equal(isIsraeliPhone(normalizePhone(s)), false, s);
+    }
+  });
+
+  it("a landline with a digit too many, an 06 number in either length, and 011 are all invalid", () => {
+    for (const s of ["0212345678", "061234567", "0612345678", "0112345678"]) {
+      assert.equal(isIsraeliPhone(normalizePhone(s)), false, s);
+    }
   });
 });
 
@@ -71,6 +97,10 @@ describe("validateForm() (§1.2)", () => {
   it("an empty phone is missing; a badly shaped one is invalid", () => {
     assert.deepEqual(validateForm({ ...FILLED, phone: "" }), { phone: "missing" });
     assert.deepEqual(validateForm({ ...FILLED, phone: "05271" }), { phone: "invalid" });
+  });
+
+  it("the 9-digit 05 number reaches the form's answer too, not only isIsraeliPhone", () => {
+    assert.deepEqual(validateForm({ ...FILLED, phone: "057863410" }), { phone: "invalid" });
   });
 
   it("every field can be wrong at once", () => {

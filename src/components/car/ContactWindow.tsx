@@ -571,21 +571,25 @@ export default function ContactWindow({
         "[&[open]]:flex flex-col overflow-hidden bg-white",
         // the phone (< 900): the whole screen, no radius, no shadow — every view, unchanged
         "fixed inset-0 h-full w-full rounded-none",
-        // the desktop (≥ 900): 720 wide, centred on both axes by the platform's `inset: 0` and the `m-auto`
-        // above, at most the window's height less 80
-        "md:max-h-[calc(100vh-80px)] md:w-[720px] md:rounded-[14px] md:shadow-[0_20px_48px_rgba(34,31,28,0.24)]",
-        // Run 12 §4 — THE DESKTOP'S HEIGHT, and the one class that differs between the views.
+        // the desktop (≥ 900): 720 wide, centred across by the platform's `inset: 0` and the `m-auto` above,
+        // at most the VISIBLE height less 80 — `dvh`, not `vh`: on the iPad, Safari's `100vh` is the height
+        // with the toolbar hidden, taller than what is on screen, which is what made the box touch both edges.
+        "md:max-h-[calc(100dvh-80px)] md:w-[720px] md:rounded-[14px] md:shadow-[0_20px_48px_rgba(34,31,28,0.24)]",
+        // Run 12b §2.1 — THE DESKTOP'S HEIGHT AND THE FORM'S PLACE.
         //
         // `inset: 0` with `height: auto` is over-constrained: top and bottom are both 0 and the height is
         // the auto, so the height is what gets solved for (CSS 2.1 §10.6.4 rule 5, auto margins zeroed) and
-        // the box comes out the full viewport, clamped here to 100vh-80 — 720 in a 1280×800 frame. That is
-        // what kept the confirmation and the gone view as tall as the form, and it is not the form's own
-        // height at all. `height: fit-content` is not `auto`, so the equation is solved for the two auto
-        // margins instead: the box is as tall as its content and `m-auto` centres it, the max-height still
-        // holds, and the middle still scrolls on a low screen.
-        //
-        // THE FORM KEEPS EXACTLY THE HEIGHT IT HAS TODAY, visit and callback alike: `md:h-auto`, as before.
-        isForm ? "md:h-auto" : "md:h-fit",
+        // the box comes out the full viewport, clamped by the max-height — which is why the form filled the
+        // screen and left a white area under the privacy line. `height: fit-content` is not `auto`, so the
+        // equation is solved for the margins instead. EVERY view is at its content's height now; what
+        // differs between them is the vertical margin, below.
+        "md:h-fit",
+        // The form sits 40 from the top of the screen: `margin-top: 40px` pins the top edge and the auto
+        // bottom margin takes the whole rest, so opening a day's hours or switching to the callback grows
+        // and shrinks the box at its BOTTOM edge only — the title never moves. The sent and the gone views
+        // keep the base `m-auto` on both sides and stay centred, as Run 12 left them. The max-height still
+        // holds in both, and the middle keeps `min-h-0 flex-1 overflow-y-auto`, so a low window scrolls it.
+        isForm ? "md:mt-10 md:mb-auto" : "",
         "backdrop:bg-[rgba(34,31,28,0.42)]",
         FADE,
         "opacity-0 backdrop:opacity-0 [&[data-shown]]:opacity-100 [&[data-shown]]:backdrop:opacity-100",

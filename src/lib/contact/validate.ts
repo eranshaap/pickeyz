@@ -21,9 +21,14 @@ export function normalizePhone(raw: string): string {
   return digits.startsWith("972") ? "0" + digits.slice(3) : digits;
 }
 
-/** An Israeli number after normalisation: a 0, then a non-zero non-one digit, then 7 or 8 more. */
+/**
+ * BRIEF Day 19b Run 12b §1.1 -- an Israeli number by the numbering plan. After normalisation: a mobile
+ * (05) or an 07 number of TEN digits, or a landline (02, 03, 04, 08, 09) of NINE. Nothing else: there is
+ * no 06 and no 01, and a nine-digit number starting 05 is a mobile one digit short, not a landline.
+ * The argument is normalizePhone()'s output -- digits only, a leading 972 already turned into 0.
+ */
 export function isIsraeliPhone(digits: string): boolean {
-  return /^0[2-9]\d{7,8}$/.test(digits);
+  return /^0[57]\d{8}$/.test(digits) || /^0[23489]\d{7}$/.test(digits);
 }
 
 /** The errors of one filled form. An empty object is a valid form. */
