@@ -46,6 +46,8 @@ import type { FilterName } from "@/app/actions/search";
 import QuestionRow from "@/components/search/QuestionRow";
 import { LinkPending } from "@/components/search/PickCards";
 import CarTitle from "./CarTitle";
+import ContactButton from "./ContactButton";
+import ContactProvider from "./ContactProvider";
 import Photo from "./Photo";
 import OwnershipTimeline from "./OwnershipTimeline";
 import Rubrics from "./Rubrics";
@@ -54,8 +56,6 @@ import WhySection from "./WhySection";
 const GREY = "#665f58";
 const DARK = "#221f1c";
 
-const CONTACT = "צור קשר עם המוכר";
-const CONTACT_SHORT = "צור קשר";
 const OWNERSHIP_HEADING = "היסטוריית בעלויות";
 const PHOTO_PLACEHOLDER = "[תמונת הרכב]";
 
@@ -289,135 +289,144 @@ export default function CarPageView({ data }: { data: CarPageData }) {
   );
 
   return (
-    <div className="min-h-screen" style={{ background: "#eeece8" }}>
-      {/* ---------------------------------------------------------------- header */}
-      {/* DESKTOP (§7.3, Run 7 §3): one 64px white bar — brand · the question row · the back link.
-          The white and its 1px bottom border run the full width of the window; the CONTENT inside it is the
-          page container — max-width 1280px, centred, padding 0 48px — so the header's items line up with the
-          main column at every width. The board is drawn at exactly 1280px and cannot say which of the two
-          the white stops at; a bar that stops mid-window is the one reading that would look broken. */}
-      <header className="hidden border-b border-[#d8d3cb] bg-white md:block">
-        <div className="mx-auto flex h-16 max-w-[1280px] items-center gap-6 px-12">
-          {brandName}
-          {data.question !== null ? questionRow(data.question) : <span className="flex-1" />}
-          {backLink}
-        </div>
-      </header>
+    // Day 19b Run 11b §4.4 — THE CONTACT WINDOW'S PROVIDER WRAPS THE WHOLE PAGE, and the page is its
+    // `children`: a client island around a server tree, the way this file already mounts client islands
+    // inside one (the question row, the back link's pending state, the ownership axis). It is out here and
+    // not deeper because the two buttons that open the window sit in two different places of this tree —
+    // the text column and the phone's fixed bar — and both read one `sent` and call one `openWindow`.
+    <ContactProvider
+      contact={data.contact}
+      color={data.color}
+      backHref={data.backHref}
+      backWord={data.backWord}
+      car={{ model: data.model, year: data.year, imageSrc: data.imageSrc, price: data.price, region: data.region }}
+    >
+      <div className="min-h-screen" style={{ background: "#eeece8" }}>
+        {/* ---------------------------------------------------------------- header */}
+        {/* DESKTOP (§7.3, Run 7 §3): one 64px white bar — brand · the question row · the back link.
+            The white and its 1px bottom border run the full width of the window; the CONTENT inside it is the
+            page container — max-width 1280px, centred, padding 0 48px — so the header's items line up with the
+            main column at every width. The board is drawn at exactly 1280px and cannot say which of the two
+            the white stops at; a bar that stops mid-window is the one reading that would look broken. */}
+        <header className="hidden border-b border-[#d8d3cb] bg-white md:block">
+          <div className="mx-auto flex h-16 max-w-[1280px] items-center gap-6 px-12">
+            {brandName}
+            {data.question !== null ? questionRow(data.question) : <span className="flex-1" />}
+            {backLink}
+          </div>
+        </header>
 
-      {/* PHONE (§7.4): a 56px bar with the brand and the back link, then a 48px bar with the question row. */}
-      <header className="md:hidden">
-        <div className="flex h-14 items-center justify-between border-b border-[#d8d3cb] bg-white px-4">
-          {brandName}
-          {backLink}
-        </div>
-        {data.question !== null && (
-          <div className="flex h-12 items-center border-b border-[#d8d3cb] bg-white px-4">{questionRow(data.question)}</div>
-        )}
-      </header>
+        {/* PHONE (§7.4): a 56px bar with the brand and the back link, then a 48px bar with the question row. */}
+        <header className="md:hidden">
+          <div className="flex h-14 items-center justify-between border-b border-[#d8d3cb] bg-white px-4">
+            {brandName}
+            {backLink}
+          </div>
+          {data.question !== null && (
+            <div className="flex h-12 items-center border-b border-[#d8d3cb] bg-white px-4">{questionRow(data.question)}</div>
+          )}
+        </header>
 
-      {/* ---------------------------------------------------------------- phone image */}
-      <Photo src={data.imageSrc} className="block h-[200px] w-full md:hidden" caption={PHOTO_PLACEHOLDER} />
+        {/* ---------------------------------------------------------------- phone image */}
+        <Photo src={data.imageSrc} className="block h-[200px] w-full md:hidden" caption={PHOTO_PLACEHOLDER} />
 
-      {/* Run 7 §3 — the page container: max-width 1280px, centred; main padding 36px 48px 40px. S, the gap
-          BETWEEN sections, is this element's own `gap-4` / `md:gap-7` and Run 9 §5.2 does not touch it. */}
-      <main className="mx-auto flex max-w-[1280px] flex-col gap-4 px-4 pt-4 pb-[88px] md:gap-7 md:px-12 md:pt-9 md:pb-10">
-        {/* ------------------------------------------------------------ top block */}
-        {/* §11.2 — the top block is a VERTICAL STACK of two parts, 16px apart: (a) the two-column grid and
-            (b) the rubric strip at the full content width (1184px in the 1280 container), under BOTH
-            columns. This <section> is the wrapper that holds them, so §5.2's extra bottom margin stays
-            exactly where it was and the gap it opens is now measured from the strip's bottom edge.
-            THE PHONE IS UNTOUCHED BY THE MOVE: there is no responsive re-ordering here and none is needed —
-            the strip that was the text column's last row is now the section's second child, one flex row
-            down in the very same document order, with the same 16px above it (the section's `gap-4` is the
-            column's own phone `gap-4`). The phone therefore still reads photo (above <main>) → label →
-            title → version line → price block with the region line → the rubrics two by two → the
-            sections, and the fixed bar still holds the button alone. */}
-        <section
-          className="mb-[var(--top-extra-phone)] flex flex-col gap-4 md:mb-[var(--top-extra-desktop)]"
-          style={topBlockGap}
-        >
-          {/* (a) §5.1, §11.3 — grid minmax(0, 1fr) 536px, gap 32px: RTL puts the first column on the RIGHT,
-              so the flexible text column is on the right and the 536px photo column on the left, per the
-              board. `items-stretch` (it was `items-start`, against a dead band under a fixed-height photo)
-              is what now gives the photo the text column's height. */}
-          <div className="md:grid md:grid-cols-[minmax(0,1fr)_536px] md:items-stretch md:gap-8">
-            {/* §5.1 — the text column: 12px between its rows (it was 16) and at least as tall as the photo,
-                so the contact button pushed down by `mt-auto` lands on the photo's bottom line. §11.2 — its
-                rows are now the label, the title group, the price block and the button, and no more. */}
-            <div className="flex flex-col gap-4 md:min-h-[357px] md:gap-3">
-              <div className="md:hidden">
-                <VerdictLine data={data} size="phone" />
+        {/* Run 7 §3 — the page container: max-width 1280px, centred; main padding 36px 48px 40px. S, the gap
+            BETWEEN sections, is this element's own `gap-4` / `md:gap-7` and Run 9 §5.2 does not touch it. */}
+        <main className="mx-auto flex max-w-[1280px] flex-col gap-4 px-4 pt-4 pb-[88px] md:gap-7 md:px-12 md:pt-9 md:pb-10">
+          {/* ------------------------------------------------------------ top block */}
+          {/* §11.2 — the top block is a VERTICAL STACK of two parts, 16px apart: (a) the two-column grid and
+              (b) the rubric strip at the full content width (1184px in the 1280 container), under BOTH
+              columns. This <section> is the wrapper that holds them, so §5.2's extra bottom margin stays
+              exactly where it was and the gap it opens is now measured from the strip's bottom edge.
+              THE PHONE IS UNTOUCHED BY THE MOVE: there is no responsive re-ordering here and none is needed —
+              the strip that was the text column's last row is now the section's second child, one flex row
+              down in the very same document order, with the same 16px above it (the section's `gap-4` is the
+              column's own phone `gap-4`). The phone therefore still reads photo (above <main>) → label →
+              title → version line → price block with the region line → the rubrics two by two → the
+              sections, and the fixed bar still holds the button alone. */}
+          <section
+            className="mb-[var(--top-extra-phone)] flex flex-col gap-4 md:mb-[var(--top-extra-desktop)]"
+            style={topBlockGap}
+          >
+            {/* (a) §5.1, §11.3 — grid minmax(0, 1fr) 536px, gap 32px: RTL puts the first column on the RIGHT,
+                so the flexible text column is on the right and the 536px photo column on the left, per the
+                board. `items-stretch` (it was `items-start`, against a dead band under a fixed-height photo)
+                is what now gives the photo the text column's height. */}
+            <div className="md:grid md:grid-cols-[minmax(0,1fr)_536px] md:items-stretch md:gap-8">
+              {/* §5.1 — the text column: 12px between its rows (it was 16) and at least as tall as the photo,
+                  so the contact button pushed down by `mt-auto` lands on the photo's bottom line. §11.2 — its
+                  rows are now the label, the title group, the price block and the button, and no more. */}
+              <div className="flex flex-col gap-4 md:min-h-[357px] md:gap-3">
+                <div className="md:hidden">
+                  <VerdictLine data={data} size="phone" />
+                </div>
+                <div className="hidden md:block">
+                  <VerdictLine data={data} size="desktop" />
+                </div>
+
+                {titleGroup}
+
+                <div className="md:hidden">
+                  <PriceBlockView data={data} size="phone" />
+                </div>
+                <div className="hidden md:block">
+                  <PriceBlockView data={data} size="desktop" />
+                </div>
+
+                {/* §5.1 — the contact button: height 48px, padding 0 32px, radius 8, the page colour, at the
+                    BOTTOM of the text column. The phone does not show it here — the fixed bar holds it. */}
+                <div className="mt-auto hidden md:block">
+                  <ContactButton variant="desktop" />
+                </div>
               </div>
-              <div className="hidden md:block">
-                <VerdictLine data={data} size="desktop" />
-              </div>
 
-              {titleGroup}
-
-              <div className="md:hidden">
-                <PriceBlockView data={data} size="phone" />
-              </div>
-              <div className="hidden md:block">
-                <PriceBlockView data={data} size="desktop" />
-              </div>
-
-              {/* §5.1 — the contact button: height 48px, padding 0 32px, radius 8, the page colour, at the
-                  BOTTOM of the text column. The phone does not show it here — the fixed bar holds it. */}
-              <div className="mt-auto hidden md:block">
-                <button type="button" className="h-12 rounded-lg px-8 text-[16px] font-semibold text-white" style={{ background: data.color }}>
-                  {CONTACT}
-                </button>
+              {/* §11.3 — the photo FRAME: 536 wide, at least 357 tall, stretched by the grid to the text
+                  column's height. The image — or, with no photo, the placeholder box, which takes the same
+                  frame — is laid over it edge to edge and cropped by `object-cover`, so it fills whatever
+                  height the row ends up with and is never distorted. */}
+              <div className="relative hidden w-[536px] md:block md:min-h-[357px]">
+                <Photo src={data.imageSrc} className="absolute inset-0 h-full w-full rounded-lg" caption={PHOTO_PLACEHOLDER} />
               </div>
             </div>
 
-            {/* §11.3 — the photo FRAME: 536 wide, at least 357 tall, stretched by the grid to the text
-                column's height. The image — or, with no photo, the placeholder box, which takes the same
-                frame — is laid over it edge to edge and cropped by `object-cover`, so it fills whatever
-                height the row ends up with and is never distorted. */}
-            <div className="relative hidden w-[536px] md:block md:min-h-[357px]">
-              <Photo src={data.imageSrc} className="absolute inset-0 h-full w-full rounded-lg" caption={PHOTO_PLACEHOLDER} />
+            {/* (b) §11.2 — the rubric strip, the full content width, under both columns. Nothing inside it
+                changes: it is the same <Rubrics> the text column used to hold, and its own outer wrapper
+                already spans whatever box it is given. */}
+            <Rubrics strip={data.strip} />
+          </section>
+
+          {/* ------------------------------------------------- למה (between the rubrics and the history) */}
+          <WhySection labels={data.labels} place={data.place} lines={data.whyLines} color={data.color} />
+
+          {/* ------------------------------------------------------------ ownership history */}
+          <section className="flex flex-col gap-3">
+            <h2 className="text-[17px] font-extrabold md:text-[18px]" style={{ color: data.color }}>
+              {OWNERSHIP_HEADING}
+            </h2>
+            {/* Run 7 §2.3 / Run 2b (Days 24-25) §4.1 — TWO RULES, ONE TREE: on the desktop scaleLayout()
+                decides which year marks clear, by the collision rule, and the scale draws exactly those; below
+                the site's 900px boundary the phone carries the two END marks alone, whatever scaleLayout() would
+                have cleared (findCar-now.md, "היסטוריית בעלויות"). The two copies below are the SAME tree — the boundary
+                lives inside it, on the year mark's own span — and the axis is rendered twice only because each
+                copy measures its own card. */}
+            <div className="md:hidden">
+              <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
             </div>
-          </div>
+            <div className="hidden md:block">
+              <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
+            </div>
+          </section>
+        </main>
 
-          {/* (b) §11.2 — the rubric strip, the full content width, under both columns. Nothing inside it
-              changes: it is the same <Rubrics> the text column used to hold, and its own outer wrapper
-              already spans whatever box it is given. */}
-          <Rubrics strip={data.strip} />
-        </section>
-
-        {/* ------------------------------------------------- למה (between the rubrics and the history) */}
-        <WhySection labels={data.labels} place={data.place} lines={data.whyLines} color={data.color} />
-
-        {/* ------------------------------------------------------------ ownership history */}
-        <section className="flex flex-col gap-3">
-          <h2 className="text-[17px] font-extrabold md:text-[18px]" style={{ color: data.color }}>
-            {OWNERSHIP_HEADING}
-          </h2>
-          {/* Run 7 §2.3 / Run 2b (Days 24-25) §4.1 — TWO RULES, ONE TREE: on the desktop scaleLayout()
-              decides which year marks clear, by the collision rule, and the scale draws exactly those; below
-              the site's 900px boundary the phone carries the two END marks alone, whatever scaleLayout() would
-              have cleared (findCar-now.md, "היסטוריית בעלויות"). The two copies below are the SAME tree — the boundary
-              lives inside it, on the year mark's own span — and the axis is rendered twice only because each
-              copy measures its own card. */}
-          <div className="md:hidden">
-            <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
-          </div>
-          <div className="hidden md:block">
-            <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
-          </div>
-        </section>
-      </main>
-
-      {/* ------------------------------------------------------------ phone bottom bar (§7.4, Run 7 §5) */}
-      {/* §5 — the price element is GONE from this bar (the price is already on the page, a few centimetres
-          above it). The contact button is the bar's only content, horizontally centred. The bar's height and
-          background are unchanged, and it has no scroll-aware behaviour of any kind. Run 9 §4.4: the region
-          does NOT enter this bar either. */}
-      <div className="fixed inset-x-0 bottom-0 z-20 flex h-[72px] items-center justify-center border-t border-[#d8d3cb] bg-white px-4 md:hidden">
-        <button type="button" className="h-[46px] shrink-0 rounded-lg px-7 text-[15px] font-semibold text-white" style={{ background: data.color }}>
-          {CONTACT_SHORT}
-        </button>
+        {/* ------------------------------------------------------------ phone bottom bar (§7.4, Run 7 §5) */}
+        {/* §5 — the price element is GONE from this bar (the price is already on the page, a few centimetres
+            above it). The contact button is the bar's only content, horizontally centred. The bar's height and
+            background are unchanged, and it has no scroll-aware behaviour of any kind. Run 9 §4.4: the region
+            does NOT enter this bar either. */}
+        <div className="fixed inset-x-0 bottom-0 z-20 flex h-[72px] items-center justify-center border-t border-[#d8d3cb] bg-white px-4 md:hidden">
+          <ContactButton variant="phone" />
+        </div>
       </div>
-    </div>
+    </ContactProvider>
   );
 }
