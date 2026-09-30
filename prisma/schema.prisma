@@ -31,17 +31,36 @@ model models {
   body_type        String? // catalog: merkav
   seats            Int? // catalog: mispar_moshavim
   horsepower       Int? // catalog: koah_sus
-  height_mm        Int? // catalog: gova
   safety_rating    Int? // catalog: ramat_eivzur_betihuty (0–8)
+  doors            Int? // catalog: mispar_dlatot; 0 = no data (old rows)
+  airbags          Int? // catalog: mispar_kariot_avir; null = the row has no catalog spec data
+  drive_technology String? // code: regular | hybrid | plug_in | electric (catalog: technologiat_hanaa_nm)
+  co2_wltp         Int? // g CO2 per km in the WLTP test (catalog: CO2_WLTP, never kamut_CO2); null for US-standard versions
+  // the 15 catalog flags (0/1 in the catalog), in the section's display order: 1-12 the driver-assist row, 13-15 the equipment row
+  aeb_pedestrian_cyclist    Boolean? // blimat_hirum_lifnei_holhei_regel_ofanaim
+  pedestrian_detection      Boolean? // zihuy_holchey_regel_ind
+  two_wheeler_detection     Boolean? // zihuy_rechev_do_galgali
+  forward_collision_warning Boolean? // zihuy_matzav_hitkarvut_mesukenet_ind
+  distance_monitoring       Boolean? // nitur_merhak_milfanim_ind
+  lane_departure_warning    Boolean? // bakarat_stiya_menativ_ind
+  lane_keeping              Boolean? // bakarat_stiya_activ_s
+  blind_spot_detection      Boolean? // zihuy_beshetah_nistar_ind
+  adaptive_cruise           Boolean? // bakarat_shyut_adaptivit_ind
+  traffic_sign_recognition  Boolean? // zihuy_tamrurey_tnua_ind
+  auto_high_beams           Boolean? // shlita_automatit_beorot_gvohim_ind
+  reverse_auto_braking      Boolean? // blima_otomatit_nesia_leahor
+  sunroof                   Boolean? // halon_bagg_ind
+  alloy_wheels              Boolean? // galgaley_sagsoget_kala_ind
+  reverse_camera            Boolean? // matzlemat_reverse_ind
   import_type      String? // source unknown yet (check 5 half-open). Empty.
-  trunk_liters     Int? // manual; empty in the demo
-  length_mm        Int? // manual; empty in the demo
-  width_mm         Int? // manual; empty in the demo
-  fuel_consumption Float? // km per liter; manual; empty in the demo
+  fuel_consumption Float? // km per liter — ONLY for a version without co2_wltp (US standard): the sheet tab of US-standard versions, converted from mpg at import
+  fuel_source_url  String? // the page fuel_consumption was taken from
+  model_spec_id    Int? // -> model_specs; set by the sheet import; null = no manual spec yet -> the alert list
   family_id        Int? // Day 18: which model-as-a-person-knows-it this catalog row belongs to; null = outside the reviewed scope
   created_at       DateTime @default(now()) @db.Timestamptz(3)
 
   family model_families? @relation(fields: [family_id], references: [id], onDelete: SetNull)
+  spec   model_specs?    @relation(fields: [model_spec_id], references: [id], onDelete: SetNull)
   cars   cars[]
 
   @@unique([vehicle_class, degem_code, year])
@@ -477,4 +496,30 @@ model contact_requests {
   @@index([buyer_phone_fp])
   @@index([opened_event_id])
   @@index([visitor_id, created_at])
+}
+
+// 17. model_specs — the manual spec (Day 19ב): one row per row of the sheet tab "מפרט ידני" — dimensions, trunk and tank,
+// which the ministry catalog lacks. A models row points here (models.model_spec_id), set by the sheet import when make,
+// model, body_type, year, engine_size, engine type and drive_type are equal and its sub_model is in sub_models.
+// Required: the key a row is matched on (part E, rule 3). The numbers, the link and the date are required by the import, not the database.
+model model_specs {
+  id           Int       @id @default(autoincrement())
+  make         String // as models.make
+  model        String // as models.model — the normalized spelling
+  body_type    String // as models.body_type
+  year         Int // production year — one row per year
+  engine_size  Int // cc, as models.engine_size
+  engine_type  String // the engine type — the tab's closed list (findCar-schema.md part D §18)
+  drive_type   String // "4X2" | "4X4", as models.drive_type (the tab's 2 / 4, converted at import)
+  sub_models   String[] // the trims the row applies to, each exactly as models.sub_model
+  length_mm    Int? // mm
+  width_mm     Int? // mm, without mirrors
+  height_mm    Int? // mm, as the Israeli trim comes — with roof rails when fitted
+  trunk_liters Int? // rear seats in place
+  tank_liters  Int? // the fuel tank; times the shown consumption = the range
+  carzone_url  String? // the Carzone page the numbers came from
+  source_date  DateTime? @db.Date // when they were checked
+  created_at   DateTime  @default(now()) @db.Timestamptz(3)
+
+  models models[]
 }

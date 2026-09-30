@@ -53,7 +53,6 @@ export type ModelRow = {
   body_type: string | null;
   seats: number | null;
   horsepower: number | null;
-  height_mm: number | null;
   safety_rating: number | null;
 };
 
@@ -111,7 +110,6 @@ export function buildModelRows(): { rows: ModelRow[]; report: BuildReport } {
       comparison_group: groupKey({ vehicle_class: cls, ...fields }),
       ...fields,
       seats: num(r.mispar_moshavim),
-      height_mm: num(r.gova),
       safety_rating: num(r.ramat_eivzur_betihuty),
     };
     const identity = `${cls}|${code}|${year}`;
