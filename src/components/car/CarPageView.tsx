@@ -91,6 +91,32 @@ export type PageQuestion = {
   publicId: string;
 };
 
+/**
+ * Day 19b Run 11a §3 — the request this browser last sent on THIS listing, when it is still in force
+ * (src/lib/contact/memory.ts). ISO strings, not Dates: this crosses to a client component.
+ */
+export type SentRequest = { kind: "visit" | "callback"; visitAt: string | null; name: string; phone: string; email: string; createdAt: string };
+
+/**
+ * Day 19b Run 11a §3 — what the contact window is given. The five measurement values (`listingId`, `carId`,
+ * `searchId`, `carRank`, `wasRecommended`) go on every event row the window writes; the four search-borne
+ * ones are null on an address with no `?s=`, and on a listing the displayed run did not rank.
+ *
+ * `sellerName` is the agency's or the private seller's OWN name, with no type word: the seller's name
+ * appears in the contact window and nowhere else on the page.
+ */
+export type ContactData = {
+  listingId: number;
+  listingPublicId: string;
+  carId: number;
+  searchId: number | null;
+  searchResultId: number | null;
+  carRank: number | null;
+  wasRecommended: boolean | null;
+  sellerName: string;
+  sent: SentRequest | null;
+};
+
 export type CarPageData = {
   brand: string;
   backHref: string;
@@ -125,6 +151,8 @@ export type CarPageData = {
   zeroKmExplanation: string | null;
   /** Always empty in this run — the justification generator is Days 22–23 (§7.7). */
   whyLines: string[];
+  /** Day 19b Run 11a §3 — everything the contact window needs, gathered on the server. */
+  contact: ContactData;
 };
 
 // ---------------------------------------------------------------------------

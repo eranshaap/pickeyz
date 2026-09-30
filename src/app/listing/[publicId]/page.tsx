@@ -52,7 +52,9 @@ import { resolveListing } from "@/lib/search/visibility";
 import { storedWhyLines } from "@/lib/search/why";
 import type { Category } from "@/lib/selection";
 import { BRAND } from "@/lib/brand";
-import CarPageView, { type CarPageData, type PageQuestion } from "@/components/car/CarPageView";
+import { latestRequestFor, searchResultIdFor } from "@/lib/contact/store";
+import { requestInForce } from "@/lib/contact/memory";
+import CarPageView, { type CarPageData, type PageQuestion, type SentRequest } from "@/components/car/CarPageView";
 import type { FilterName } from "@/app/actions/search";
 
 export const dynamic = "force-dynamic";
@@ -122,13 +124,26 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
   const historyRaw = (historyRow?.raw ?? {}) as { zero_km_deal?: boolean; months_to_first_private?: number };
 
   // ---- 2. the verdict, only when `s` resolves ------------------------------
+  // Day 19b Run 11a §3 — THE TWO COOKIES ARE READ ONCE, here, for the whole render. The displayed run's
+  // loader takes the viewer, and so does the contact window's memory below; two reads of one jar would be
+  // two chances to disagree. A Server Component may read cookies and never mints (load.ts), so a reader
+  // who has not searched yet simply has no visitor_id and no memory — which is the right answer.
+  const viewer = await viewerFromCookies();
+
   let labels: Category[] = [];
   let place: number | null = null;
   let question: PageQuestion | null = null;
   let whyLines: string[] = [];
 
+  // Day 19b Run 11a §3 — the four search-borne values every contact event carries. All null on an address
+  // with no `?s=`, and on a listing the displayed run did not rank.
+  let contactSearchId: number | null = null;
+  let contactSearchResultId: number | null = null;
+  let contactCarRank: number | null = null;
+  let contactWasRecommended: boolean | null = null;
+
   if (s !== null && isPublicId(s)) {
-    const loaded = await loadForAddress(s, await viewerFromCookies());
+    const loaded = await loadForAddress(s, viewer);
     if (loaded !== null) {
       const row = loaded.results.find((r) => r.listing_id === listing.id);
       if (row !== undefined) {
@@ -146,6 +161,13 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
         // RECOMPUTED here and no page line is stored (justification/types.ts:8-9). A run whose rows are broken
         // logs and yields [] — the section is not drawn and the page renders as always (why.ts §6.2).
         whyLines = await storedWhyLines(loaded, listing.id);
+        // Day 19b Run 11a §3 — the measurement's four values. `car_rank` is the STORED rank and not the
+        // displayed place (findCar-schema.md §D9: it is duplicated from search_results on purpose), so the
+        // analyses read one number and the reader reads another, each the right one for its question.
+        contactSearchId = loaded.run.id;
+        contactSearchResultId = await searchResultIdFor(loaded.run.id, listing.id);
+        contactCarRank = row.rank;
+        contactWasRecommended = row.recommendation_categories.length > 0;
       }
       const filters = storedFilters(loaded.question.filters);
       // Run 7c §11.2 — the row is TEXT here, so the live list is read for ONE thing: the model's display
@@ -175,6 +197,31 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
   // takes its day in Israel from it. Read once, here: two `new Date()` calls a few lines apart could fall on
   // either side of midnight and let the axis and the rubric disagree about the date.
   const now = new Date();
+
+  // Day 19b Run 11a §3 — the button that remembers. The NEWEST request this browser sent on this listing
+  // ("several requests on one ad — the last one decides"), kept only while it is still in force
+  // (src/lib/contact/memory.ts), judged against the page's one `now`. The three buyer fields are emptied
+  // six months after the send, so a row that has been through that becomes empty strings, not null.
+  let sent: SentRequest | null = null;
+  if (viewer.visitor_id !== null) {
+    const last = await latestRequestFor(viewer.visitor_id, listing.id);
+    if (last !== null) {
+      if (last.kind !== "visit" && last.kind !== "callback") {
+        throw new Error(`listing ${listing.id}: contact_requests.kind is ${JSON.stringify(last.kind)}, which is neither visit nor callback`);
+      }
+      const kind = last.kind;
+      if (requestInForce({ kind, visit_at: last.visit_at, created_at: last.created_at }, now)) {
+        sent = {
+          kind,
+          visitAt: last.visit_at === null ? null : last.visit_at.toISOString(),
+          name: last.buyer_name ?? "",
+          phone: last.buyer_phone ?? "",
+          email: last.buyer_email ?? "",
+          createdAt: last.created_at.toISOString(),
+        };
+      }
+    }
+  }
 
   const history = Array.isArray(car.ownership_history) ? (car.ownership_history as { ym: string; type: string }[]) : [];
   let axis: OwnershipAxis | null = null;
@@ -254,6 +301,19 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     zeroKmExplanation:
       historyRaw.zero_km_deal === true && typeof historyRaw.months_to_first_private === "number" ? zeroKmExplanation(historyRaw.months_to_first_private) : null,
     whyLines, // Days 22–23 (Run 5 §6) — the generator's lines from the stored rows of the displayed run; [] without a question
+    // Day 19b Run 11a §3 — everything the contact window needs. `sellerName` is the agency's or the private
+    // seller's OWN name, with no type word: it appears in the window and nowhere else on the page.
+    contact: {
+      listingId: listing.id,
+      listingPublicId: publicId,
+      carId: item.car_id,
+      searchId: contactSearchId,
+      searchResultId: contactSearchResultId,
+      carRank: contactCarRank,
+      wasRecommended: contactWasRecommended,
+      sellerName: listing.dealer.name,
+      sent,
+    },
   };
 
   return <CarPageView data={data} />;
