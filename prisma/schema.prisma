@@ -82,6 +82,7 @@ model cars {
   model         models              @relation(fields: [model_id], references: [id])
   listings      listings[]
   test_readings car_test_readings[]
+  events        events[]
 }
 
 // 3. listings — one row per offer to sell a specific car. The score lives here.
@@ -123,6 +124,8 @@ model listings {
   scores         listing_scores[]
   price_history  listing_price_history[]
   search_results search_results[]
+  events         events[]
+  contact_requests contact_requests[]
 
   @@unique([source, external_id])
   @@index([market_stats_id])
@@ -167,6 +170,7 @@ model dealer_commercial {
   updated_at         DateTime  @default(now()) @updatedAt @db.Timestamptz(3) // Day 19 (Run 6a): when this agreement row last changed — stamped by the DATABASE on every insert and update (trigger set_updated_at), so a hand edit in the Supabase editor counts. One of the "update" signals of the stored-search rule. Rows that existed at the migration carry the migration's moment.
 
   dealer dealers @relation(fields: [dealer_id], references: [id])
+  contact_requests contact_requests[]
 }
 
 // 6. market_stats — the market norm: median price and km per (comparison group × year).
@@ -335,6 +339,7 @@ model searches {
   search_results search_results[]
   original       searches?        @relation("search_reruns", fields: [rerun_of], references: [id], onDelete: NoAction)
   reruns         searches[]       @relation("search_reruns")
+  events         events[]
 
   @@index([rerun_of])
 }
@@ -373,6 +378,7 @@ model search_results {
 
   searches searches @relation(fields: [search_id], references: [id], onDelete: Restrict)
   listings listings @relation(fields: [listing_id], references: [id], onDelete: Restrict)
+  contact_requests contact_requests[]
 
   @@index([search_id])
   @@index([listing_id])
@@ -404,4 +410,72 @@ model model_families {
   searches searches[]
 
   @@unique([make_id, name_en])
+}
+
+// 15. events — one row per user action (findCar-schema.md part A "events" and part D §9). Born on Day 19ב, the
+// contact-window run: only the window's four actions are written for now — contact_opened | contact_form_started |
+// contact_form_error | contact_closed; every other action on the site joins on Days 27–28 (new actions add codes,
+// and keys inside details — not columns). search_results keeps what the ENGINE decided; this table keeps what the
+// PERSON did — crossing the two is the measurement. The buyer's sent request is NOT an event: it is a
+// contact_requests row, which points at its opening row here. Closed to Supabase's open API: row level security
+// on, no policy — only the site's server reads and writes (the two ALTER lines at the end of the migration;
+// Prisma has no syntax for it, like the triggers).
+model events {
+  id              String   @id // made in the BROWSER (crypto.randomUUID()), not by the database: the page knows its opening row at once, and a retried send creates no duplicate (ON CONFLICT DO NOTHING in the writing code, next run)
+  event_type      String // required: code, object_action in the past tense — contact_opened | contact_form_started | contact_form_error | contact_closed (Day 19ב). Hebrew lives on the screen only
+  visitor_id      String? // see searches.visitor_id — the button's memory after a send and the behaviour analyses; NOT the lead count (the person for counting is the phone fingerprint in contact_requests). An event written without it stays anonymous for ever
+  session_id      String? // see searches.session_id — one visit
+  search_id       Int? // the search this happened in; null on an address without a search
+  car_id          Int? // null on events not about a car
+  listing_id      Int? // through which ad — the window's open and what followed; null on the rest. The lead itself and its dealer come from the request row
+  car_rank        Int? // the car's place in that search — duplicated from search_results on purpose (part D §9): every analysis query needs it
+  was_recommended Boolean? // whether the car was among the three — derived from recommendation_categories, stored on purpose (part D §9)
+  details         Json? // what belongs to this action and not to all: contact_form_error → which field and which error (never what was typed); contact_closed → how long the window was open and whether filling had started; contact_form_started → visit or callback
+  created_at      DateTime @default(now()) @db.Timestamptz(3) // the datum, not metadata: the chronological order is what tells "scrolled and came back"
+
+  search           searches?          @relation(fields: [search_id], references: [id], onDelete: SetNull)
+  car              cars?              @relation(fields: [car_id], references: [id], onDelete: SetNull)
+  listing          listings?          @relation(fields: [listing_id], references: [id], onDelete: SetNull)
+  contact_requests contact_requests[]
+
+  @@index([search_id])
+  @@index([listing_id])
+  @@index([visitor_id, created_at])
+}
+
+// 16. contact_requests — one row per request SENT from the contact window (findCar-schema.md part A and part D §19):
+// a visit (day and hour) or a callback, with name, phone and email. This is the lead — the dealer pays for it, not
+// for the click. Kept apart from events on purpose: there, nameless actions for ever, for measurement; here, names,
+// phones and emails in one closed place with their own deletion rule (the three buyer fields are emptied after
+// 6 months — built before the public opening, not now; the row and the phone fingerprint stay). The car and the
+// dealer are NOT copied — they come through the listing; the price IS copied, because it changes. "Counted or not"
+// is not stored — the counting code computes it from the rows, the agreement row and the feed's sale date.
+// Closed to Supabase's open API (row level security on, no policy) — only the site's server reads and writes.
+// Delivery-to-the-dealer columns — with Day 29's framework.
+model contact_requests {
+  id               Int       @id @default(autoincrement())
+  created_at       DateTime  @default(now()) @db.Timestamptz(3) // the moment "שלח למוכר" was pressed
+  listing_id       Int // required: which ad the request is about — the car and the dealer through it
+  agreement_id     Int? // the seller's dealer_commercial row in force at that moment
+  kind             String // required: code, visit | callback
+  visit_at         DateTime? @db.Timestamptz(3) // the chosen day and hour, Israel time, stored as the instant; visit only
+  price_at_send    Int? // listings.price at that moment — stored because it changes
+  search_result_id Int? // the row the buyer saw: place and label; null only when the address carried no search
+  opened_event_id  String? // the contact_opened row the request was sent from (ON DELETE SET NULL); null when the opening was not recorded — measurement never stops a send
+  buyer_name       String? // emptied after 6 months
+  buyer_phone      String? // digits only (0527654321); emptied after 6 months
+  buyer_email      String? // emptied after 6 months
+  buyer_phone_fp   String // required: fingerprint of the phone (HMAC, server-side secret) — stays for ever; the counting rules work on it
+  visitor_id       String? // the visitor cookie — the button that remembers; null when the browser keeps no cookie
+  session_id       String? // one visit — for measurement
+
+  listing       listings           @relation(fields: [listing_id], references: [id], onDelete: Restrict)
+  agreement     dealer_commercial? @relation(fields: [agreement_id], references: [id], onDelete: SetNull)
+  search_result search_results?    @relation(fields: [search_result_id], references: [id], onDelete: SetNull)
+  opened_event  events?            @relation(fields: [opened_event_id], references: [id], onDelete: SetNull)
+
+  @@index([listing_id])
+  @@index([buyer_phone_fp])
+  @@index([opened_event_id])
+  @@index([visitor_id, created_at])
 }
