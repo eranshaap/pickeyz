@@ -575,21 +575,25 @@ export default function ContactWindow({
         // at most the VISIBLE height less 80 — `dvh`, not `vh`: on the iPad, Safari's `100vh` is the height
         // with the toolbar hidden, taller than what is on screen, which is what made the box touch both edges.
         "md:max-h-[calc(100dvh-80px)] md:w-[720px] md:rounded-[14px] md:shadow-[0_20px_48px_rgba(34,31,28,0.24)]",
-        // Run 12b §2.1 — THE DESKTOP'S HEIGHT AND THE FORM'S PLACE.
+        // Run 12c §1 — THE DESKTOP'S HEIGHT AND THE FORM'S PLACE: plain positioning, the height from the
+        // content, and NO INTRINSIC-SIZE KEYWORD anywhere in it.
         //
-        // `inset: 0` with `height: auto` is over-constrained: top and bottom are both 0 and the height is
-        // the auto, so the height is what gets solved for (CSS 2.1 §10.6.4 rule 5, auto margins zeroed) and
-        // the box comes out the full viewport, clamped by the max-height — which is why the form filled the
-        // screen and left a white area under the privacy line. `height: fit-content` is not `auto`, so the
-        // equation is solved for the margins instead. EVERY view is at its content's height now; what
-        // differs between them is the vertical margin, below.
-        "md:h-fit",
-        // The form sits 40 from the top of the screen: `margin-top: 40px` pins the top edge and the auto
-        // bottom margin takes the whole rest, so opening a day's hours or switching to the callback grows
-        // and shrinks the box at its BOTTOM edge only — the title never moves. The sent and the gone views
-        // keep the base `m-auto` on both sides and stay centred, as Run 12 left them. The max-height still
-        // holds in both, and the middle keeps `min-h-0 flex-1 overflow-y-auto`, so a low window scrolls it.
-        isForm ? "md:mt-10 md:mb-auto" : "",
+        // With `top` set and both `bottom` and `height` auto, the height is the content's and the max-height
+        // above then clamps it (CSS 2.1 §10.6.4, rule 3). Run 12b asked for the same height with
+        // `height: fit-content`, which Chrome drew right and this Safari did not: fit-content is an
+        // intrinsic-size keyword, and in Safari's intrinsic-size pass the `flex: 1 1 0%` basis of the items
+        // below counted as zero, so the inner box came out at its 20+20 padding and the `overflow-hidden` on
+        // this element clipped everything else — the 40px strip Eran saw on the iPad. §2 takes the zero basis
+        // off that path as well; between them no view asks the browser for an intrinsic height.
+        "md:bottom-auto md:h-auto",
+        // The form's top edge sits 40 from the top of the screen, so opening a day's hours or switching to
+        // "שיחזרו אליי" grows and shrinks the box at its BOTTOM edge only — the title never moves. The sent
+        // and the gone views put their top edge at the middle of the screen and are pulled up by half their
+        // own height: centred at their content height. Across, both stay centred by the base `m-auto` against
+        // `left`/`right` 0 from `inset-0` and the 720 width; with `bottom: auto` the two vertical auto margins
+        // resolve to 0. The max-height still holds in every view, and the middle keeps
+        // `min-h-0 flex-auto overflow-y-auto`, so a low window scrolls it.
+        isForm ? "md:top-10" : "md:top-1/2 md:-translate-y-1/2",
         "backdrop:bg-[rgba(34,31,28,0.42)]",
         FADE,
         "opacity-0 backdrop:opacity-0 [&[data-shown]]:opacity-100 [&[data-shown]]:backdrop:opacity-100",
@@ -599,7 +603,7 @@ export default function ContactWindow({
         // The inner box: it fills the dialog (so a click on the element itself is the backdrop and nothing
         // else), carries the desktop's padding 20 28 and the 14 between its blocks, and is the positioned,
         // clipping ancestor the anti-bot field is parked 9999px outside of.
-        <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden md:gap-[14px] md:px-7 md:py-5">
+        <div className="relative flex min-h-0 w-full flex-auto flex-col overflow-hidden md:gap-[14px] md:px-7 md:py-5">
           {/* The header stays while the middle scrolls. On the phone it is a 56px bar on a rule, padding
               0 16 0 8 (the X's own 44 box carries the rest); on the desktop it is a plain row. */}
           <div className="flex h-14 shrink-0 items-center justify-between border-b border-[#d8d3cb] pr-4 pl-2 md:h-auto md:border-b-0 md:p-0">
@@ -618,9 +622,9 @@ export default function ContactWindow({
               footer and the bar sit exactly where they sat; it is the fade's positioned ancestor and nothing
               else. EVERY VIEW GOES THROUGH THE ONE SCROLL BOX, so every view has the fade — on the two short
               ones it simply never shows. */}
-          <div className="relative flex min-h-0 flex-1 flex-col">
+          <div className="relative flex min-h-0 flex-auto flex-col">
             {/* The middle: the only region that scrolls, on both screens. */}
-            <div ref={box} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 md:gap-[14px] md:p-0">
+            <div ref={box} className="flex min-h-0 flex-auto flex-col gap-4 overflow-y-auto p-4 md:gap-[14px] md:p-0">
               <CarBlock car={car} sellerName={sellerName} dim={view === "gone"} />
 
               {isForm && (
