@@ -35,7 +35,7 @@ model models {
   doors            Int? // catalog: mispar_dlatot; 0 = no data (old rows)
   airbags          Int? // catalog: mispar_kariot_avir; null = the row has no catalog spec data
   drive_technology String? // code: regular | hybrid | plug_in | electric (catalog: technologiat_hanaa_nm)
-  co2_wltp         Int? // g CO2 per km in the WLTP test (catalog: CO2_WLTP, never kamut_CO2); null for US-standard versions
+  co2_wltp         Int? // g CO2 per km in the WLTP test (catalog: CO2_WLTP, never kamut_CO2); null when the version did not pass that test — almost every version before ~2019, and US-standard versions; then the consumption comes from the manual spec (model_specs)
   // the 15 catalog flags (0/1 in the catalog), in the section's display order: 1-12 the driver-assist row, 13-15 the equipment row
   aeb_pedestrian_cyclist    Boolean? // blimat_hirum_lifnei_holhei_regel_ofanaim
   pedestrian_detection      Boolean? // zihuy_holchey_regel_ind
@@ -53,8 +53,6 @@ model models {
   alloy_wheels              Boolean? // galgaley_sagsoget_kala_ind
   reverse_camera            Boolean? // matzlemat_reverse_ind
   import_type      String? // source unknown yet (check 5 half-open). Empty.
-  fuel_consumption Float? // km per liter — ONLY for a version without co2_wltp (US standard): the sheet tab of US-standard versions, converted from mpg at import
-  fuel_source_url  String? // the page fuel_consumption was taken from
   model_spec_id    Int? // -> model_specs; set by the sheet import; null = no manual spec yet -> the alert list
   family_id        Int? // Day 18: which model-as-a-person-knows-it this catalog row belongs to; null = outside the reviewed scope
   created_at       DateTime @default(now()) @db.Timestamptz(3)
@@ -498,10 +496,10 @@ model contact_requests {
   @@index([visitor_id, created_at])
 }
 
-// 17. model_specs — the manual spec (Day 19ב): one row per row of the sheet tab "מפרט ידני" — dimensions, trunk and tank,
+// 17. model_specs — the manual spec (Day 19ב): one row per row of the sheet tab "מפרט ידני" — dimensions, trunk, tank and fuel consumption,
 // which the ministry catalog lacks. A models row points here (models.model_spec_id), set by the sheet import when make,
 // model, body_type, year, engine_size, engine type and drive_type are equal and its sub_model is in sub_models.
-// Required: the key a row is matched on (part E, rule 3). The numbers, the link and the date are required by the import, not the database.
+// Required: the key a row is matched on (part E, rule 3). The numbers, the link and the date are required by the import, not the database — except the consumption of an electric or plug-in row, which has none.
 model model_specs {
   id           Int       @id @default(autoincrement())
   make         String // as models.make
@@ -517,6 +515,7 @@ model model_specs {
   height_mm    Int? // mm, as the Israeli trim comes — with roof rails when fitted
   trunk_liters Int? // rear seats in place
   tank_liters  Int? // the fuel tank; times the shown consumption = the range
+  km_per_liter Float? // official fuel consumption, km per liter, as Carzone shows it; shown only when models.co2_wltp is empty — the ministry's number always wins
   carzone_url  String? // the Carzone page the numbers came from
   source_date  DateTime? @db.Date // when they were checked
   created_at   DateTime  @default(now()) @db.Timestamptz(3)
