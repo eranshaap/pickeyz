@@ -31,7 +31,7 @@ export default function SpecSection({ rows, color }: { rows: SpecRow[]; color: s
         {rows.map((r) => (
           <div key={r.label} className="flex flex-col gap-1 py-2.5 md:grid md:grid-cols-[160px_1fr] md:gap-4 md:py-3">
             <div className="text-[13px] font-bold leading-[1.5] md:text-[15px]" style={{ color: DARK }}>
-              {/* The one row that carries an explanation gets the dotted phrase and its window; the phrase
+              {/* A row that carries an explanation (the fuel row, the safety row) gets the dotted phrase and its window; the phrase
                   inherits this cell's font, size, weight and colour from ExplainPhrase's own button. */}
               {r.explanation === null ? r.label : <ExplainPhrase phrase={r.label}>{r.explanation}</ExplainPhrase>}
             </div>

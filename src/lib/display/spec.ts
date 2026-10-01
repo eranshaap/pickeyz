@@ -69,7 +69,7 @@ export type SpecSheetInput = {
   km_per_liter: number | null;
 } | null;
 
-/** One row of the section. `explanation` is non-null on exactly one row — the fuel row — and the component draws ExplainPhrase for it. */
+/** One row of the section. `explanation` is non-null on two rows — the fuel row and the safety row — and the component draws ExplainPhrase for each. */
 export type SpecRow = { label: string; value: string; explanation: string | null };
 
 // ---------------------------------------------------------------------------
@@ -129,6 +129,10 @@ export const DRIVE_WORD: Readonly<Record<string, string>> = {
 /** One wording, whatever the consumption's source — the ministry's CO2 figure or the manual spec's own number. */
 export const FUEL_EXPLANATION =
   "צריכת דלק וטווח — הצריכה הרשמית של הדגם בבדיקת התקן, והטווח הוא נפח מיכל הדלק כפול הצריכה. אלה נתוני מעבדה להשוואה בין רכבים: בכביש הצריכה בדרך כלל גבוהה יותר והטווח קצר יותר.";
+
+// The "רמת אבזור בטיחותי" window — Eran, 01/10: the ministry's level is recalculated every year by a stricter list, so the row keeps the official number and says what it counts.
+export const SAFETY_EXPLANATION =
+  "רמת אבזור בטיחותי — הדירוג של משרד התחבורה, מ-0 עד 8. הוא סופר מערכות מתקדמות מתוך רשימה שהמשרד מעדכן ומחמיר כל שנה. מערכות שכבר נחשבות בסיס, כמו בלימה אוטונומית ובקרת שיוט אדפטיבית, לא נספרות בו, ולכן רכב משנים קודמות מקבל היום בדרך כלל רמה נמוכה יותר מכשהיה חדש. המספר ברישיון הרכב מתעדכן בכל חידוש. הדירוג לא בודק עד כמה הרכב מגן בתאונה.";
 
 // The unit words, and the separator between the parts of one value — the version line's own " · ".
 const SEPARATOR = " · ";
@@ -277,7 +281,7 @@ export function specRows(model: SpecModelInput, spec: SpecSheetInput): SpecRow[]
   row(SPEC_LABELS[2], [flagLine(model, SYSTEM_FLAGS)]);
 
   // 4 — the safety level. null is no row; 0 is a real reading on the ministry's scale and is shown.
-  if (model.safety_rating !== null) row(SPEC_LABELS[3], [`${model.safety_rating} ${OF} ${SAFETY_SCALE}`]);
+  if (model.safety_rating !== null) row(SPEC_LABELS[3], [`${model.safety_rating} ${OF} ${SAFETY_SCALE}`], SAFETY_EXPLANATION);
 
   row(SPEC_LABELS[4], [flagLine(model, EQUIPMENT_FLAGS)]);
 

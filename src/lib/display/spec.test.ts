@@ -8,6 +8,7 @@ import {
   rangeKm,
   specRows,
   FUEL_EXPLANATION,
+  SAFETY_EXPLANATION,
   SPEC_LABELS,
   type SpecModelInput,
   type SpecRow,
@@ -175,11 +176,15 @@ describe('specRows: "צריכת דלק וטווח" (§2.4 row 1)', () => {
     assert.equal(value(specRows(modelRow(), null), "צריכת דלק וטווח"), "21.9 ק״מ לליטר");
   });
 
-  it("it is the ONE row with an explanation; every other row has none", () => {
+  it("the fuel row carries FUEL_EXPLANATION, the safety row SAFETY_EXPLANATION; every other row has none", () => {
     const rows = specRows(modelRow(), sheetRow());
     const fuel = rows.find((r) => r.label === "צריכת דלק וטווח");
     assert.equal(fuel?.explanation, FUEL_EXPLANATION);
-    for (const r of rows.filter((r) => r.label !== "צריכת דלק וטווח")) assert.equal(r.explanation, null);
+    const safety = rows.find((r) => r.label === "רמת אבזור בטיחותי");
+    assert.equal(safety?.explanation, SAFETY_EXPLANATION);
+    for (const r of rows.filter((r) => r.label !== "צריכת דלק וטווח" && r.label !== "רמת אבזור בטיחותי")) {
+      assert.equal(r.explanation, null);
+    }
   });
 });
 
@@ -224,6 +229,14 @@ describe('specRows: "רמת אבזור בטיחותי" (§2.4 row 4)', () => {
 
   it("null -> no row", () => {
     assert.equal(value(specRows(modelRow({ safety_rating: null }), sheetRow()), "רמת אבזור בטיחותי"), null);
+  });
+
+  // The window's text itself — character for character. No command checks it; this test is how it is verified.
+  it("SAFETY_EXPLANATION is the text of the ruling, word for word", () => {
+    assert.equal(
+      SAFETY_EXPLANATION,
+      "רמת אבזור בטיחותי — הדירוג של משרד התחבורה, מ-0 עד 8. הוא סופר מערכות מתקדמות מתוך רשימה שהמשרד מעדכן ומחמיר כל שנה. מערכות שכבר נחשבות בסיס, כמו בלימה אוטונומית ובקרת שיוט אדפטיבית, לא נספרות בו, ולכן רכב משנים קודמות מקבל היום בדרך כלל רמה נמוכה יותר מכשהיה חדש. המספר ברישיון הרכב מתעדכן בכל חידוש. הדירוג לא בודק עד כמה הרכב מגן בתאונה.",
+    );
   });
 });
 
