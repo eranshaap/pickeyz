@@ -137,10 +137,8 @@ type Fetched = {
   snapshot: Snapshot;
   /** The response text per resource, exactly as it arrived — what §0.11 archives. */
   text: Partial<Record<ResourceKey, string>>;
-  calls: number;
-  retries: number;
 };
-type NoAnswer = { failed: ResourceKey; error: string; calls: number; retries: number };
+type NoAnswer = { failed: ResourceKey; error: string };
 
 let totalCalls = 0;
 let totalRetries = 0;
@@ -172,13 +170,10 @@ async function callOnce<T extends RawRecord>(key: ResourceKey, plate: string): P
 async function fetchFresh(plate: string): Promise<Fetched | NoAnswer> {
   const snapshot: Snapshot = {};
   const text: Partial<Record<ResourceKey, string>> = {};
-  let calls = 0;
-  let retries = 0;
-  // Run 16 §3.3: a call costs the attempts the door made — one, or two when it retried. The run's
-  // totals are the sum over the cars, so this one place raises both the car's count and the run's.
+  // Run 16 §3.3: a call costs the attempts the door made — one, or two when it retried. This one
+  // place raises the run's totals. The per-car count that stood here too was removed because nothing
+  // read it (Eran, 01/10).
   const count = (attempts: number): void => {
-    calls += attempts;
-    retries += attempts - 1;
     totalCalls += attempts;
     totalRetries += attempts - 1;
   };
@@ -207,12 +202,12 @@ async function fetchFresh(plate: string): Promise<Fetched | NoAnswer> {
       await ask("history_km");
       await ask("history_hand");
     }
-    return { snapshot, text, calls, retries };
+    return { snapshot, text };
   } catch (e) {
     // Still failing after motGet's one retry — the car is "no answer", not evaluated. Which source
     // failed is reported. §0.12 counts consecutive no-answer cars towards the stop.
     const failed = RESOURCE_KEYS.find((k) => snapshot[k] === undefined) ?? "registry";
-    return { failed, error: (e as Error).message, calls, retries };
+    return { failed, error: (e as Error).message };
   }
 }
 
