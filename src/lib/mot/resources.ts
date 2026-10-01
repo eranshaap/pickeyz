@@ -18,4 +18,10 @@ export const RESOURCES = {
   dealers:      "eb74ad8c-ffcd-43bb-949c-2244fc8a8651", // licensed dealers (file)
 } as const;
 
+// The models catalog itself (WLTP), the same table as data/raw/catalog.csv: package
+// "degem-rechev-wltp", 94 fields in the file's own order, updated daily. Queried one version at a
+// time by the four identity fields (sug_degem, tozeret_cd, degem_cd, shnat_yitzur) — see
+// catalog-lookup.ts. Deliberately NOT in RESOURCES: that map is the plate-based resources only.
+export const CATALOG_RESOURCE_ID = "142afde2-6228-49f9-8a29-9b6c3a0cbe40";
+
 export const RAW_DIR = "data/raw";

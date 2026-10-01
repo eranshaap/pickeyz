@@ -1,4 +1,11 @@
+// The catalog import: data/raw/catalog.csv -> models, one row per (vehicle_class, degem_code, year).
+// Dry run by default; --write inserts. A row already in models is skipped, never updated
+// (createMany + skipDuplicates) — the 19 spec columns of an existing row are filled by
+// scripts/oneoff/fill-model-spec-columns.ts, not by this script.
+
 import { readFileSync } from "node:fs";
+
+const DRY = !process.argv.includes("--write");
 
 // The script owns its environment: .env is read here, before the database client is created.
 function loadEnv(file = ".env") {
@@ -12,6 +19,8 @@ async function main() {
   if (!process.env.DATABASE_URL) loadEnv();
   const { db } = await import("../src/lib/db");
   const { buildModelRows } = await import("../src/lib/mot/catalog");
+
+  console.log(`${DRY ? "[DRY RUN] " : ""}import-models`);
 
   const { rows, report } = buildModelRows();
   console.log("catalog rows:         ", report.catalog_rows);
@@ -35,6 +44,27 @@ async function main() {
 
   const before = await db.models.count();
   console.log("\nmodels rows before:  ", before);
+
+  // What a --write would add: the identity is the unique key, so an identity already in models is
+  // a row createMany will skip. The identities only — this is the whole table.
+  const present = new Set(
+    (await db.models.findMany({ select: { vehicle_class: true, degem_code: true, year: true } })).map(
+      (m) => `${m.vehicle_class}|${m.degem_code}|${m.year}`,
+    ),
+  );
+  const toAdd = rows.filter((r) => !present.has(`${r.vehicle_class}|${r.degem_code}|${r.year}`));
+  console.log("rows in the file:    ", rows.length);
+  console.log("already in models:   ", rows.length - toAdd.length);
+  console.log("would be added:      ", toAdd.length);
+  for (const r of toAdd.slice(0, 10)) {
+    console.log("  ", r.vehicle_class, r.degem_code, r.year, "|", r.model, "|", r.sub_model, "|", r.comparison_group);
+  }
+
+  if (DRY) {
+    console.log("\n[DRY RUN] nothing written — run with --write to insert");
+    await db.$disconnect();
+    return;
+  }
 
   let inserted = 0;
   const CHUNK = 1000;
