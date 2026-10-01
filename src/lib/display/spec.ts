@@ -130,9 +130,9 @@ export const DRIVE_WORD: Readonly<Record<string, string>> = {
 export const FUEL_EXPLANATION =
   "צריכת דלק וטווח — הצריכה הרשמית של הדגם בבדיקת התקן, והטווח הוא נפח מיכל הדלק כפול הצריכה. אלה נתוני מעבדה להשוואה בין רכבים: בכביש הצריכה בדרך כלל גבוהה יותר והטווח קצר יותר.";
 
-// The "רמת אבזור בטיחותי" window — Eran, 01/10: the ministry's level is recalculated every year by a stricter list, so the row keeps the official number and says what it counts.
+// The "רמת אבזור בטיחותי" window — Eran, 01/10: the ministry's level is recalculated every year by a stricter list, so the row keeps the official number and says what it counts. Shortened to two sentences 02/10 (Run 18c).
 export const SAFETY_EXPLANATION =
-  "רמת אבזור בטיחותי — הדירוג של משרד התחבורה, מ-0 עד 8. הוא סופר מערכות מתקדמות מתוך רשימה שהמשרד מעדכן ומחמיר כל שנה. מערכות שכבר נחשבות בסיס, כמו בלימה אוטונומית ובקרת שיוט אדפטיבית, לא נספרות בו, ולכן רכב משנים קודמות מקבל היום בדרך כלל רמה נמוכה יותר מכשהיה חדש. המספר ברישיון הרכב מתעדכן בכל חידוש. הדירוג לא בודק עד כמה הרכב מגן בתאונה.";
+  "רמת אבזור בטיחותי — הדירוג של משרד התחבורה לפי מערכות בטיחות מתקדמות. הרשימה מחמירה כל שנה, ולכן רכב משנים קודמות מקבל היום בדרך כלל רמה נמוכה יותר מכשהיה חדש.";
 
 // The unit words, and the separator between the parts of one value — the version line's own " · ".
 const SEPARATOR = " · ";
@@ -265,7 +265,7 @@ export function specRows(model: SpecModelInput, spec: SpecSheetInput): SpecRow[]
     rows.push({ label, value: parts.join(SEPARATOR), explanation });
   };
 
-  // 1 — the consumption, and the range when there is a tank. The one row that carries an explanation.
+  // 1 — the consumption, and the range when there is a tank. One of the two rows that carry an explanation.
   const consumption = kmPerLiter(model, spec);
   if (consumption !== null) {
     const parts = [`${consumption.toFixed(1)} ${KM_PER_LITER}`];
