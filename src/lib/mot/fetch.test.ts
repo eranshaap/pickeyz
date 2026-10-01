@@ -1,6 +1,8 @@
 // Day 19ב §3.4 — the one door to the ministry: one GET, one retry after MOT_RETRY_PAUSE_MS, and
 // then MotUnavailableError. Every failure kind counts as a failed attempt, and the abort signal of
 // MOT_TIMEOUT_MS rides on the request. No network here: fetchImpl and sleep are injected.
+// Run 16 §1.1 — and the door reports that retry to its caller: attempts (1 or 2) and, with 2, the
+// first attempt's reason, in the same words MotUnavailableError uses.
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -128,6 +130,52 @@ describe("motGet — every kind of failure is a failed attempt (§3.2)", () => {
   }
 });
 
+describe("motGet — the door reports its one retry (Run 16 §1.1)", () => {
+  it("a good first attempt: attempts 1, firstFailure null", async () => {
+    const { impl, calls } = fakeFetch([ok(good)]);
+    const { sleep, pauses } = spySleep();
+    const answer = await motGet<{ mispar_rechev: number }>(URL, { fetchImpl: impl, sleep });
+    assert.equal(answer.attempts, 1);
+    assert.equal(answer.firstFailure, null);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(pauses, []);
+  });
+
+  // One failure of each kind, then a good answer: the retry succeeded, and the reason names the kind.
+  const kinds: [string, Response | Error, RegExp][] = [
+    ["a rejected fetch (network)", new TypeError("fetch failed"), /^fetch failed$/],
+    ["status 500", ok(good, 500), /^HTTP 500$/],
+    ["a non-JSON body", text("<html>hello</html>", 200), /^non-JSON body \(HTTP 200\)$/],
+    ["success: false", ok({ success: false }), /^success=false \(HTTP 200\)$/],
+  ];
+
+  for (const [name, failure, reason] of kinds) {
+    it(`${name} then a good answer: attempts 2, firstFailure names what failed`, async () => {
+      const { impl, calls } = fakeFetch([failure, ok(good)]);
+      const { sleep, pauses } = spySleep();
+      const answer = await motGet<{ mispar_rechev: number }>(URL, { fetchImpl: impl, sleep });
+      assert.equal(answer.attempts, 2);
+      assert.match(answer.firstFailure!, reason);
+      assert.deepEqual(answer.body.result?.records, good.result.records);
+      assert.equal(calls.length, 2);
+      assert.deepEqual(pauses, [MOT_RETRY_PAUSE_MS]);
+    });
+  }
+
+  it("firstFailure is the same text MotUnavailableError gives for a first attempt", async () => {
+    const retried = fakeFetch([ok({ success: false }), ok(good)]);
+    const { firstFailure } = await motGet(URL, { fetchImpl: retried.impl, sleep: async () => {} });
+    const twice = fakeFetch([ok({ success: false }), text("nope", 500)]);
+    await assert.rejects(
+      () => motGet(URL, { fetchImpl: twice.impl, sleep: async () => {} }),
+      (e: Error) => {
+        assert.ok(e.message.includes(`first attempt: ${firstFailure}`), e.message);
+        return true;
+      },
+    );
+  });
+});
+
 describe("the plate callers go through motGet (§3.3)", () => {
   it("fetchRowsFresh returns the records and the raw text, and asks the right resource", async () => {
     const { impl, calls } = fakeFetch([ok(good)]);
@@ -148,6 +196,30 @@ describe("the plate callers go through motGet (§3.3)", () => {
       MotUnavailableError,
     );
     assert.equal(calls.length, 2);
+  });
+
+  it("fetchRowsFresh passes attempts and firstFailure through — a good first attempt (Run 16 §1.2)", async () => {
+    const { impl } = fakeFetch([ok(good)]);
+    const out = await fetchRowsFresh<{ mispar_rechev: number }>("registry", "12345678", {
+      fetchImpl: impl,
+      sleep: async () => {},
+    });
+    assert.equal(out.attempts, 1);
+    assert.equal(out.firstFailure, null);
+  });
+
+  it("fetchRowsFresh passes attempts and firstFailure through — a retried call (Run 16 §1.2)", async () => {
+    const { impl, calls } = fakeFetch([text("down", 503), ok(good)]);
+    const { sleep, pauses } = spySleep();
+    const out = await fetchRowsFresh<{ mispar_rechev: number }>("registry", "12345678", {
+      fetchImpl: impl,
+      sleep,
+    });
+    assert.equal(out.attempts, 2);
+    assert.match(out.firstFailure!, /^non-JSON body \(HTTP 503\)$/);
+    assert.deepEqual(out.records, good.result.records);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(pauses, [MOT_RETRY_PAUSE_MS]);
   });
 
   it("samplePlates returns the plates as strings", async () => {

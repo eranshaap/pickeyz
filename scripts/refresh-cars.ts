@@ -53,7 +53,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import path from "node:path";
 import { WRITE_TRANSACTION_OPTIONS, db } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
-import { fetchRowsFresh, plateDir, type ApiResource } from "@/lib/mot/fetch";
+import { MOT_RETRY_PAUSE_MS, MOT_TIMEOUT_MS } from "@/lib/mot/constants";
+import { MotUnavailableError, fetchRowsFresh, plateDir, type ApiResource } from "@/lib/mot/fetch";
 import { normalizePlate } from "@/lib/mot/vehicle";
 import { CACHE_COLUMNS, UNDECIDABLE, deriveFromCache, evaluate, type CacheColumn } from "@/lib/refresh/evaluate";
 import {
@@ -66,7 +67,8 @@ import { parseOwnerType } from "@/lib/scoring-input";
 
 // ---------- the parameters, documented in the plan's Day 14 block (§9) ----------
 const CALL_GAP_MS = 150; // Day 5: the pause between two calls to the Ministry
-const RETRY_WAIT_MS = 2000; // P3: a failed call is retried once, after this
+// P3's single retry now lives behind the one door: motGet retries once after MOT_RETRY_PAUSE_MS and
+// says so in the answer it returns (Run 16 §3.1). This script counts and prints it, nothing more.
 const NO_ANSWER_STOP = 5; // §0.12: this many consecutive cars with no answer stops the run
 
 const REPORT_FILE = "REPORT-refresh-cars.md"; // P5
@@ -144,22 +146,20 @@ let totalCalls = 0;
 let totalRetries = 0;
 let lastCallAt = 0;
 
-/** One call, with P3's single retry. The 150 ms gap is kept between every two calls of the run. */
+/**
+ * One call: ONE fetchRowsFresh. The attempt and its single retry are the door's (motGet, Run 16
+ * §3.1); the answer says how many attempts it took, and a retried call is printed here. The 150 ms
+ * gap is kept between every two calls of the run.
+ */
 async function callOnce<T extends RawRecord>(key: ResourceKey, plate: string): Promise<{ records: T[]; text: string; retries: number }> {
   const gap = CALL_GAP_MS - (Date.now() - lastCallAt);
   if (gap > 0) await sleep(gap);
-  totalCalls++;
   lastCallAt = Date.now();
-  try {
-    return { ...(await fetchRowsFresh<T>(key as ApiResource, plate)), retries: 0 };
-  } catch (e) {
-    totalRetries++;
-    console.log(`      ${plate} ${key}: ${(e as Error).message} — retrying once in ${RETRY_WAIT_MS} ms (P3)`);
-    await sleep(RETRY_WAIT_MS);
-    totalCalls++;
-    lastCallAt = Date.now();
-    return { ...(await fetchRowsFresh<T>(key as ApiResource, plate)), retries: 1 };
+  const answer = await fetchRowsFresh<T>(key as ApiResource, plate);
+  if (answer.attempts === 2) {
+    console.log(`      ${plate} ${key}: first attempt failed (${answer.firstFailure}) — retried after ${MOT_RETRY_PAUSE_MS} ms`);
   }
+  return { records: answer.records, text: answer.text, retries: answer.attempts - 1 };
 }
 
 /**
@@ -174,10 +174,25 @@ async function fetchFresh(plate: string): Promise<Fetched | NoAnswer> {
   const text: Partial<Record<ResourceKey, string>> = {};
   let calls = 0;
   let retries = 0;
+  // Run 16 §3.3: a call costs the attempts the door made — one, or two when it retried. The run's
+  // totals are the sum over the cars, so this one place raises both the car's count and the run's.
+  const count = (attempts: number): void => {
+    calls += attempts;
+    retries += attempts - 1;
+    totalCalls += attempts;
+    totalRetries += attempts - 1;
+  };
   const ask = async (key: ResourceKey): Promise<void> => {
-    const r = await callOnce(key, plate);
-    calls += 1 + r.retries;
-    retries += r.retries;
+    let r: { records: RawRecord[]; text: string; retries: number };
+    try {
+      r = await callOnce(key, plate);
+    } catch (e) {
+      // MotUnavailableError means the door tried twice; any other error is a malformed answer, which
+      // it does not retry at all (Run 15, decision 2) — one attempt.
+      count(e instanceof MotUnavailableError ? 2 : 1);
+      throw e;
+    }
+    count(1 + r.retries);
     snapshot[key] = r.records;
     text[key] = r.text;
   };
@@ -194,7 +209,7 @@ async function fetchFresh(plate: string): Promise<Fetched | NoAnswer> {
     }
     return { snapshot, text, calls, retries };
   } catch (e) {
-    // P3: still failing after the one retry — the car is "no answer", not evaluated. Which source
+    // Still failing after motGet's one retry — the car is "no answer", not evaluated. Which source
     // failed is reported. §0.12 counts consecutive no-answer cars towards the stop.
     const failed = RESOURCE_KEYS.find((k) => snapshot[k] === undefined) ?? "registry";
     return { failed, error: (e as Error).message, calls, retries };
@@ -313,7 +328,7 @@ async function main() {
   log();
   log("```");
   log(`${WRITE ? "" : "[DRY RUN] "}refresh-cars — now = ${NOW.toISOString()}, archive stamp = ${STAMP}`);
-  log(`call gap ${CALL_GAP_MS} ms · one retry after ${RETRY_WAIT_MS} ms (P3) · stop after ${NO_ANSWER_STOP} consecutive cars with no answer (§0.12)`);
+  log(`call gap ${CALL_GAP_MS} ms · timeout ${MOT_TIMEOUT_MS} ms · one retry after ${MOT_RETRY_PAUSE_MS} ms (motGet) · stop after ${NO_ANSWER_STOP} consecutive cars with no answer (§0.12)`);
 
   // The two columns of §0.10 exist only after run 2's migrate deploy. In a dry run before that they
   // are read as null and said to be missing, loudly; --write refuses to run without them.
