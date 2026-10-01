@@ -38,25 +38,27 @@
 
 import Link from "next/link";
 import type { RubricStrip } from "@/lib/display/rubrics";
+import type { SpecRow } from "@/lib/display/spec";
 import type { NoHistoryView, OwnershipAxis, PriceBlock } from "@/lib/display/texts";
-import { gapAfterTopBlock, shekel } from "@/lib/display/texts";
+import { gapAfterTopBlock, OWNERSHIP_HEADING, shekel } from "@/lib/display/texts";
 import type { SearchFilters } from "@/lib/search/filters";
 import type { Category } from "@/lib/selection";
 import type { FilterName } from "@/app/actions/search";
 import QuestionRow from "@/components/search/QuestionRow";
 import { LinkPending } from "@/components/search/PickCards";
+import CarSection from "./CarSection";
 import CarTitle from "./CarTitle";
 import ContactButton from "./ContactButton";
 import ContactProvider from "./ContactProvider";
 import Photo from "./Photo";
 import OwnershipTimeline from "./OwnershipTimeline";
 import Rubrics from "./Rubrics";
+import SpecSection from "./SpecSection";
 import WhySection from "./WhySection";
 
 const GREY = "#665f58";
 const DARK = "#221f1c";
 
-const OWNERSHIP_HEADING = "היסטוריית בעלויות";
 const PHOTO_PLACEHOLDER = "[תמונת הרכב]";
 
 // §5.1 / §11.3 — the photo column is 536 wide off the board «עמוד הרכב המלא — פריסה ב» (it was 360×236),
@@ -151,6 +153,8 @@ export type CarPageData = {
   zeroKmExplanation: string | null;
   /** Always empty in this run — the justification generator is Days 22–23 (§7.7). */
   whyLines: string[];
+  /** Day 19b Run 18 §6 — the "מפרט ואבזור" rows, computed by specRows(); [] = the section is not drawn. */
+  specRows: SpecRow[];
   /** Day 19b Run 11a §3 — everything the contact window needs, gathered on the server. */
   contact: ContactData;
 };
@@ -399,10 +403,7 @@ export default function CarPageView({ data }: { data: CarPageData }) {
           <WhySection labels={data.labels} place={data.place} lines={data.whyLines} color={data.color} />
 
           {/* ------------------------------------------------------------ ownership history */}
-          <section className="flex flex-col gap-3">
-            <h2 className="text-[17px] font-extrabold md:text-[18px]" style={{ color: data.color }}>
-              {OWNERSHIP_HEADING}
-            </h2>
+          <CarSection heading={OWNERSHIP_HEADING} color={data.color}>
             {/* Run 7 §2.3 / Run 2b (Days 24-25) §4.1 — TWO RULES, ONE TREE: on the desktop scaleLayout()
                 decides which year marks clear, by the collision rule, and the scale draws exactly those; below
                 the site's 900px boundary the phone carries the two END marks alone, whatever scaleLayout() would
@@ -415,7 +416,10 @@ export default function CarPageView({ data }: { data: CarPageData }) {
             <div className="hidden md:block">
               <OwnershipTimeline axis={data.axis} noHistory={data.noHistory} color={data.color} zeroKmExplanation={data.zeroKmExplanation} />
             </div>
-          </section>
+          </CarSection>
+
+          {/* Day 19b Run 18 §6 — "מפרט ואבזור", the page's last section (findCar-now.md) */}
+          <SpecSection rows={data.specRows} color={data.color} />
         </main>
 
         {/* ------------------------------------------------------------ phone bottom bar (§7.4, Run 7 §5) */}

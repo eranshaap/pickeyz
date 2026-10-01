@@ -11,6 +11,7 @@
 
 import type { Category } from "@/lib/selection";
 import { whyHeading } from "@/lib/display/texts";
+import CarSection from "./CarSection";
 
 export default function WhySection({
   labels,
@@ -35,10 +36,9 @@ export default function WhySection({
   if (heading === null) return null;
 
   return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-[17px] font-extrabold md:text-[18px]" style={{ color }}>
-        {heading}
-      </h2>
+    // Day 19b Run 18 §5.2 — the frame and the heading are CarSection's now; this section's own white box,
+    // which has a padding of its own, is unchanged and is simply the children.
+    <CarSection heading={heading} color={color}>
       <div className="flex flex-col gap-2 rounded-xl border border-[#d8d3cb] bg-white p-4">
         {lines.map((line, i) => (
           <p key={i} className="text-[16px] font-semibold text-[#221f1c]">
@@ -46,6 +46,6 @@ export default function WhySection({
           </p>
         ))}
       </div>
-    </section>
+    </CarSection>
   );
 }

@@ -18,6 +18,7 @@
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { rubricStrip, type RubricStrip } from "@/lib/display/rubrics";
+import { specRows } from "@/lib/display/spec";
 import {
   backLinkWord,
   CANCELLED_WORD,
@@ -102,7 +103,45 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
           first_registration: true,
           cancelled_at: true,
           current_owner_type: true,
-          model: { select: { model: true, sub_model: true, body_type: true, engine_size: true, transmission: true, vehicle_class: true } },
+          // Day 19b Run 18 §6.5 — the version line's six columns, and the "מפרט ואבזור" section's own: the
+          // catalog spec, the 15 catalog flags and the manual-spec row behind `model_spec_id`. These are the
+          // columns of THIS CAR'S OWN version row; the comparison group is deliberately not read, because
+          // twins differ in their systems (findCar-now.md).
+          model: {
+            select: {
+              model: true,
+              sub_model: true,
+              body_type: true,
+              engine_size: true,
+              transmission: true,
+              vehicle_class: true,
+              fuel_type: true,
+              drive_type: true,
+              drive_technology: true,
+              horsepower: true,
+              seats: true,
+              doors: true,
+              airbags: true,
+              safety_rating: true,
+              co2_wltp: true,
+              aeb_pedestrian_cyclist: true,
+              pedestrian_detection: true,
+              two_wheeler_detection: true,
+              forward_collision_warning: true,
+              distance_monitoring: true,
+              lane_departure_warning: true,
+              lane_keeping: true,
+              blind_spot_detection: true,
+              adaptive_cruise: true,
+              traffic_sign_recognition: true,
+              auto_high_beams: true,
+              reverse_auto_braking: true,
+              sunroof: true,
+              alloy_wheels: true,
+              reverse_camera: true,
+              spec: { select: { length_mm: true, width_mm: true, height_mm: true, trunk_liters: true, tank_liters: true, km_per_liter: true } },
+            },
+          },
           test_readings: { select: { test_date: true, km: true }, orderBy: { test_date: "asc" } },
         },
       },
@@ -248,6 +287,11 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     licence: { test_expiry: car.test_expiry, now },
   });
 
+  // Day 19b Run 18 §6 — the "מפרט ואבזור" rows. The DECISION of what the section says, and of which rows
+  // exist at all, is made in src/lib/display/spec.ts and tested there; this page only gathers the two rows
+  // the library reads — the car's own `models` row and the manual spec behind it.
+  const spec = specRows(car.model, car.model.spec);
+
   const newPrice = item.candidate.new_price;
   const data: CarPageData = {
     brand: BRAND.name,
@@ -300,6 +344,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     zeroKmExplanation:
       historyRaw.zero_km_deal === true && typeof historyRaw.months_to_first_private === "number" ? zeroKmExplanation(historyRaw.months_to_first_private) : null,
     whyLines, // Days 22–23 (Run 5 §6) — the generator's lines from the stored rows of the displayed run; [] without a question
+    specRows: spec, // Day 19b Run 18 §6 — the "מפרט ואבזור" rows; [] = the section is not drawn
     // Day 19b Run 11a §3 — everything the contact window needs. `sellerName` is the agency's or the private
     // seller's OWN name, with no type word: it appears in the window and nowhere else on the page.
     contact: {

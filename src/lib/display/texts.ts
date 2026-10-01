@@ -240,6 +240,12 @@ export function whyHeading(input: { labels: Category[]; rank: number | null; lin
   return null;
 }
 
+// Day 19b Run 18 §3 — THE CAR PAGE'S THREE SECTION HEADINGS ARE WRITTEN HERE, the "למה" one as the function
+// above (its words depend on the verdict) and these two as the fixed strings they are. The components that
+// draw them — CarPageView.tsx, SpecSection.tsx — carry no Hebrew of their own.
+export const OWNERSHIP_HEADING = "היסטוריית בעלויות";
+export const SPEC_HEADING = "מפרט ואבזור";
+
 // ---------------------------------------------------------------------------
 // §8.4 — the seller line: GONE (Run 9 §4.4)
 // ---------------------------------------------------------------------------

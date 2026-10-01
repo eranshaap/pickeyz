@@ -19,6 +19,7 @@ import {
   noHistoryView,
   ownershipAxis,
   ownershipKind,
+  OWNERSHIP_HEADING,
   OWNERSHIP_WORD,
   pageColor,
   percentOfNewLine,
@@ -29,6 +30,7 @@ import {
   TABLE_HEADINGS,
   type ScaleLabel,
   SCALE_LABEL_GAP_PX,
+  SPEC_HEADING,
   thinCellLine,
   titleParts,
   whyHeading,
@@ -692,5 +694,12 @@ describe("TABLE_HEADINGS (§5.4)", () => {
 
   it("the hand label is the hand rubric's own heading", () => {
     assert.equal(TABLE_HEADINGS[4], RUBRIC_HEADINGS.hand);
+  });
+});
+
+describe("the two fixed section headings (Day 19b Run 18 §3)", () => {
+  it("the ownership heading and the spec heading, as the texts table writes them", () => {
+    assert.equal(OWNERSHIP_HEADING, "היסטוריית בעלויות");
+    assert.equal(SPEC_HEADING, "מפרט ואבזור");
   });
 });
