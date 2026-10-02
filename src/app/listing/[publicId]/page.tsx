@@ -90,7 +90,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
       region: true,
       score: true,
       market_stats_id: true,
-      dealer: { select: { name: true, dealer_type: true, region: true } },
+      dealer: { select: { name: true, dealer_type: true } },
       car: {
         select: {
           license_plate: true,

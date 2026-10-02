@@ -252,9 +252,10 @@ export const SPEC_HEADING = "מפרט ואבזור";
 
 // sellerLine(), SELLER_TYPE_WORD and the PRIVATE_TYPE code are deleted, not hidden: the business name, the
 // "מגרש" / "מוכר פרטי" word, the dealer's region and the line that joined them no longer appear on the car
-// page on either screen. The DATA is untouched — listings.region, dealers.name, dealers.dealer_type and
-// dealers.region are all still read and stored; what the page shows of the region now is the region line
-// under the price (CarPageView.tsx §4.3), which reads listings.region and nothing else.
+// page on either screen. The DATA is untouched — listings.region, dealers.name and dealers.dealer_type are
+// all still read and stored (dealers.region was dropped in Run 20, Day 19b — nothing read it); what the page
+// shows of the region now is the region line under the price (CarPageView.tsx §4.3), which reads
+// listings.region and nothing else.
 //
 // src/components/search/labels.tsx keeps its own sellerKind() for the RESULT CARDS — a different line, on a
 // different screen, that §7 leaves alone.

@@ -112,7 +112,8 @@ model listings {
   external_id          String // the listing's id in the source system, without the "?" tail
   public_id            String    @unique // Day 19 (Run 6a): the listing's id in every address the site shows (/listing/<public_id>) — random, 10 chars of [a-z0-9], minted once at insert by newPublicId() (src/lib/public-id.ts); never changes, carries no meaning. The serial id and the licence plate never appear in an address.
   price                Int // required: asking price, NIS
-  region               String?
+  region               String? // one of the eight areas, Hebrew text (findCar-now.md "המיקום"): derived from city at import, or as the sheet gave it on old rows. The filter chips and stored questions read it. Written once at insert, never updated
+  city                 String? // Day 19b (Run 20): the city the ad is in, as the CBS localities file spells it, cleaned (findCar-schema.md §3). Filled once by the sheet import when the ad enters (Run 22); null on the old manual rows, which came with an area. Shown on the car page and in the contact window; the filters read region
   image_urls           String[] // addresses of images, not images. Empty in the manual phase.
   km_declared          Int? // what THIS ad says. Another ad for the same car may say otherwise.
   hand_declared        Int? // hand per the ad. Empty if the ad does not state it.
@@ -149,15 +150,13 @@ model listings {
 }
 
 // 4. dealers — whoever offers cars: lots, leasing and rental companies, importers, private sellers.
-// Identification order: feed identity (later) -> corp_id -> normalized phone -> normalized name + region.
+// Identification (findCar-schema.md §4): feed identity (later); in the demo a business seller by normalized name, then an identical phone as evidence; a private seller = a new row per listing. No region on the dealer — the location is the listing's (city, region).
 model dealers {
   id                  Int       @id @default(autoincrement())
   corp_id             String?   @unique // corporate registry number from the dealers list. Empty: private person or not found.
   name                String // required
   dealer_type         String // required. code: lot | leasing | rental | importer | private. Source: the listing/feed, not the registry.
-  region              String?
   phone               String? // normalized digits; second identification key, the only one for private sellers
-  email               String?
   in_dealer_registry  Boolean? // found in the licensed-dealers list? null = not checked yet
   registry_checked_at DateTime? @db.Timestamptz(3) // when last checked against the list (the list changes)
   feed_updated_at     DateTime? @db.Timestamptz(3) // empty until there is a feed

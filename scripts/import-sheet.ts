@@ -196,7 +196,7 @@ async function createDealer(tx: Tx, data: Prisma.dealersCreateInput): Promise<nu
 async function resolveDealer(tx: Tx, row: Row): Promise<{ id: number; how: string }> {
   if (row.seller_type === "private") {
     const id = await createDealer(tx, {
-      name: row.seller_name, dealer_type: "private", region: row.region, phone: row.phone,
+      name: row.seller_name, dealer_type: "private", phone: row.phone,
     });
     return { id, how: "private:new" };
   }
@@ -212,7 +212,7 @@ async function resolveDealer(tx: Tx, row: Row): Promise<{ id: number; how: strin
     if (byPhone) return { id: byPhone.id, how: "phone" };
   }
   const id = await createDealer(tx, {
-    name: row.seller_name, dealer_type: row.seller_type, region: row.region, phone: row.phone,
+    name: row.seller_name, dealer_type: row.seller_type, phone: row.phone,
   });
   return { id, how: "new" };
 }
