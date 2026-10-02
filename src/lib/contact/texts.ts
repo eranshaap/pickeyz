@@ -43,8 +43,20 @@ export const NAME = "שם";
 export const PHONE = "טלפון";
 export const SEND = "שלח למוכר";
 
+/**
+ * BRIEF Day 19b Run 21 §6.4 — THE NAMELESS SELLER. A seller name that is empty after trimming is NO NAME:
+ * a private seller the collection tool did not name, whose `dealers.name` is "". Every sentence that names
+ * the seller has a second form for him, and the window says "המוכר" rather than leaving a hole in the line.
+ *
+ * The named forms are unchanged, to the byte.
+ */
+function named(sellerName: string): boolean {
+  return sellerName.trim() !== "";
+}
+
 /** The privacy line under the fields. No link: there is no policy page to link to yet. */
 export function privacyLine(sellerName: string): string {
+  if (!named(sellerName)) return "הפרטים עוברים רק למוכר, ורק בשביל הבקשה הזו.";
   return `הפרטים עוברים רק ל${sellerName}, ורק בשביל הבקשה הזו.`;
 }
 
@@ -79,11 +91,13 @@ export function visitLineParts(dayLabel: string, hour: number): { before: string
 
 /** The follow-up after a visit, in three parts: the phone sits in its own LTR span. */
 export function visitFollowUp(sellerName: string, phoneDisplay: string): { before: string; phone: string; after: string } {
+  if (!named(sellerName)) return { before: "תקבל הודעה למספר ", phone: phoneDisplay, after: ", כדי לוודא הגעה." };
   return { before: `תקבל הודעה מ${sellerName} למספר `, phone: phoneDisplay, after: ", כדי לוודא הגעה." };
 }
 
 /** The follow-up after a callback, in the same three parts. */
 export function callbackFollowUp(sellerName: string, phoneDisplay: string): { before: string; phone: string; after: string } {
+  if (!named(sellerName)) return { before: "תקבל שיחה למספר ", phone: phoneDisplay, after: "." };
   return { before: `תקבל שיחה מ${sellerName} למספר `, phone: phoneDisplay, after: "." };
 }
 
@@ -128,7 +142,15 @@ export function displayPhone(digits: string): string {
   return digits;
 }
 
-/** The one line under the car's name inside the window: price, seller, and the region when there is one. */
-export function carLine(price: number, sellerName: string, region: string | null): string {
-  return `${shekel(price)} · ${sellerName}` + (region ? ` · ${region}` : "");
+/**
+ * The one line under the car's name inside the window: the price, the seller when he has a name (§6.4), and
+ * the place when there is one — listings.city, else listings.region (shownPlace, src/lib/location/place.ts;
+ * Day 19b, Run 21). The parts that exist are joined with the one separator; a nameless seller simply leaves
+ * his part out, so the line reads "{price} · {place}", or "{price}" alone.
+ */
+export function carLine(price: number, sellerName: string, place: string | null): string {
+  const parts = [shekel(price)];
+  if (named(sellerName)) parts.push(sellerName);
+  if (place) parts.push(place);
+  return parts.join(" · ");
 }

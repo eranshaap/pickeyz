@@ -7,7 +7,7 @@
 // decides where it sits.
 //
 // THE PAGE COLOUR (§7.2) paints exactly: the label/place line and its 40×3px bar, the section headings, the
-// contact button, the ownership-axis fills, the phone bottom-bar button — and, from Run 9 §4.3, the region
+// contact button, the ownership-axis fills, the phone bottom-bar button — and, from Run 9 §4.3, the place
 // line's pin and word. NOTHING ELSE IS COLOURED.
 //
 // Desktop: a 64px white header, then a two-column top block (the text column + a 536px image column), the
@@ -19,7 +19,8 @@
 //         never an h1 margin (Tailwind's preflight zeroes those and no stylesheet adds one back) — it was
 //         the text column's OWN 16px flex gap, which the two were simply siblings of. They are wrapped now.
 //   §4.1  the comparison sentence ("הושווה ל-…") is GONE — deleted here and in texts.ts, not hidden.
-//   §4.3  a region line is the LAST line of the price block: the pin and listings.region, in the page colour.
+//   §4.3  a place line is the LAST line of the price block: the pin and the place — listings.city, else
+//         listings.region (shownPlace, src/lib/location/place.ts; Day 19b, Run 21) — in the page colour.
 //   §4.4  the seller line is GONE from both screens, with its business name, its "מגרש" and its region.
 //   §5.1  the photo and the text column end on the same line: 12px between the column's rows, a 357px
 //         minimum height, and the contact button pushed to the bottom by `margin-top: auto`.
@@ -145,8 +146,14 @@ export type CarPageData = {
   price: number;
   percentOfNew: string | null;
   priceBlock: PriceBlock;
-  /** §4.3 — listings.region, the very field the filters window's region chips read. Empty/null → no line at all. */
-  region: string | null;
+  /**
+   * §4.3 — the place line's own text: listings.city, else listings.region (shownPlace,
+   * src/lib/location/place.ts; Day 19b, Run 21). Empty/null → no line at all.
+   *
+   * It is NOT `place` above, which is this car's displayed RANK in the search — that field had the name
+   * first, so the line's text carries the component's name instead.
+   */
+  placeLine: string | null;
   strip: RubricStrip;
   axis: OwnershipAxis | null;
   noHistory: NoHistoryView | null;
@@ -184,15 +191,16 @@ function VerdictLine({ data, size }: { data: CarPageData; size: "phone" | "deskt
 }
 
 /**
- * §4.3 — THE REGION LINE, the last line of the price block: the pin and listings.region, in the page colour
- * (black on a black page). An empty or missing region renders NOTHING — not an empty line, no element at
- * all — so a listing without a region simply ends its price block at the line above.
+ * §4.3 — THE PLACE LINE, the last line of the price block: the pin and the place — listings.city, else
+ * listings.region (shownPlace, src/lib/location/place.ts; Day 19b, Run 21) — in the page colour (black on a
+ * black page). An empty or missing place renders NOTHING — not an empty line, no element at all — so a
+ * listing without a place simply ends its price block at the line above.
  *
  * The seller line this replaces (§4.4) is gone from both screens; this is the only place the car page says
- * where the car is, and it says it from the LISTING's own field, never from the dealer's.
+ * where the car is, and it says it from the LISTING's own fields, never from the dealer's.
  */
-function RegionLine({ region, color, size }: { region: string | null; color: string; size: "phone" | "desktop" }) {
-  if (region === null || region.trim() === "") return null;
+function PlaceLine({ place, color, size }: { place: string | null; color: string; size: "phone" | "desktop" }) {
+  if (place === null || place.trim() === "") return null;
   const phone = size === "phone";
   const icon = phone ? 17 : 18;
   return (
@@ -212,7 +220,7 @@ function RegionLine({ region, color, size }: { region: string | null; color: str
         <path d="M12 21c-4-4.2-7-7.8-7-11.2a7 7 0 0 1 14 0c0 3.4-3 7-7 11.2z" />
         <circle cx="12" cy="9.8" r="2.5" />
       </svg>
-      <span>{region}</span>
+      <span>{place}</span>
     </div>
   );
 }
@@ -220,11 +228,11 @@ function RegionLine({ region, color, size }: { region: string | null; color: str
 /**
  * §5.1 — the price block: a 4px column. The price row as it was, then the fair number ALONE (§4.1 — the
  * grey "הושווה ל-…" line that used to share its baseline row is deleted, so the fair number is a line of
- * its own and no longer wraps against anything), or the thin-cell line, and last the region line.
+ * its own and no longer wraps against anything), or the thin-cell line, and last the place line.
  *
  * Run 5c §4 — THE TWO ARE ONE ROW, NOT TWO STYLES. The thin-cell line stands IN PLACE OF the fair number, so
  * it is drawn in the fair number's place, size and weight; it used to be a smaller grey line of its own.
- * A page with neither — a cancelled car — still draws nothing between the price row and the region line.
+ * A page with neither — a cancelled car — still draws nothing between the price row and the place line.
  */
 function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "desktop" }) {
   const b = data.priceBlock;
@@ -247,7 +255,7 @@ function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "de
       )}
       {/* §4.3 — always the LAST line of the block: after the fair number, after the thin-cell sentence, and
           directly after the price row on a cancelled car, which has neither. */}
-      <RegionLine region={data.region} color={data.color} size={size} />
+      <PlaceLine place={data.placeLine} color={data.color} size={size} />
     </div>
   );
 }
@@ -303,7 +311,7 @@ export default function CarPageView({ data }: { data: CarPageData }) {
       color={data.color}
       backHref={data.backHref}
       backWord={data.backWord}
-      car={{ model: data.model, year: data.year, imageSrc: data.imageSrc, price: data.price, region: data.region }}
+      car={{ model: data.model, year: data.year, imageSrc: data.imageSrc, price: data.price, place: data.placeLine }}
     >
       <div className="min-h-screen" style={{ background: "#eeece8" }}>
         {/* ---------------------------------------------------------------- header */}
@@ -346,7 +354,7 @@ export default function CarPageView({ data }: { data: CarPageData }) {
               the strip that was the text column's last row is now the section's second child, one flex row
               down in the very same document order, with the same 16px above it (the section's `gap-4` is the
               column's own phone `gap-4`). The phone therefore still reads photo (above <main>) → label →
-              title → version line → price block with the region line → the rubrics two by two → the
+              title → version line → price block with the place line → the rubrics two by two → the
               sections, and the fixed bar still holds the button alone. */}
           <section
             className="mb-[var(--top-extra-phone)] flex flex-col gap-4 md:mb-[var(--top-extra-desktop)]"
@@ -425,7 +433,7 @@ export default function CarPageView({ data }: { data: CarPageData }) {
         {/* ------------------------------------------------------------ phone bottom bar (§7.4, Run 7 §5) */}
         {/* §5 — the price element is GONE from this bar (the price is already on the page, a few centimetres
             above it). The contact button is the bar's only content, horizontally centred. The bar's height and
-            background are unchanged, and it has no scroll-aware behaviour of any kind. Run 9 §4.4: the region
+            background are unchanged, and it has no scroll-aware behaviour of any kind. Run 9 §4.4: the place
             does NOT enter this bar either. */}
         <div className="fixed inset-x-0 bottom-0 z-20 flex h-[72px] items-center justify-center border-t border-[#d8d3cb] bg-white px-4 md:hidden">
           <ContactButton variant="phone" />

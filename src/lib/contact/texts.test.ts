@@ -176,10 +176,55 @@ describe("days, hours, phones and the car's line (§1.3)", () => {
     assert.equal(displayPhone(""), "");
   });
 
-  it("carLine drops the region when there is none", () => {
+  it("carLine drops the place when there is none", () => {
     assert.equal(carLine(94000, "אוטו דיל", "מרכז"), "94,000 ₪ · אוטו דיל · מרכז");
     assert.equal(carLine(94000, "אוטו דיל", null), "94,000 ₪ · אוטו דיל");
     assert.equal(carLine(94000, "אוטו דיל", ""), "94,000 ₪ · אוטו דיל");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BRIEF Day 19b Run 21 §6.4 — THE NAMELESS SELLER. `dealers.name` is "" for a private seller the collection
+// tool did not name; every sentence that names the seller has a second form, and the named forms are
+// unchanged. A name that is only spaces is no name either.
+// ---------------------------------------------------------------------------
+
+describe("the nameless seller (Run 21 §6.4)", () => {
+  it("privacyLine, named and nameless", () => {
+    assert.equal(privacyLine("אוטו דיל"), "הפרטים עוברים רק לאוטו דיל, ורק בשביל הבקשה הזו.");
+    assert.equal(privacyLine(""), "הפרטים עוברים רק למוכר, ורק בשביל הבקשה הזו.");
+    assert.equal(privacyLine("   "), "הפרטים עוברים רק למוכר, ורק בשביל הבקשה הזו.");
+  });
+
+  it("visitFollowUp, named and nameless", () => {
+    const named = visitFollowUp("אוטו דיל", "052-7654321");
+    assert.equal(named.before + named.phone + named.after, "תקבל הודעה מאוטו דיל למספר 052-7654321, כדי לוודא הגעה.");
+    for (const noName of ["", "   "]) {
+      const p = visitFollowUp(noName, "052-7654321");
+      assert.deepEqual(p, { before: "תקבל הודעה למספר ", phone: "052-7654321", after: ", כדי לוודא הגעה." });
+      assert.equal(p.before + p.phone + p.after, "תקבל הודעה למספר 052-7654321, כדי לוודא הגעה.");
+    }
+  });
+
+  it("callbackFollowUp, named and nameless", () => {
+    const named = callbackFollowUp("אוטו דיל", "03-1234567");
+    assert.equal(named.before + named.phone + named.after, "תקבל שיחה מאוטו דיל למספר 03-1234567.");
+    for (const noName of ["", "   "]) {
+      const p = callbackFollowUp(noName, "03-1234567");
+      assert.deepEqual(p, { before: "תקבל שיחה למספר ", phone: "03-1234567", after: "." });
+      assert.equal(p.before + p.phone + p.after, "תקבל שיחה למספר 03-1234567.");
+    }
+  });
+
+  it("carLine, named and nameless, with and without a place", () => {
+    assert.equal(carLine(94000, "אוטו דיל", "מרכז"), "94,000 ₪ · אוטו דיל · מרכז");
+    assert.equal(carLine(94000, "אוטו דיל", null), "94,000 ₪ · אוטו דיל");
+    for (const noName of ["", "   "]) {
+      assert.equal(carLine(94000, noName, "מרכז"), "94,000 ₪ · מרכז");
+      assert.equal(carLine(94000, noName, "נתניה"), "94,000 ₪ · נתניה");
+      assert.equal(carLine(94000, noName, null), "94,000 ₪");
+      assert.equal(carLine(94000, noName, ""), "94,000 ₪");
+    }
   });
 });
 

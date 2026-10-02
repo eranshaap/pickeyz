@@ -3,10 +3,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  engineTypeCode,
+  engineTypeFromWord,
   fuelKind,
   kmPerLiter,
   rangeKm,
   specRows,
+  ENGINE_TYPE_WORD,
   FUEL_EXPLANATION,
   SAFETY_EXPLANATION,
   SPEC_LABELS,
@@ -336,5 +339,83 @@ describe('specRows: "תא מטען" (§2.4 row 9)', () => {
 
   it("0 -> no row", () => {
     assert.equal(value(specRows(modelRow(), sheetRow({ trunk_liters: 0 })), "תא מטען"), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BRIEF Day 19b Run 21 §5 — the engine-type code, for matching a `models` row to a manual-spec row
+// ---------------------------------------------------------------------------
+
+describe("engineTypeCode (Run 21 §5)", () => {
+  it("regular + the petrol word -> petrol", () => {
+    assert.equal(engineTypeCode("regular", "בנזין"), "petrol");
+  });
+
+  it("regular + the diesel word -> diesel", () => {
+    assert.equal(engineTypeCode("regular", "דיזל"), "diesel");
+  });
+
+  it("hybrid -> hybrid, whatever the fuel", () => {
+    assert.equal(engineTypeCode("hybrid", "בנזין"), "hybrid");
+    assert.equal(engineTypeCode("hybrid", "דיזל"), "hybrid");
+    assert.equal(engineTypeCode("hybrid", null), "hybrid");
+  });
+
+  it("plug_in -> plug_in, whatever the fuel", () => {
+    assert.equal(engineTypeCode("plug_in", "חשמל/בנזין"), "plug_in");
+    assert.equal(engineTypeCode("plug_in", "חשמל/דיזל"), "plug_in");
+    assert.equal(engineTypeCode("plug_in", null), "plug_in");
+  });
+
+  it("electric -> electric", () => {
+    assert.equal(engineTypeCode("electric", null), "electric");
+    assert.equal(engineTypeCode("electric", "חשמל"), "electric");
+  });
+
+  it("both inputs are trimmed", () => {
+    assert.equal(engineTypeCode("  regular ", " בנזין  "), "petrol");
+    assert.equal(engineTypeCode(" hybrid ", null), "hybrid");
+  });
+
+  it("regular + a compound fuel word is NO MATCH: the car goes on the alert list", () => {
+    assert.equal(engineTypeCode("regular", "חשמל/בנזין"), null);
+    assert.equal(engineTypeCode("regular", "חשמל/דיזל"), null);
+  });
+
+  it("regular with no fuel at all -> null", () => {
+    assert.equal(engineTypeCode("regular", null), null);
+    assert.equal(engineTypeCode("regular", "   "), null);
+  });
+
+  it("a null or unknown technology -> null", () => {
+    assert.equal(engineTypeCode(null, "בנזין"), null);
+    assert.equal(engineTypeCode("gas", "בנזין"), null);
+    assert.equal(engineTypeCode("", "בנזין"), null);
+  });
+});
+
+describe("engineTypeFromWord (Run 21 §5)", () => {
+  it("each of the five words", () => {
+    assert.equal(engineTypeFromWord(ENGINE_TYPE_WORD.petrol), "petrol");
+    assert.equal(engineTypeFromWord(ENGINE_TYPE_WORD.diesel), "diesel");
+    assert.equal(engineTypeFromWord(ENGINE_TYPE_WORD.hybrid), "hybrid");
+    assert.equal(engineTypeFromWord(ENGINE_TYPE_WORD.plug_in), "plug_in");
+    assert.equal(engineTypeFromWord(ENGINE_TYPE_WORD.electric), "electric");
+  });
+
+  it("the word is trimmed", () => {
+    assert.equal(engineTypeFromWord(`  ${ENGINE_TYPE_WORD.plug_in} `), "plug_in");
+  });
+
+  it("an unknown word -> null", () => {
+    assert.equal(engineTypeFromWord("גז"), null);
+    assert.equal(engineTypeFromWord(""), null);
+    assert.equal(engineTypeFromWord("petrol"), null);
+  });
+
+  it("is the exact inverse of ENGINE_TYPE_WORD", () => {
+    for (const [code, word] of Object.entries(ENGINE_TYPE_WORD)) {
+      assert.equal(engineTypeFromWord(word), code);
+    }
   });
 });

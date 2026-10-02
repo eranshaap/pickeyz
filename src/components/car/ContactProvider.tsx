@@ -49,7 +49,7 @@ export type OpenContactView = Exclude<ContactView, "closed">;
 export type ContactField = "name" | "phone";
 
 /** The car as the window draws it: the page's own values, nothing looked up here. */
-export type ContactCar = { model: string; year: number | null; imageSrc: string | null; price: number; region: string | null };
+export type ContactCar = { model: string; year: number | null; imageSrc: string | null; price: number; place: string | null };
 
 /**
  * §4.1 — what the two buttons are given. `color` is here and not a prop of ContactButton because §4.4 mounts

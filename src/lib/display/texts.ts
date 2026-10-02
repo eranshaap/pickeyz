@@ -254,8 +254,8 @@ export const SPEC_HEADING = "מפרט ואבזור";
 // "מגרש" / "מוכר פרטי" word, the dealer's region and the line that joined them no longer appear on the car
 // page on either screen. The DATA is untouched — listings.region, dealers.name and dealers.dealer_type are
 // all still read and stored (dealers.region was dropped in Run 20, Day 19b — nothing read it); what the page
-// shows of the region now is the region line under the price (CarPageView.tsx §4.3), which reads
-// listings.region and nothing else.
+// shows of where the car is now is the place line under the price (CarPageView.tsx §4.3), which reads the
+// place — listings.city, else listings.region (shownPlace, src/lib/location/place.ts; Day 19b, Run 21).
 //
 // src/components/search/labels.tsx keeps its own sellerKind() for the RESULT CARDS — a different line, on a
 // different screen, that §7 leaves alone.

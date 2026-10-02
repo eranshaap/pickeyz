@@ -92,13 +92,15 @@ export const SPEC_LABELS = [
 /** The answer to "which systems does it have", when it has none. It is never the answer to "is there data": a row with no data is not drawn. */
 export const NONE_WORD = "אין";
 
+/** The five engine types, as codes. The key type of ENGINE_TYPE_WORD, named so the two functions below can say it. */
+export type EngineTypeCode = FuelKind | "hybrid" | "plug_in" | "electric";
+
 /**
  * ONE table for the five engine words: the engine row reads its technology word and its fuel word from it,
- * and the sheet import (a later run) translates the manual-spec tab's "סוג מנוע" with the same five words.
+ * and the sheet import translates the manual-spec tab's "סוג מנוע" with the same five words.
  *
- * The engine-type CODE function — matching a `models` row to a manual-spec row, and the alert line — is NOT
- * here: Eran's ruling (01/10) is that it is written in the sheet-import run, its only caller, and checked
- * there against the data.
+ * The engine-type CODE functions are the two below it (BRIEF Day 19b Run 21 §5): Eran's ruling (01/10) kept
+ * them out of the display run and put them where the sheet import can use them.
  */
 export const ENGINE_TYPE_WORD: Readonly<Record<FuelKind | "hybrid" | "plug_in" | "electric", string>> = {
   petrol: "בנזין",
@@ -107,6 +109,42 @@ export const ENGINE_TYPE_WORD: Readonly<Record<FuelKind | "hybrid" | "plug_in" |
   plug_in: "היברידי נטען",
   electric: "חשמלי",
 };
+
+/**
+ * §5 — a `models` row's (`drive_technology`, `fuel_type`) → the engine type, for matching it to a
+ * `model_specs.engine_type`. Both inputs are trimmed, and the fuel is compared EXACTLY:
+ *
+ *   regular + "בנזין" → petrol      hybrid  → hybrid     (whatever the fuel)
+ *   regular + "דיזל"  → diesel      plug_in → plug_in    (whatever the fuel)
+ *                                   electric → electric
+ *
+ * Anything else is null — NO MATCH, never a guess: the car goes on the import's alert list. A `regular`
+ * row whose fuel is "חשמל/בנזין" is such a car: FUEL_KIND calls it petrol for the consumption row, but a
+ * manual spec is matched on the catalog's own word and nothing else.
+ */
+export function engineTypeCode(driveTechnology: string | null, fuelType: string | null): EngineTypeCode | null {
+  const technology = (driveTechnology ?? "").trim();
+  const fuel = (fuelType ?? "").trim();
+  if (technology === "hybrid") return "hybrid";
+  if (technology === "plug_in") return "plug_in";
+  if (technology === "electric") return "electric";
+  if (technology === "regular") {
+    // The catalog's two PLAIN fuel words — the first two keys of FUEL_KIND. The compound values
+    // ("חשמל/בנזין", "חשמל/דיזל") are deliberately not here: see above.
+    if (fuel === "בנזין") return "petrol";
+    if (fuel === "דיזל") return "diesel";
+  }
+  return null;
+}
+
+/** §5 — the same table backwards: the manual-spec tab's "סוג מנוע" word (trimmed) → the code, else null. */
+export function engineTypeFromWord(word: string): EngineTypeCode | null {
+  const wanted = word.trim();
+  for (const [code, text] of Object.entries(ENGINE_TYPE_WORD)) {
+    if (text === wanted) return code as EngineTypeCode;
+  }
+  return null;
+}
 
 /**
  * The catalog's `fuel_type` text → the fuel. THE FUEL IS ALWAYS READ FROM THIS COLUMN, never from the

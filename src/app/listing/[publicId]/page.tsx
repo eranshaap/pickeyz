@@ -36,6 +36,9 @@ import {
   type OwnershipAxis,
 } from "@/lib/display/texts";
 import { versionLine } from "@/lib/display/version-line";
+// Aliased: this file already has a local `shownPlace` — the car's displayed RANK place (line 231) — and the
+// rank had the name first.
+import { shownPlace as shownPlaceLine } from "@/lib/location/place";
 import { db } from "@/lib/db";
 import { isPublicId } from "@/lib/public-id";
 import { isCancelled, type Check, type Invoice, type Row } from "@/lib/scoring/types";
@@ -88,6 +91,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
       km_declared: true,
       hand_declared: true,
       region: true,
+      city: true,
       score: true,
       market_stats_id: true,
       dealer: { select: { name: true, dealer_type: true } },
@@ -325,7 +329,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     // whose price row was scored off the anchor curve does not satisfy (scoring/price.ts §0.5). Such a car has
     // no km row and no history typical, so it has no deal score, it lands in the results list's no-price group,
     // and on its page BOTH branches of priceBlock() missed it: the flag was false and the score was null, so
-    // nothing at all was drawn between "% ממחיר החדש" and the region line. `listing.score === null` is the same
+    // nothing at all was drawn between "% ממחיר החדש" and the place line. `listing.score === null` is the same
     // set of cars the no-price group is, which is the set §4 names.
     priceBlock: priceBlock({
       score: cancelled ? null : listing.score,
@@ -334,10 +338,11 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
       sample_size: norm?.sample_size ?? null,
       window_days: norm?.window_days ?? null,
     }),
-    // Run 9 §4.3 — the region line reads THE LISTING's own region, the very field the filters window's region chips
-    // read; §4.4 — the seller line, which used to carry the dealer's name, word and region, is gone. The
-    // dealer row itself is still selected above and still read by everything else that reads it.
-    region: listing.region,
+    // Run 9 §4.3 — the place line reads THE LISTING's own place: listings.city, else listings.region
+    // (shownPlace(), src/lib/location/place.ts; Day 19b, Run 21). §4.4 — the seller line, which used to carry
+    // the dealer's name, word and region, is gone. The dealer row itself is still selected above and still
+    // read by everything else that reads it.
+    placeLine: shownPlaceLine(listing.city, listing.region),
     strip,
     axis,
     noHistory,

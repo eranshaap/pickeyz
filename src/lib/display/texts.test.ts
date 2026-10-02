@@ -170,9 +170,9 @@ describe("the why heading and its guard (§7.7)", () => {
   });
 });
 
-// Run 9 §4.4 — the seller line's six cases are gone with sellerLine() itself. What the page shows of the
-// region now is the region line under the price, which is markup over listings.region (CarPageView.tsx) and
-// has no string to decide.
+// Run 9 §4.4 — the seller line's six cases are gone with sellerLine() itself. What the page shows of where
+// the car is now is the place line under the price, which is markup over the place — listings.city, else
+// listings.region (shownPlace, src/lib/location/place.ts; Day 19b, Run 21) — and has no string to decide.
 
 describe("durations (§8.5)", () => {
   it("the month forms", () => {

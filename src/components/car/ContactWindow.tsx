@@ -173,7 +173,7 @@ function CarBlock({ car, sellerName, dim }: { car: ContactCar; sellerName: strin
           <CarTitle model={car.model} year={car.year} />
         </div>
         <div className="text-[13px] tabular-nums md:text-[14px]" style={{ color: GREY }}>
-          {carLine(car.price, sellerName, car.region)}
+          {carLine(car.price, sellerName, car.place)}
         </div>
       </div>
     </div>
