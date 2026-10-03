@@ -134,4 +134,15 @@ describe("specKey (§2.5)", () => {
     assert.notEqual(specKey(one({ [TRIM]: "A, B" })), specKey(one({ [TRIM]: "A" })));
     assert.notEqual(specKey(one()), specKey(one({ [YEAR]: 2022 })));
   });
+
+  // Day 19b Run 22b: a stored model_specs row (plain strings, the other columns beside) keys like its tab row.
+  it("a stored row with the same identity fields gives the same key as the tab row", () => {
+    const tab = one({ [TRIM]: "A, B" });
+    const stored = {
+      id: 7, make: tab.make, model: tab.model, body_type: tab.body_type, year: tab.year,
+      engine_size: tab.engine_size, engine_type: String(tab.engine_type), drive_type: String(tab.drive_type),
+      sub_models: ["B", "A"], length_mm: null, carzone_url: null,
+    };
+    assert.equal(specKey(stored), specKey(tab));
+  });
 });

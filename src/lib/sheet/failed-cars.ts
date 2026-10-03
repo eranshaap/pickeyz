@@ -25,6 +25,11 @@ export type FailedCar = {
   reason: FailedReason; details: string; not_tried: boolean;
 };
 
+/** Day 19b Run 22b — the details of a year_mismatch row: the ad's year, then the registry's. */
+export function yearMismatchDetails(adYear: number, registryYear: number): string {
+  return `במודעה ${adYear}, ברישוי ${registryYear}`;
+}
+
 const HEADER = ["מספר רישוי", "קישור למודעה", "דגם ברישוי", "שנה ברישוי", "סיבה", "פרטים", "לא נוסה"];
 
 /** RFC 4180: a field holding a comma, a quote or a line break is quoted, its quotes doubled. */

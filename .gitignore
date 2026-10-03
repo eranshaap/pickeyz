@@ -49,3 +49,6 @@ REPORT-score-listings.md
 REPORT-select-three.md
 REPORT-refresh-cars.md
 REPORT-measure-justifications.md
+
+# Day 19b Run 22: the import's failed-cars file, rewritten every run
+/failed-cars.csv

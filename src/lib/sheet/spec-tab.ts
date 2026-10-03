@@ -108,8 +108,17 @@ export function parseSpecRow(values: Record<string, string>, n: number): ManualS
   };
 }
 
+/**
+ * Day 19b Run 22b — the fields a spec row's identity is made of. A stored model_specs row carries them under
+ * the same names, so the import keys the stored rows and the tab's rows by the one function below.
+ */
+export type SpecIdentity = {
+  make: string; model: string; body_type: string; year: number; engine_size: number;
+  engine_type: string; drive_type: string; sub_models: readonly string[];
+};
+
 /** The seven scalars a models row is matched on (findCar-schema.md §18), joined — the trims aside. */
-function scalarKey(s: ManualSpec): string {
+function scalarKey(s: SpecIdentity): string {
   return [s.make, s.model, s.body_type, s.year, s.engine_size, s.engine_type, s.drive_type].join("\u0000");
 }
 
@@ -137,6 +146,6 @@ export function readSpecTab(wb: ExcelJS.Workbook): ManualSpec[] {
 }
 
 /** §2.5 — a spec row's identity for the sync: the seven scalars and the trims as a sorted set. */
-export function specKey(spec: ManualSpec): string {
+export function specKey(spec: SpecIdentity): string {
   return [scalarKey(spec), ...[...spec.sub_models].sort()].join("\u0000");
 }

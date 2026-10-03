@@ -2,7 +2,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { FAILED_CARS_PATH, FAILED_REASON, failedCarsCsv, type FailedCar } from "./failed-cars";
+import { FAILED_CARS_PATH, FAILED_REASON, failedCarsCsv, yearMismatchDetails, type FailedCar } from "./failed-cars";
 
 const HEADER = "מספר רישוי,קישור למודעה,דגם ברישוי,שנה ברישוי,סיבה,פרטים,לא נוסה";
 const LINK = "https://www.yad2.co.il/vehicles/item/abc123";
@@ -55,5 +55,12 @@ describe("failedCarsCsv (§5.4)", () => {
       "area_empty", "city_unknown", "plate_not_in_registry", "no_degem_code", "unexpected_model",
       "year_mismatch", "version_not_in_catalog", "catalog_translation", "ministry_down",
     ]);
+  });
+});
+
+// Day 19b Run 22b — the details text of a year_mismatch row.
+describe("yearMismatchDetails", () => {
+  it("the ad's year, then the registry's", () => {
+    assert.equal(yearMismatchDetails(2021, 2020), "במודעה 2021, ברישוי 2020");
   });
 });
