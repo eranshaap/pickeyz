@@ -5,14 +5,14 @@ import assert from "node:assert/strict";
 import * as ExcelJS from "exceljs";
 import { readSpecTab, SPEC_HEADERS, SPEC_TAB, specKey, type ManualSpec } from "./spec-tab";
 
-const [MAKE, MODEL, BODY, ENGINE, DRIVE, TRIM, YEAR, CC, LENGTH, WIDTH, HEIGHT, TRUNK, TANK, CONSUMPTION, CARZONE, DATE] = SPEC_HEADERS;
+const [MAKE, MODEL, BODY, ENGINE, DRIVE, TRIM, YEAR, CC, LENGTH, WIDTH, HEIGHT, TRUNK, TANK, CONSUMPTION, SOURCES, DATE] = SPEC_HEADERS;
 
 /** A full petrol row, by header. */
 function good(over: Record<string, ExcelJS.CellValue> = {}): Record<string, ExcelJS.CellValue> {
   return {
     [MAKE]: "מאזדה", [MODEL]: "MAZDA 3", [BODY]: "האצ'בק", [ENGINE]: "בנזין", [DRIVE]: 2,
     [TRIM]: " SPORT , PREMIUM ", [YEAR]: 2021, [CC]: "1,998", [LENGTH]: 4460, [WIDTH]: 1795, [HEIGHT]: 1435,
-    [TRUNK]: 358, [TANK]: 51, [CONSUMPTION]: "15,6", [CARZONE]: "https://www.carzone.co.il/x",
+    [TRUNK]: 358, [TANK]: 51, [CONSUMPTION]: "15,6", [SOURCES]:"https://www.carzone.co.il/x",
     [DATE]: new Date(Date.UTC(2026, 9, 1)),
     ...over,
   };
@@ -32,6 +32,25 @@ function workbook(rows: Record<string, ExcelJS.CellValue>[], headers: readonly s
 
 function one(over: Record<string, ExcelJS.CellValue> = {}): ManualSpec {
   return readSpecTab(workbook([good(over)]))[0];
+}
+
+/** Day 19b Run 24 — the tab's one error: checks its first line, returns the problem lines without the indent. */
+function problems(rows: Record<string, ExcelJS.CellValue>[]): string[] {
+  try {
+    readSpecTab(workbook(rows));
+  } catch (e) {
+    const [head, ...lines] = (e as Error).message.split("\n");
+    assert.equal(head, `sheet "${SPEC_TAB}": ${lines.length} problem(s) — the import does not start:`);
+    return lines.map((l) => l.replace(/^ {2}/, ""));
+  }
+  assert.fail("no error");
+}
+
+/** A single good-but-one row → its only problem line. */
+function only(over: Record<string, ExcelJS.CellValue>): string {
+  const lines = problems([good(over)]);
+  assert.equal(lines.length, 1, lines.join("\n"));
+  return lines[0];
 }
 
 describe("SPEC_HEADERS (§2.1)", () => {
@@ -62,47 +81,85 @@ describe("readSpecTab / parseSpecRow (§2.3, §2.4)", () => {
 
   it("each required column empty → its error", () => {
     for (const column of SPEC_HEADERS) {
-      assert.throws(() => one({ [column]: null }), (e: Error) => e.message.startsWith(`row 2: ${column}: empty`), column);
+      assert.ok(only({ [column]: null }).startsWith(`row 2: ${column}: empty`), column);
     }
   });
 
   it("an unknown engine word", () => {
-    assert.throws(() => one({ [ENGINE]: "גז" }), /^Error: row 2: סוג מנוע: unknown engine type "גז"$/);
+    assert.match(only({ [ENGINE]: "גז" }), /^row 2: סוג מנוע: unknown engine type "גז"$/);
   });
 
   it("הנעה = 3", () => {
-    assert.throws(() => one({ [DRIVE]: 3 }), /^Error: row 2: הנעה: expected 2 or 4, got "3"$/);
+    assert.match(only({ [DRIVE]: 3 }), /^row 2: הנעה: expected 2 or 4, got "3"$/);
   });
 
   it("a 0 and a negative in a number", () => {
-    assert.throws(() => one({ [TRUNK]: 0 }), /^Error: row 2: תא מטען \(ליטר\): must be at least 1, got "0"$/);
-    assert.throws(() => one({ [TANK]: -5 }), /^Error: row 2: מיכל דלק \(ליטר\): not a whole number: "-5"$/);
+    assert.match(only({ [TRUNK]: 0 }), /^row 2: תא מטען \(ליטר\): must be at least 1, got "0"$/);
+    assert.match(only({ [TANK]: -5 }), /^row 2: מיכל דלק \(ליטר\): not a whole number: "-5"$/);
     assert.throws(() => one({ [CONSUMPTION]: 0 }), /must be above 0/);
     assert.throws(() => one({ [CONSUMPTION]: "-4" }), /not a decimal number/);
   });
 
   it("the year: exactly four digits", () => {
-    assert.throws(() => one({ [YEAR]: 21 }), /^Error: row 2: שנה: expected four digits, got "21"$/);
+    assert.match(only({ [YEAR]: 21 }), /^row 2: שנה: expected four digits, got "21"$/);
   });
 
   it("a consumption on an electric row → error; empty there → null; the same for a plug-in", () => {
-    assert.throws(() => one({ [ENGINE]: "חשמלי" }), /^Error: row 2: צריכת דלק \(ק"מ לליטר\): must be empty for "חשמלי"/);
+    assert.match(only({ [ENGINE]: "חשמלי" }), /^row 2: צריכת דלק \(ק"מ לליטר\): must be empty for "חשמלי"/);
     assert.equal(one({ [ENGINE]: "חשמלי", [CONSUMPTION]: null }).km_per_liter, null);
     assert.equal(one({ [ENGINE]: "היברידי נטען", [CONSUMPTION]: null }).engine_type, "plug_in");
   });
 
   it("an empty consumption on a petrol row → error", () => {
-    assert.throws(() => one({ [CONSUMPTION]: null }), /^Error: row 2: צריכת דלק \(ק"מ לליטר\): empty \(required for "בנזין"\)$/);
+    assert.match(only({ [CONSUMPTION]: null }), /^row 2: צריכת דלק \(ק"מ לליטר\): empty \(required for "בנזין"\)$/);
   });
 
   it("the trims: a duplicate within a list, an empty part → error; another separator is one trim", () => {
-    assert.throws(() => one({ [TRIM]: "SPORT, SPORT" }), /^Error: row 2: גימור: "SPORT" appears twice$/);
+    assert.match(only({ [TRIM]: "SPORT, SPORT" }), /^row 2: גימור: "SPORT" appears twice$/);
     assert.throws(() => one({ [TRIM]: "SPORT,,PREMIUM" }), /an empty part/);
     assert.deepEqual(one({ [TRIM]: "SPORT · PREMIUM" }).sub_models, ["SPORT · PREMIUM"]);
   });
 
   it("a bad date", () => {
-    assert.throws(() => one({ [DATE]: "01/10/2026" }), /^Error: row 2: תאריך: expected YYYY-MM-DD/);
+    assert.match(only({ [DATE]: "01/10/2026" }), /^row 2: תאריך: expected YYYY-MM-DD/);
+  });
+
+  // Day 19b Run 24: every problem of the tab at once.
+  it("two bad rows → both listed, the lower row first", () => {
+    assert.deepEqual(problems([good({ [DRIVE]: 3 }), good({ [YEAR]: 21 })]), [
+      `row 2: ${DRIVE}: expected 2 or 4, got "3"`,
+      `row 3: ${YEAR}: expected four digits, got "21"`,
+    ]);
+  });
+
+  it("one row with two bad cells → two lines, in header order", () => {
+    assert.deepEqual(problems([good({ [DATE]: "01/10/2026", [MAKE]: null })]), [
+      `row 2: ${MAKE}: empty`,
+      `row 2: ${DATE}: expected YYYY-MM-DD, got "01/10/2026"`,
+    ]);
+  });
+
+  it("an unknown engine type and an empty consumption → one problem only", () => {
+    assert.deepEqual(problems([good({ [ENGINE]: "גז", [CONSUMPTION]: null })]), [
+      `row 2: ${ENGINE}: unknown engine type "גז"`,
+    ]);
+  });
+
+  it("the sources: one link, three links with single spaces, two links across a line break → accepted", () => {
+    assert.equal(one({ [SOURCES]: "https://a.example/1" }).carzone_url, "https://a.example/1");
+    const three = "https://a.example/1 http://b.example/2 https://c.example/3";
+    assert.equal(one({ [SOURCES]: three }).carzone_url, three);
+    const broken = "https://a.example/1\nhttps://b.example/2";
+    assert.equal(one({ [SOURCES]: ` ${broken} ` }).carzone_url, broken);
+  });
+
+  it("the sources: a part without http → not a link; an empty cell → empty", () => {
+    assert.equal(only({ [SOURCES]: "https://a.example/1 www.b.example" }), `row 2: ${SOURCES}: not a link: "www.b.example"`);
+    assert.equal(only({ [SOURCES]: null }), `row 2: ${SOURCES}: empty`);
+  });
+
+  it("a tab with one good and one bad row → the error names only the bad row", () => {
+    assert.deepEqual(problems([good(), good({ [TRUNK]: 0 })]), [`row 3: ${TRUNK}: must be at least 1, got "0"`]);
   });
 
   it("the exact headers: a swapped pair, a missing one, an extra one → the error", () => {

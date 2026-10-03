@@ -3,8 +3,9 @@
 // read into the wrong field.
 //
 // EVERY COLUMN IS REQUIRED except the consumption, which is empty exactly for the electric and the plug-in
-// engine types — there is no "empty = everything" anywhere. Every error names the row and the column, and
-// stops the import before it starts.
+// engine types — there is no "empty = everything" anywhere. Every problem names its row and its column, and
+// all of them — every row, every column — are listed together before the import stops (Day 19b Run 24).
+// The sources column holds one or more links, separated by spaces or line breaks.
 //
 // THE SITE NEVER IMPORTS src/lib/sheet/.
 
@@ -19,7 +20,7 @@ export const SPEC_TAB = "מפרט ידני";
 export const SPEC_HEADERS = [
   "יצרן", "דגם", "מרכב", "סוג מנוע", "הנעה", "גימור", "שנה",
   "נפח מנוע (סמ\u0022ק)", "אורך (מ\u0022מ)", "רוחב (מ\u0022מ)", "גובה (מ\u0022מ)",
-  "תא מטען (ליטר)", "מיכל דלק (ליטר)", "צריכת דלק (ק\u0022מ לליטר)", "קישור קארזון", "תאריך",
+  "תא מטען (ליטר)", "מיכל דלק (ליטר)", "צריכת דלק (ק\u0022מ לליטר)", "מקורות", "תאריך",
 ] as const;
 
 export type ManualSpec = {
@@ -29,82 +30,146 @@ export type ManualSpec = {
   km_per_liter: number | null; carzone_url: string; source_date: string;
 };
 
-function fail(n: number, column: string, msg: string): never {
-  throw new Error(`row ${n}: ${column}: ${msg}`);
+export type SpecProblem = { n: number; column: string; message: string };
+
+/** Day 19b Run 24 — every problem of one row, one per line: `row {n}: {column}: {message}`. */
+export class SpecRowError extends Error {
+  readonly problems: SpecProblem[];
+  constructor(problems: SpecProblem[]) {
+    super(problems.map((p) => `row ${p.n}: ${p.column}: ${p.message}`).join("\n"));
+    this.problems = problems;
+  }
+}
+
+/** One cell's problem; parseSpecRow collects it and goes on to the next column. */
+class CellProblem {
+  constructor(readonly column: string, readonly message: string) {}
+}
+
+function fail(column: string, msg: string): never {
+  throw new CellProblem(column, msg);
 }
 
 /** A whole number ≥ 1, a thousands comma removed first (as the cars tab's intOrNull does). */
-function positiveInt(value: string, n: number, column: string): number {
+function positiveInt(value: string, column: string): number {
   const digits = value.replace(/[,\s]/g, "");
-  if (!/^\d+$/.test(digits)) fail(n, column, `not a whole number: ${JSON.stringify(value)}`);
+  if (!/^\d+$/.test(digits)) fail(column, `not a whole number: ${JSON.stringify(value)}`);
   const v = Number(digits);
-  if (v < 1) fail(n, column, `must be at least 1, got ${JSON.stringify(value)}`);
+  if (v < 1) fail(column, `must be at least 1, got ${JSON.stringify(value)}`);
   return v;
 }
 
-/** §2.3 — one row of the tab. */
+/** A decimal above 0, a comma or a dot. */
+function positiveDecimal(value: string, column: string): number {
+  if (!/^\d+([.,]\d+)?$/.test(value)) fail(column, `not a decimal number: ${JSON.stringify(value)}`);
+  const d = Number(value.replace(",", "."));
+  if (!(d > 0)) fail(column, `must be above 0, got ${JSON.stringify(value)}`);
+  return d;
+}
+
+/** §2.3 — one row of the tab. Every column is checked, in header order; all the problems are thrown together. */
 export function parseSpecRow(values: Record<string, string>, n: number): ManualSpec {
-  const [MAKE, MODEL, BODY, ENGINE, DRIVE, TRIM, YEAR, CC, LENGTH, WIDTH, HEIGHT, TRUNK, TANK, CONSUMPTION, CARZONE, DATE] = SPEC_HEADERS;
+  const [MAKE, MODEL, BODY, ENGINE, DRIVE, TRIM, YEAR, CC, LENGTH, WIDTH, HEIGHT, TRUNK, TANK, CONSUMPTION, SOURCES, DATE] = SPEC_HEADERS;
   const v = (column: string): string => (values[column] ?? "").trim();
   const required = (column: string): string => {
     const t = v(column);
-    if (!t) fail(n, column, "empty");
+    if (!t) fail(column, "empty");
     return t;
   };
+  const problems: SpecProblem[] = [];
+  const check = <T>(run: () => T): T | undefined => {
+    try {
+      return run();
+    } catch (e) {
+      if (!(e instanceof CellProblem)) throw e;
+      problems.push({ n, column: e.column, message: e.message });
+      return undefined;
+    }
+  };
 
-  const make = required(MAKE);
-  const model = required(MODEL);
-  const body_type = required(BODY);
+  const make = check(() => required(MAKE));
+  const model = check(() => required(MODEL));
+  const body_type = check(() => required(BODY));
 
-  const engineWord = required(ENGINE);
-  const engine_type = engineTypeFromWord(engineWord);
-  if (engine_type === null) fail(n, ENGINE, `unknown engine type ${JSON.stringify(engineWord)}`);
+  const engine_type = check(() => {
+    const word = required(ENGINE);
+    const t = engineTypeFromWord(word);
+    if (t === null) fail(ENGINE, `unknown engine type ${JSON.stringify(word)}`);
+    return t;
+  });
+  const engineWord = v(ENGINE);
 
-  const driveCell = required(DRIVE);
-  let drive_type: "4X2" | "4X4";
-  if (driveCell === "2") drive_type = "4X2";
-  else if (driveCell === "4") drive_type = "4X4";
-  else fail(n, DRIVE, `expected 2 or 4, got ${JSON.stringify(driveCell)}`);
+  const drive_type = check((): "4X2" | "4X4" => {
+    const driveCell = required(DRIVE);
+    if (driveCell === "2") return "4X2";
+    if (driveCell === "4") return "4X4";
+    fail(DRIVE, `expected 2 or 4, got ${JSON.stringify(driveCell)}`);
+  });
 
   // A comma-separated list. Another separator is not recognized: such a cell is one strange trim that will
   // simply match nothing.
-  const sub_models = required(TRIM).split(",").map((p) => p.trim());
-  if (sub_models.some((p) => p === "")) fail(n, TRIM, `an empty part in the list ${JSON.stringify(v(TRIM))}`);
-  const twice = sub_models.find((p, i) => sub_models.indexOf(p) !== i);
-  if (twice !== undefined) fail(n, TRIM, `${JSON.stringify(twice)} appears twice`);
+  const sub_models = check(() => {
+    const parts = required(TRIM).split(",").map((p) => p.trim());
+    if (parts.some((p) => p === "")) fail(TRIM, `an empty part in the list ${JSON.stringify(v(TRIM))}`);
+    const twice = parts.find((p, i) => parts.indexOf(p) !== i);
+    if (twice !== undefined) fail(TRIM, `${JSON.stringify(twice)} appears twice`);
+    return parts;
+  });
 
-  const yearCell = required(YEAR);
-  if (!/^\d{4}$/.test(yearCell)) fail(n, YEAR, `expected four digits, got ${JSON.stringify(yearCell)}`);
+  const year = check(() => {
+    const yearCell = required(YEAR);
+    if (!/^\d{4}$/.test(yearCell)) fail(YEAR, `expected four digits, got ${JSON.stringify(yearCell)}`);
+    return Number(yearCell);
+  });
 
-  const engine_size = positiveInt(required(CC), n, CC);
-  const length_mm = positiveInt(required(LENGTH), n, LENGTH);
-  const width_mm = positiveInt(required(WIDTH), n, WIDTH);
-  const height_mm = positiveInt(required(HEIGHT), n, HEIGHT);
-  const trunk_liters = positiveInt(required(TRUNK), n, TRUNK);
-  const tank_liters = positiveInt(required(TANK), n, TANK);
+  const engine_size = check(() => positiveInt(required(CC), CC));
+  const length_mm = check(() => positiveInt(required(LENGTH), LENGTH));
+  const width_mm = check(() => positiveInt(required(WIDTH), WIDTH));
+  const height_mm = check(() => positiveInt(required(HEIGHT), HEIGHT));
+  const trunk_liters = check(() => positiveInt(required(TRUNK), TRUNK));
+  const tank_liters = check(() => positiveInt(required(TANK), TANK));
 
-  // The consumption: empty exactly for electric / plug_in, filled for every other engine type.
-  const consumptionCell = v(CONSUMPTION);
-  const noConsumption = engine_type === "electric" || engine_type === "plug_in";
-  let km_per_liter: number | null = null;
-  if (noConsumption) {
-    if (consumptionCell) fail(n, CONSUMPTION, `must be empty for ${JSON.stringify(engineWord)}, got ${JSON.stringify(consumptionCell)}`);
-  } else {
-    if (!consumptionCell) fail(n, CONSUMPTION, `empty (required for ${JSON.stringify(engineWord)})`);
-    if (!/^\d+([.,]\d+)?$/.test(consumptionCell)) fail(n, CONSUMPTION, `not a decimal number: ${JSON.stringify(consumptionCell)}`);
-    km_per_liter = Number(consumptionCell.replace(",", "."));
-    if (!(km_per_liter > 0)) fail(n, CONSUMPTION, `must be above 0, got ${JSON.stringify(consumptionCell)}`);
-  }
+  // The consumption: empty exactly for electric / plug_in, filled for every other engine type. When the engine
+  // type is unknown (its own problem is listed), only the form is checked: if filled, a decimal above 0.
+  const km_per_liter = check((): number | null => {
+    const consumptionCell = v(CONSUMPTION);
+    if (engine_type === undefined) {
+      if (consumptionCell) positiveDecimal(consumptionCell, CONSUMPTION);
+      return null;
+    }
+    if (engine_type === "electric" || engine_type === "plug_in") {
+      if (consumptionCell) fail(CONSUMPTION, `must be empty for ${JSON.stringify(engineWord)}, got ${JSON.stringify(consumptionCell)}`);
+      return null;
+    }
+    if (!consumptionCell) fail(CONSUMPTION, `empty (required for ${JSON.stringify(engineWord)})`);
+    return positiveDecimal(consumptionCell, CONSUMPTION);
+  });
 
-  const carzone_url = required(CARZONE);
-  const source_date = required(DATE);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(source_date) || Number.isNaN(Date.parse(source_date))) {
-    fail(n, DATE, `expected YYYY-MM-DD, got ${JSON.stringify(source_date)}`);
-  }
+  // The sources: one or more links, split on every run of whitespace (spaces and line breaks alike). The
+  // trimmed cell text is kept as it is.
+  const carzone_url = check(() => {
+    const text = required(SOURCES);
+    for (const part of text.split(/\s+/)) {
+      if (!/^https?:\/\//.test(part)) fail(SOURCES, `not a link: ${JSON.stringify(part)}`);
+    }
+    return text;
+  });
 
+  const source_date = check(() => {
+    const d = required(DATE);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(d))) {
+      fail(DATE, `expected YYYY-MM-DD, got ${JSON.stringify(d)}`);
+    }
+    return d;
+  });
+
+  if (problems.length > 0) throw new SpecRowError(problems);
   return {
-    n, make, model, body_type, year: Number(yearCell), engine_size, engine_type, drive_type, sub_models,
-    length_mm, width_mm, height_mm, trunk_liters, tank_liters, km_per_liter, carzone_url, source_date,
+    n, make: make!, model: model!, body_type: body_type!, year: year!, engine_size: engine_size!,
+    engine_type: engine_type!, drive_type: drive_type!, sub_models: sub_models!,
+    length_mm: length_mm!, width_mm: width_mm!, height_mm: height_mm!, trunk_liters: trunk_liters!,
+    tank_liters: tank_liters!, km_per_liter: km_per_liter as number | null, carzone_url: carzone_url!,
+    source_date: source_date!,
   };
 }
 
@@ -122,11 +187,29 @@ function scalarKey(s: SpecIdentity): string {
   return [s.make, s.model, s.body_type, s.year, s.engine_size, s.engine_type, s.drive_type].join("\u0000");
 }
 
-/** §2.4 — the whole tab. Zero data rows is fine (the tab before it is filled). */
+/**
+ * §2.4 — the whole tab. Zero data rows is fine (the tab before it is filled). Every row is parsed and every
+ * problem of the tab is listed in one error (Day 19b Run 24); the clash check runs only on a tab with none.
+ */
 export function readSpecTab(wb: ExcelJS.Workbook): ManualSpec[] {
   const ws = worksheetByName(wb, SPEC_TAB);
   const columns = headerColumns(ws, 1, SPEC_HEADERS, "exact");
-  const specs = dataRows(ws, 2, columns).map(({ row, values }) => parseSpecRow(values, row));
+  const specs: ManualSpec[] = [];
+  const problems: SpecProblem[] = [];
+  for (const { row, values } of dataRows(ws, 2, columns)) {
+    try {
+      specs.push(parseSpecRow(values, row));
+    } catch (e) {
+      if (!(e instanceof SpecRowError)) throw e;
+      problems.push(...e.problems);
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error([
+      `sheet "${SPEC_TAB}": ${problems.length} problem(s) — the import does not start:`,
+      ...problems.map((p) => `  row ${p.n}: ${p.column}: ${p.message}`),
+    ].join("\n"));
+  }
 
   // Two rows with the same seven scalars and a trim in common would make one models row match both.
   const clashes: string[] = [];

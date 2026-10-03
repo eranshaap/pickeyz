@@ -88,8 +88,9 @@ const DRY = !process.argv.includes("--write");
 // --expect-model "MAZDA 3": the registry's commercial model name every row must carry.
 // The flag may be repeated — `--expect-model "MAZDA 3" --expect-model "IONIQ HYBRID"`
 // (or `--expect-model=A`): a row passes when its registry model equals ANY of the values.
-// With no flag, no model check is made. Day 19b: a NEW row that fails it is a car that cannot
-// enter (unexpected_model); an existing listing that fails it still stops the run.
+// Day 19b Run 24: the list is checked only on a car entering now — a NEW row that fails it is a car that
+// cannot enter (unexpected_model); an existing listing is not checked. A sheet with a new priced row and
+// no flag does not start the import.
 const EXPECT_MODELS = ((): string[] => {
   const values: string[] = [];
   process.argv.forEach((a, i) => {
@@ -553,6 +554,13 @@ async function main() {
   const sources = [...new Set(rows.map((r) => r.source))].sort();
   const stored = await db.listings.findMany({ where: { source: { in: sources } }, select: LISTING_STATE });
   for (const l of stored) known.set(key(l.source, l.external_id), l);
+  // Day 19b, Run 24 (03/10): the expected models are the models of this collection, checked on a car entering
+  // now — so a sheet with a new car needs the list. Priced rows only: a row without a price creates nothing.
+  const newRows = rows.filter((r) => r.price !== null && !known.has(key(r.source, r.external_id)));
+  if (newRows.length > 0 && EXPECT_MODELS.length === 0) {
+    const list = newRows.map((r) => `row ${r.n} (${r.plate})`).join(", ");
+    throw new Error(`${newRows.length} new car(s) in the sheet and no --expect-model — the import does not start. Run again with --expect-model for every model this collection searched. The new rows: ${list}`);
+  }
   let notInSheet: string[] = [];
   if (seen) {
     notInSheet = absentFromSheet(
@@ -695,9 +703,6 @@ async function main() {
       // An inactive car carries the same registry fields; its expired tokef_dt is data, not a reason to skip.
       v = lookup.data;
       status = lookup.status;
-      if (EXPECT_MODELS.length > 0 && !EXPECT_MODELS.some((m) => modelKey(m) === modelKey(v.registry.model_name))) {
-        fail(row.n, `${row.plate}: expected model ${EXPECT_MODELS.map((m) => JSON.stringify(m)).join(" or ")}, registry says ${v.registry.make} ${v.registry.model_name}`);
-      }
       if (!v.degem_code) fail(row.n, `${row.plate}: registry row without a degem_code`);
       const stored = await db.models.findUnique({
         where: { vehicle_class_degem_code_year: { vehicle_class: v.vehicle_class, degem_code: v.degem_code, year: v.year } },
