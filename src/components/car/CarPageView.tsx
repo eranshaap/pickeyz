@@ -37,7 +37,6 @@
 //         fixed 536×357 box; on the cars seen the column is shorter than 357, so the photo still renders
 //         536×357 and the contact button still ends on its bottom line.
 
-import Link from "next/link";
 import type { RubricStrip } from "@/lib/display/rubrics";
 import type { SpecRow } from "@/lib/display/spec";
 import type { NoHistoryView, OwnershipAxis, PriceBlock } from "@/lib/display/texts";
@@ -45,8 +44,6 @@ import { gapAfterTopBlock, OWNERSHIP_HEADING, shekel } from "@/lib/display/texts
 import type { SearchFilters } from "@/lib/search/filters";
 import type { Category } from "@/lib/selection";
 import type { FilterName } from "@/app/actions/search";
-import QuestionRow from "@/components/search/QuestionRow";
-import { LinkPending } from "@/components/search/PickCards";
 import CarSection from "./CarSection";
 import CarTitle from "./CarTitle";
 import ContactButton from "./ContactButton";
@@ -55,6 +52,7 @@ import Photo from "./Photo";
 import OwnershipTimeline from "./OwnershipTimeline";
 import Rubrics from "./Rubrics";
 import SpecSection from "./SpecSection";
+import TopStrip from "./TopStrip";
 import WhySection from "./WhySection";
 
 const GREY = "#665f58";
@@ -263,30 +261,6 @@ function PriceBlockView({ data, size }: { data: CarPageData; size: "phone" | "de
 // ---------------------------------------------------------------------------
 
 export default function CarPageView({ data }: { data: CarPageData }) {
-  // Run 7 §7.1 — the back link acknowledges its own click: from the click until the navigation commits it
-  // dims and carries a spinner, through the framework's link-status mechanism. On ITSELF — §7.4 forbids any
-  // streaming boundary on this route, so the feedback for leaving this page lives on the source element.
-  const backLink = (
-    <Link
-      href={data.backHref}
-      className="relative shrink-0 whitespace-nowrap px-1 text-[15px] font-semibold underline underline-offset-4"
-      style={{ color: DARK }}
-    >
-      {data.backWord}
-      <LinkPending compact />
-    </Link>
-  );
-  const brandName = (
-    <Link href="/" className="shrink-0 whitespace-nowrap text-[17px] font-extrabold" style={{ color: DARK }}>
-      {data.brand}
-    </Link>
-  );
-
-  // Run 7c §11.2 — READ-ONLY. The row still shows the question behind the verdict, but as text: no click on
-  // the model, no click on a chip, no "+ פילטרים", default cursor throughout. This page mounts no
-  // FilterPanel and no search bar; "חזרה" is the only way to change the question, on the results screen.
-  const questionRow = (q: PageQuestion) => <QuestionRow readOnly modelDisplay={q.modelDisplay} filters={q.filters} active={q.active} />;
-
   // §3.2 — the title group: the h1 and the version line, 4px apart, wrapped so the text column's own row gap
   // cannot open between them. The h1 carries `margin: 0` explicitly, so the group's 4px is the only spacing.
   const titleGroup = (
@@ -315,29 +289,9 @@ export default function CarPageView({ data }: { data: CarPageData }) {
     >
       <div className="min-h-screen" style={{ background: "#eeece8" }}>
         {/* ---------------------------------------------------------------- header */}
-        {/* DESKTOP (§7.3, Run 7 §3): one 64px white bar — brand · the question row · the back link.
-            The white and its 1px bottom border run the full width of the window; the CONTENT inside it is the
-            page container — max-width 1280px, centred, padding 0 48px — so the header's items line up with the
-            main column at every width. The board is drawn at exactly 1280px and cannot say which of the two
-            the white stops at; a bar that stops mid-window is the one reading that would look broken. */}
-        <header className="hidden border-b border-[#d8d3cb] bg-white md:block">
-          <div className="mx-auto flex h-16 max-w-[1280px] items-center gap-6 px-12">
-            {brandName}
-            {data.question !== null ? questionRow(data.question) : <span className="flex-1" />}
-            {backLink}
-          </div>
-        </header>
-
-        {/* PHONE (§7.4): a 56px bar with the brand and the back link, then a 48px bar with the question row. */}
-        <header className="md:hidden">
-          <div className="flex h-14 items-center justify-between border-b border-[#d8d3cb] bg-white px-4">
-            {brandName}
-            {backLink}
-          </div>
-          {data.question !== null && (
-            <div className="flex h-12 items-center border-b border-[#d8d3cb] bg-white px-4">{questionRow(data.question)}</div>
-          )}
-        </header>
+        {/* Day 19b Run 24b §2 — the white strip (computer bar; phone bar and its question bar) lives in
+            TopStrip.tsx, shared with the "not found" page. */}
+        <TopStrip brand={data.brand} question={data.question} back={{ href: data.backHref, word: data.backWord }} />
 
         {/* ---------------------------------------------------------------- phone image */}
         <Photo src={data.imageSrc} className="block h-[200px] w-full md:hidden" caption={PHOTO_PLACEHOLDER} />

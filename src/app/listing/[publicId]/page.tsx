@@ -31,6 +31,7 @@ import {
   percentOfNewLine,
   placeWord,
   priceBlock,
+  resultsHref,
   zeroKmExplanation,
   type NoHistoryView,
   type OwnershipAxis,
@@ -299,7 +300,7 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
   const newPrice = item.candidate.new_price;
   const data: CarPageData = {
     brand: BRAND.name,
-    backHref: question === null ? "/" : `/?s=${question.publicId}`,
+    backHref: question === null ? "/" : resultsHref(question.publicId),
     backWord: backLinkWord({ hasQuestion: question !== null, labels: shownLabels }),
     question,
     color,

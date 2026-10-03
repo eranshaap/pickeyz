@@ -150,7 +150,16 @@ export function priceBlock(input: {
 // ---------------------------------------------------------------------------
 
 export const CANCELLED_WORD = "ביטול סופי"; // §7.1 — in place of the place, black, no fair number
-export const NOT_FOUND = "לא נמצא"; // §3.3 / §7.1 — a listing that is not shown on the site at all
+
+// Day 19b Run 24b §3.3 — the "not found" page: a listing that is not shown on the site at all.
+export const NOT_FOUND_HEADING = "המודעה לא נמצאה";
+export const NOT_FOUND_LINE = "ייתכן שהרכב נמכר והמודעה ירדה מהאתר, או שהכתובת שגויה.";
+export const NOT_FOUND_BUTTON = "לחיפוש חדש";
+
+/** Day 19b Run 24b §4.2 — the results screen of a search: the address the back link "חזרה לתוצאות" targets. */
+export function resultsHref(id: string): string {
+  return "/?s=" + encodeURIComponent(id);
+}
 
 const BACK_TO_PICKS = "חזרה לשלוש ההמלצות";
 const BACK_TO_RESULTS = "חזרה לתוצאות";

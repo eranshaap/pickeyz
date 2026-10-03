@@ -25,6 +25,7 @@ import {
   percentOfNewLine,
   placeWord,
   priceBlock,
+  resultsHref,
   scaleLabelWidth,
   scaleLayout,
   TABLE_HEADINGS,
@@ -138,6 +139,16 @@ describe("the back link (§7.3)", () => {
   it("no question behind the page -> to the search", () => {
     assert.equal(backLinkWord({ hasQuestion: false, labels: ["best_value"] }), "לחיפוש");
     assert.equal(backLinkWord({ hasQuestion: false, labels: [] }), "לחיפוש");
+  });
+});
+
+describe("resultsHref (Day 19b Run 24b §4.2)", () => {
+  it("a plain id -> /?s=id", () => {
+    assert.equal(resultsHref("k3x9p2m7q1"), "/?s=k3x9p2m7q1");
+  });
+
+  it("an id with a character that needs encoding -> encoded", () => {
+    assert.equal(resultsHref("a b&c"), "/?s=a%20b%26c");
   });
 });
 
