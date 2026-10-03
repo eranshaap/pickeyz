@@ -310,21 +310,51 @@ describe('specRows: "מרכב" (§2.4 row 7)', () => {
   });
 });
 
-describe('specRows: "מידות" (§2.4 row 8)', () => {
-  it("the three dimensions, and מ״מ once at the end", () => {
-    assert.equal(value(specRows(modelRow(), sheetRow()), "מידות"), "אורך 4,470 · רוחב 1,820 · גובה 1,445 מ״מ");
+// Run 22c: stored in millimetres, shown in whole centimetres, the unit in the label. The mark is built from
+// its code point (U+05F4, gershayim — the one the section's abbreviations use).
+const DIMENSIONS = "מידות (ס" + String.fromCharCode(0x5f4) + "מ)";
+
+describe('specRows: the dimensions row (§2.4 row 8)', () => {
+  it("the label: מידות, then the centimetre abbreviation in brackets, with the section's own mark", () => {
+    assert.equal(SPEC_LABELS[7], DIMENSIONS);
+    assert.equal(specRows(modelRow(), sheetRow()).some((r) => r.label === DIMENSIONS), true);
   });
 
-  it("height null -> two parts, the unit still once at the end", () => {
-    assert.equal(value(specRows(modelRow(), sheetRow({ height_mm: null })), "מידות"), "אורך 4,470 · רוחב 1,820 מ״מ");
+  it("the three dimensions in centimetres, no unit in the value", () => {
+    assert.equal(value(specRows(modelRow(), sheetRow()), DIMENSIONS), "אורך 447 · רוחב 182 · גובה 145");
+  });
+
+  it("4470 / 1820 / 1450 -> אורך 447 · רוחב 182 · גובה 145", () => {
+    const sheet = sheetRow({ length_mm: 4470, width_mm: 1820, height_mm: 1450 });
+    assert.equal(value(specRows(modelRow(), sheet), DIMENSIONS), "אורך 447 · רוחב 182 · גובה 145");
+  });
+
+  it("rounding: 4475 -> 448 (a half rounds up), 4474 -> 447", () => {
+    assert.equal(value(specRows(modelRow(), sheetRow({ length_mm: 4475 })), DIMENSIONS)?.startsWith("אורך 448 · "), true);
+    assert.equal(value(specRows(modelRow(), sheetRow({ length_mm: 4474 })), DIMENSIONS)?.startsWith("אורך 447 · "), true);
+  });
+
+  it("height null -> two parts", () => {
+    assert.equal(value(specRows(modelRow(), sheetRow({ height_mm: null })), DIMENSIONS), "אורך 447 · רוחב 182");
+  });
+
+  it("a missing width -> אורך 447 · גובה 145", () => {
+    const sheet = sheetRow({ length_mm: 4470, width_mm: null, height_mm: 1450 });
+    assert.equal(value(specRows(modelRow(), sheet), DIMENSIONS), "אורך 447 · גובה 145");
   });
 
   it("width 0 is missing too", () => {
-    assert.equal(value(specRows(modelRow(), sheetRow({ width_mm: 0 })), "מידות"), "אורך 4,470 · גובה 1,445 מ״מ");
+    assert.equal(value(specRows(modelRow(), sheetRow({ width_mm: 0 })), DIMENSIONS), "אורך 447 · גובה 145");
+  });
+
+  it("no dimension -> no dimensions row", () => {
+    const rows = specRows(modelRow(), sheetRow({ length_mm: null, width_mm: null, height_mm: null }));
+    assert.equal(value(rows, DIMENSIONS), null);
+    assert.equal(value(rows, "תא מטען"), "450 ליטר");
   });
 
   it("no sheet row -> no dimensions row", () => {
-    assert.equal(value(specRows(modelRow(), null), "מידות"), null);
+    assert.equal(value(specRows(modelRow(), null), DIMENSIONS), null);
   });
 });
 

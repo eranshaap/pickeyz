@@ -85,7 +85,7 @@ export const SPEC_LABELS = [
   "אבזור",
   "מנוע",
   "מרכב",
-  "מידות",
+  "מידות (ס״מ)",
   "תא מטען",
 ] as const;
 
@@ -178,7 +178,6 @@ const LITERS = "ליטר";
 const HORSEPOWER = "כ״ס";
 const DOORS = "דלתות";
 const SEATS = "מושבים";
-const MM = "מ״מ";
 const KM_PER_LITER = "ק״מ לליטר";
 const KM_PER_TANK = "ק״מ למיכל";
 const OF = "מתוך";
@@ -333,12 +332,14 @@ export function specRows(model: SpecModelInput, spec: SpecSheetInput): SpecRow[]
 
   // 8, 9 — the manual spec's own two rows. No sheet row yet → neither is drawn.
   if (spec !== null) {
-    // The unit is written ONCE, at the end of the whole value, and not after each dimension.
+    // The dimensions are stored in millimetres, shown in whole centimetres (Day 19b, Run 22c). The unit is in
+    // the row's label, not in the value.
+    const cm = (mm: number) => num(Math.round(mm / 10));
     const dimensions: string[] = [];
-    if (has(spec.length_mm)) dimensions.push(`${LENGTH} ${num(spec.length_mm)}`);
-    if (has(spec.width_mm)) dimensions.push(`${WIDTH} ${num(spec.width_mm)}`);
-    if (has(spec.height_mm)) dimensions.push(`${HEIGHT} ${num(spec.height_mm)}`);
-    if (dimensions.length > 0) row(SPEC_LABELS[7], [`${dimensions.join(SEPARATOR)} ${MM}`]);
+    if (has(spec.length_mm)) dimensions.push(`${LENGTH} ${cm(spec.length_mm)}`);
+    if (has(spec.width_mm)) dimensions.push(`${WIDTH} ${cm(spec.width_mm)}`);
+    if (has(spec.height_mm)) dimensions.push(`${HEIGHT} ${cm(spec.height_mm)}`);
+    if (dimensions.length > 0) row(SPEC_LABELS[7], [dimensions.join(SEPARATOR)]);
     if (has(spec.trunk_liters)) row(SPEC_LABELS[8], [`${num(spec.trunk_liters)} ${LITERS}`]);
   }
 

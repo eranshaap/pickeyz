@@ -52,3 +52,7 @@ REPORT-measure-justifications.md
 
 # Day 19b Run 22: the import's failed-cars file, rewritten every run
 /failed-cars.csv
+
+# Day 19b: the import's outputs in Eran's terminal (dry run and write)
+/dryrun.txt
+/write.txt
