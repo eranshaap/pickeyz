@@ -1,4 +1,5 @@
-import { fetchRows } from "./fetch";
+import { existsSync } from "node:fs";
+import { fetchRows, plateDir } from "./fetch";
 import { makeDegemCode } from "./degem-code";
 import { ownershipCode, originCode, type OwnershipCode, type OriginCode } from "./translator";
 
@@ -108,6 +109,13 @@ export async function getVehicleData(rawPlate: string, refresh = false): Promise
   rows.history_km = await fetchRows<HistoryKmRow>("history_km", plate, refresh);
   rows.history_hand = await fetchRows<HistoryHandRow>("history_hand", plate, refresh);
   return interpret(plate, rows);
+}
+
+// Day 19b Run 22 §6 — does this plate have a raw cache? True when its folder exists: plateDir of the
+// normalized plate, the very folder getVehicleData reads from first. No network, no write — the import asks
+// it once the ministry is down, to know which cars can still be read from disk.
+export function isPlateCached(plate: string): boolean {
+  return existsSync(plateDir(normalizePlate(plate)));
 }
 
 // The mapping from the ministry's rows to VehicleData, with no I/O in it — the same reading of the

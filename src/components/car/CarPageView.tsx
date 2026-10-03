@@ -204,7 +204,7 @@ function PlaceLine({ place, color, size }: { place: string | null; color: string
   const phone = size === "phone";
   const icon = phone ? 17 : 18;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: phone ? 5 : 6, fontSize: phone ? 15 : 16, fontWeight: 700, lineHeight: 1.3, color }}>
+    <div style={{ display: "flex", alignItems: "center", gap: phone ? 3 : 4, fontSize: phone ? 15 : 16, fontWeight: 700, lineHeight: 1.3, color }}>
       <svg
         width={icon}
         height={icon}
