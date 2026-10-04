@@ -5,18 +5,29 @@
 // catalog rows. Printed as makes by fleet share, keys per threshold, and every make's keys.
 // It does not cut: the two bars (fleet share per make, active vehicles per spelling) are Eran's.
 //
-// READ-ONLY BY CONSTRUCTION: Prisma reads only, no --write flag exists, nothing is written to the
-// database or to disk (data/raw/mot/ included). Prints to stdout only.
+// F2 (--sheet): after the same loading and join, the F1 printing is skipped; catalog makes fold by
+// MAKE_MERGES, model names by mergeKey, names group by groupKey, and every name of a group with at least
+// FAMILY_GROUP_MIN_ACTIVE active vehicles is written to data/raw/model-families.xlsx (two tabs: models
+// and makes; the decision columns empty except the English make). An existing file is overwritten.
 //
-// Usage: npx tsx scripts/build-model-families.ts [--year-from=YYYY]   (default 2015)
+// READ-ONLY ON THE DATABASE BY CONSTRUCTION: Prisma reads only, no --write flag exists. Without --sheet
+// nothing is written to disk (data/raw/mot/ included) and the output is stdout only; with --sheet the one
+// file written is data/raw/model-families.xlsx.
+//
+// Usage: npx tsx scripts/build-model-families.ts [--year-from=YYYY] [--sheet]   (default FAMILIES_YEAR_FROM)
 //
 // Exit 1, with the lists printed, when: the live models carry more than one vehicle class; a
 // catalog row has no make, model or degem_code; the quantities fields cannot be mapped
 // unambiguously; a quantities value is not what its field promises; the dataset has sug_degem and no
 // record carries the live class; or one join key appears on two quantities rows. None of these is resolved here — the next launch pins it.
+// --sheet adds: a live model without make or model; a canonical make with a kept group and no MAKES
+// entry (nothing is written; the entry is added in the next launch).
 
 import "dotenv/config";
-import { pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import * as ExcelJS from "exceljs";
 import { db } from "@/lib/db";
 import { motGet } from "@/lib/mot/fetch";
 import { MOT_API, QUANTITIES_RESOURCE_ID } from "@/lib/mot/resources";
@@ -27,8 +38,12 @@ import {
   type CatalogRow,
   type KeyStat,
 } from "@/lib/families/distribution";
+import { FAMILIES_YEAR_FROM, FAMILY_GROUP_MIN_ACTIVE } from "@/lib/families/constants";
+import { buildSheet, liveKey, missingMakeEntries, type MakeRow, type ModelRow, type SheetInput } from "@/lib/families/sheet";
+import { MAKE_MERGES, MAKES, MAKES_HEADERS, MAKES_TAB, MODELS_HEADERS, MODELS_TAB, YES } from "@/lib/families/words";
 
 const PAGE_LIMIT = 10000;
+const SHEET_PATH = fileURLToPath(new URL("../data/raw/model-families.xlsx", import.meta.url));
 
 function log(line = "") {
   console.log(line);
@@ -40,14 +55,16 @@ class Stop extends Error {}
 const fmt = (n: number): string => n.toLocaleString("en-US");
 const pct = (x: number): string => (x * 100).toFixed(2);
 
-function parseArgs(argv: string[]): { yearFrom: number } {
-  let yearFrom = 2015;
+function parseArgs(argv: string[]): { yearFrom: number; sheet: boolean } {
+  let yearFrom = FAMILIES_YEAR_FROM;
+  let sheet = false;
   for (const arg of argv) {
     const m = /^--year-from=(\d{4})$/.exec(arg);
     if (m) yearFrom = Number(m[1]);
-    else throw new Error(`unknown argument ${JSON.stringify(arg)} — the only flag is --year-from=YYYY`);
+    else if (arg === "--sheet") sheet = true;
+    else throw new Error(`unknown argument ${JSON.stringify(arg)} — the only flags are --year-from=YYYY and --sheet`);
   }
-  return { yearFrom };
+  return { yearFrom, sheet };
 }
 
 // ---------------------------------------------------------------- vehicle class (§5.2)
@@ -233,11 +250,106 @@ function intOf(v: unknown, field: string, at: number): number {
   return n;
 }
 
+// ---------------------------------------------------------------- the review sheet (F2, §10.7)
+
+// §10.7.1: the (make, model) pairs of models rows that have a car with a live listing.
+async function livePairs(): Promise<Set<string>> {
+  const found = await db.models.findMany({
+    where: { cars: { some: { listings: { some: { delisted_at: null } } } } },
+    distinct: ["make", "model"],
+    select: { make: true, model: true },
+  });
+  const blank = found.filter((r) => !r.make?.trim() || !r.model?.trim());
+  if (blank.length > 0) {
+    log(`live models without make or model (${blank.length}):`);
+    for (const r of blank) log(`  make=${JSON.stringify(r.make)} model=${JSON.stringify(r.model)}`);
+    throw new Stop("a live model without make or model — the live flag cannot be placed");
+  }
+  return new Set(found.map((r) => liveKey(r.make!, r.model!)));
+}
+
+const MODELS_WIDTHS = [28, 12, 28, 10, 11, 8, 28, 28, 28];
+const MAKES_WIDTHS = [28, 10, 28, 28, 28];
+
+function addTab(wb: ExcelJS.Workbook, name: string, headers: readonly string[], widths: number[], rows: (string | number | null)[][]) {
+  const ws = wb.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1, rightToLeft: true }] });
+  ws.columns = headers.map((header, i) => ({ header, width: widths[i] }));
+  ws.getRow(1).font = { bold: true };
+  for (const r of rows) ws.addRow(r);
+  return ws;
+}
+
+async function writeSheet(models: ModelRow[], makes: MakeRow[]) {
+  if (!existsSync(dirname(SHEET_PATH))) throw new Error(`the folder ${dirname(SHEET_PATH)} does not exist`);
+  const wb = new ExcelJS.Workbook();
+  const modelsTab = addTab(
+    wb,
+    MODELS_TAB,
+    MODELS_HEADERS,
+    MODELS_WIDTHS,
+    models.map((m) => [m.catalogMake, m.group, m.catalogName, m.active, m.years, m.live ? YES : null, m.englishMake, null, null]),
+  );
+  modelsTab.getColumn(4).numFmt = "#,##0";
+  const makesTab = addTab(
+    wb,
+    MAKES_TAB,
+    MAKES_HEADERS,
+    MAKES_WIDTHS,
+    makes.map((m) => [m.catalogSpellings, m.active, m.english, null, null]),
+  );
+  makesTab.getColumn(2).numFmt = "#,##0";
+  await wb.xlsx.writeFile(SHEET_PATH);
+}
+
+async function sheetMode(rows: CatalogRow[], quantities: Map<string, number>) {
+  const live = await livePairs();
+  log(`live (make, model) pairs: ${fmt(live.size)}`);
+
+  const input: SheetInput = {
+    rows: rows.map((r) => ({ ...r, active: quantities.get(quantityKey(r.tozeretCd, r.degemCd, r.year)) ?? 0 })),
+    live,
+    makeMerges: MAKE_MERGES,
+    makes: MAKES,
+    minActive: FAMILY_GROUP_MIN_ACTIVE,
+  };
+
+  // §10.7.2: a canonical make with a kept group needs a MAKES entry; none -> print and stop, nothing written.
+  const missing = missingMakeEntries(input);
+  if (missing.length > 0) {
+    log(`canonical makes with a kept group and no MAKES entry (${missing.length}):`);
+    for (const m of missing) {
+      log(`  ${m.make}`);
+      for (const g of m.groups) log(`    ${fmt(g.total).padStart(12)}  ${g.key}`);
+    }
+    throw new Stop("a make with a kept group has no entry in MAKES (src/lib/families/words.ts) — nothing written");
+  }
+
+  const { models, makes } = buildSheet(input);
+  await writeSheet(models, makes);
+
+  const groups = new Set(models.map((m) => `${m.catalogMake}|${m.group}`)).size;
+  const summary: [string, string][] = [
+    ["minimum active per group", fmt(FAMILY_GROUP_MIN_ACTIVE)],
+    ["canonical makes in the sheet", fmt(makes.length)],
+    ["kept groups", fmt(groups)],
+    ["names in the sheet", fmt(models.length)],
+    ["  of them below the bar on their own", fmt(models.filter((m) => m.active < FAMILY_GROUP_MIN_ACTIVE).length)],
+    ["make spellings folded (MAKE_MERGES)", fmt(makes.reduce((n, m) => n + m.spellings.length - 1, 0))],
+    ["model spellings folded (mergeKey)", fmt(models.reduce((n, m) => n + m.spellings.length - 1, 0))],
+    ["live names", fmt(models.filter((m) => m.live).length)],
+  ];
+  log("");
+  log("SHEET");
+  const labelWidth = Math.max(...summary.map(([l]) => l.length));
+  for (const [l, v] of summary) log(`  ${l.padEnd(labelWidth)}  ${v.padStart(12)}`);
+  log(`  written: ${SHEET_PATH}`);
+}
+
 // ---------------------------------------------------------------- main
 
 async function main() {
-  const { yearFrom } = parseArgs(process.argv.slice(2));
-  log(`year-from: ${yearFrom}`);
+  const { yearFrom, sheet } = parseArgs(process.argv.slice(2));
+  log(`year-from: ${yearFrom}${sheet ? " · mode: --sheet" : ""}`);
 
   const vehicleClass = await liveVehicleClass();
   log(`vehicle class: ${vehicleClass}`);
@@ -333,6 +445,12 @@ async function main() {
     log(`join keys on more than one in-scope quantities row: ${fmt(duplicates.size)}; the first 20:`);
     for (const [k, n] of [...duplicates].slice(0, 20)) log(`  ${k}  x${n}`);
     throw new Stop("one join key on two quantities rows — summing or choosing is not decided here");
+  }
+
+  // F2: the same loading and join; the F1 printing below is skipped.
+  if (sheet) {
+    await sheetMode(rows, quantities);
+    return;
   }
 
   const catalogKeys = new Set(rows.map((r) => quantityKey(r.tozeretCd, r.degemCd, r.year)));
