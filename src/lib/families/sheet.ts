@@ -6,7 +6,7 @@
 import type { CatalogRow } from "./distribution";
 import { groupKey } from "./group";
 import { mergeKey, stripMake } from "./merge";
-import type { MakeEntry } from "./words";
+import { SPELLING_SEPARATOR, type MakeEntry } from "./words";
 
 /** A catalog row with its matched active count (0 when the quantities dataset has no row for it). */
 export type ActiveRow = CatalogRow & { active: number };
@@ -151,7 +151,7 @@ export function buildSheet(input: SheetInput): { models: ModelRow[]; makes: Make
     const kept = m.groups.filter((g) => g.total >= input.minActive);
     if (kept.length === 0) continue;
     const entry = own(input.makes, m.make)!;
-    const catalogMake = m.spellings.join(" · ");
+    const catalogMake = m.spellings.join(SPELLING_SEPARATOR);
     makes.push({ catalogSpellings: catalogMake, spellings: m.spellings, active: m.active, english: entry.english });
     for (const g of kept) {
       for (const n of g.names) {
@@ -159,7 +159,7 @@ export function buildSheet(input: SheetInput): { models: ModelRow[]; makes: Make
         models.push({
           catalogMake,
           group: g.key,
-          catalogName: spellings.join(" · "),
+          catalogName: spellings.join(SPELLING_SEPARATOR),
           spellings,
           active: n.active,
           years: `${n.years[0]}-${n.years[1]}`,

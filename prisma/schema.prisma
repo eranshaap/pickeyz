@@ -340,7 +340,7 @@ model searches {
   session_id     String? // one visit; resets between visits
   user_id        Int? // empty as long as there is no login
   model_searched String // required: a search without a model is not a search (the model is the only mandatory field of the screen)
-  family_id      Int? // Day 18: the family chosen in the bar; null for searches before the table. model_searched stays
+  family_id      Int? // Day 18: the family chosen in the bar; null for searches before the table. model_searched stays; it moves to the receiving family when families merge (the families import), model_searched never changes (04/10)
   filters        Json? // the filters exactly as the action received them; null when the search carried none
   priority       String? // code: price | km | condition. Empty when the user skipped it — not recoverable. No screen writes it yet
   engine_version Int // Stage A's version at that moment
@@ -400,10 +400,10 @@ model search_results {
   @@index([listing_id])
 }
 
-// 13. makes — one row per make as the catalog spells it (Day 18). The parent of model_families.
+// 13. makes — one row per make as a person knows it (Day 18). name_en is the English name ("MAZDA"); the catalog writes makes in Hebrew only (models.make), and every catalog spelling of the make sits in aliases next to the keyboard spellings. The parent of model_families. Filled by scripts/import-model-families.ts from data/raw/model-families-review.xlsx, the only place the table is edited (04/10).
 model makes {
   id         Int      @id @default(autoincrement())
-  name_en    String   @unique // = models.make
+  name_en    String   @unique // the English name ("MAZDA") from the review file — not models.make, which is Hebrew
   name_he    String
   aliases    String[]
   created_at DateTime @default(now()) @db.Timestamptz(3)
@@ -412,7 +412,7 @@ model makes {
 }
 
 // 14. model_families — the model as a person knows it (Day 18). Catalog rows (models.family_id) and searches
-// (searches.family_id) point here; one family per (make, name_en).
+// (searches.family_id) point here; one family per (make, name_en). name_en is the family name without the make ("3", "YARIS CROSS"), one family per name with all its powertrains; the same (make, name_en) keeps the same row and id across re-imports (04/10).
 model model_families {
   id         Int      @id @default(autoincrement())
   make_id    Int

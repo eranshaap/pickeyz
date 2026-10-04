@@ -97,3 +97,10 @@ export const MODELS_HEADERS = [
 export const MAKES_HEADERS = ["יצרן בקטלוג", "רכבים", "שם באנגלית", "שם בעברית", "כתיבים נוספים"] as const;
 
 export const YES = "כן";
+
+// (d) F3 — the review file. Relative to the project root; the only place the families table is edited
+// (work.md). The file --sheet writes (data/raw/model-families.xlsx) is not read by the import.
+export const REVIEW_FILE = "data/raw/model-families-review.xlsx";
+
+// Joins a merged name's spellings and a merged make's spellings into one cell: a space, U+00B7, a space.
+export const SPELLING_SEPARATOR = " · ";
