@@ -24,4 +24,9 @@ export const RESOURCES = {
 // catalog-lookup.ts. Deliberately NOT in RESOURCES: that map is the plate-based resources only.
 export const CATALOG_RESOURCE_ID = "142afde2-6228-49f9-8a29-9b6c3a0cbe40";
 
+// Same package: quantities of active and inactive vehicles by make, model code and model year.
+// Read whole, page by page, by scripts/build-model-families.ts (opening screen, F1). Deliberately
+// NOT in RESOURCES, for the same reason as CATALOG_RESOURCE_ID.
+export const QUANTITIES_RESOURCE_ID = "5e87a7a1-2f6f-41c1-8aec-7216d52a6cf6";
+
 export const RAW_DIR = "data/raw";
