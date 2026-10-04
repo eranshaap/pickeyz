@@ -16,6 +16,9 @@ export const FAILED_REASON = {
   version_not_in_catalog: "הגרסה אינה בקטלוג של המשרד",
   catalog_translation: "תרגום שורת הקטלוג נכשל",
   ministry_down: "המשרד לא ענה",
+  name_not_in_file: "השם לא בקובץ",
+  name_without_model: "השם בקובץ בלי דגם",
+  name_not_imported: "השם בקובץ אבל עוד לא יובא",
 } as const;
 
 export type FailedReason = keyof typeof FAILED_REASON;

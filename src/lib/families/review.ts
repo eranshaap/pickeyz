@@ -264,8 +264,10 @@ export type ImportPlan = {
   familyUpdates: { id: number; key: string; nameHe?: Change<string>; aliases?: Change<string[]> }[];
   familyDeletes: {
     id: number; key: string;
-    /** null = no target at all and no searches: nothing to move. */
+    /** null = no target at all, or a split: nothing to move. */
     move: { fromId: number; toId: FamilyRef; toKey: string; searchesMoved: number } | null;
+    /** Its names went to more than one family: a stop, and no move is recorded. */
+    split?: true;
   }[];
   catalogWrites: { familyId: FamilyRef | null; ids: number[] }[];
   counts: {
@@ -420,6 +422,8 @@ export function planImport(file: ReviewFile, db: DbState): ImportPlan {
         `${label}: its names went to ${ranked.map(([t, n]) => `${refLabel(t)} (${n} catalog rows)`).join(", ")} — ` +
           "the import does not choose who inherits the searches; keep the old name on the part that should keep them, then run again",
       );
+      familyDeletes.push({ id: f.id, key: label, move: null, split: true });
+      continue;
     }
     const [to] = ranked[0];
     familyDeletes.push({ id: f.id, key: label, move: { fromId: f.id, toId: familyRef.get(to)!, toKey: refLabel(to), searchesMoved: searches } });

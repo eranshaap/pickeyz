@@ -84,7 +84,7 @@ const byActiveDesc = <T extends { active: number }>(a: T, b: T) => b.active - a.
 // Every canonical make with all its groups, sorted (Array.prototype.sort is stable, so ties keep the
 // first-seen order of the Maps, which is the rows' order). A make with no MAKES entry is grouped with no
 // prefixes: the missing-entry check (missingMakeEntries) reads those groups.
-function familyMakes(input: SheetInput): MakeFamilies[] {
+export function familyMakes(input: SheetInput): MakeFamilies[] {
   type MakeAcc = { spellings: string[]; active: number; names: Map<string, NameStat> };
   const byMake = new Map<string, MakeAcc>();
 

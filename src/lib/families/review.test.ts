@@ -330,6 +330,8 @@ describe("planImport", () => {
     const plan = planImport(file, AFTER_FIRST);
     assert.equal(plan.stops.length, 1);
     assert.match(plan.stops[0], /^HYUNDAI IONIQ: its names went to HYUNDAI IONIQ HYBRID \(1 catalog rows\), HYUNDAI IONIQ EV \(1 catalog rows\) — /);
+    const ioniq = idOf(AFTER_FIRST, "HYUNDAI", "IONIQ");
+    assert.deepEqual(plan.familyDeletes, [{ id: ioniq, key: "HYUNDAI IONIQ", move: null, split: true }]);
   });
 
   it("an unequal split (20 rows to one family, 1 to another) is a stop naming both targets with their counts, with or without searches", () => {
@@ -344,8 +346,11 @@ describe("planImport", () => {
     const expected =
       "HYUNDAI IONIQ: its names went to HYUNDAI IONIQ HYBRID (20 catalog rows), HYUNDAI IONIQ EV (1 catalog rows) — " +
       "the import does not choose who inherits the searches; keep the old name on the part that should keep them, then run again";
-    assert.deepEqual(planImport(file, state).stops, [expected]);
-    assert.deepEqual(planImport(file, { ...state, searches: new Map([[ioniq, 6]]) }).stops, [expected]);
+    const noMove = [{ id: ioniq, key: "HYUNDAI IONIQ", move: null, split: true }];
+    for (const plan of [planImport(file, state), planImport(file, { ...state, searches: new Map([[ioniq, 6]]) })]) {
+      assert.deepEqual(plan.stops, [expected]);
+      assert.deepEqual(plan.familyDeletes, noMove);
+    }
   });
 
   it("a vanished family whose rows went to one family and to null moves its searches to that family", () => {

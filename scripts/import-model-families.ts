@@ -6,8 +6,8 @@
 //
 // Identity is by name: a make = its English name; a family = (make English name, family English name). The
 // same key is the same row and the same id; the Hebrew name and the aliases are updated in place. A family
-// the file no longer has hands its searches to the family where most of its catalog rows went, and is
-// deleted. searches.model_searched is frozen text — never touched. Every rule lives in
+// the file no longer has hands its searches to the one family all its names went to, and is deleted; names
+// that went to more than one family stop the import. searches.model_searched is frozen text — never touched. Every rule lives in
 // src/lib/families/review.ts; this file reads the workbook and the database, prints the plan, and writes it.
 //
 // Day 12's rule: a DRY RUN unless `--write` is given. A parse problem or a stop prints and exits 1, and
@@ -16,16 +16,15 @@
 // Usage: npx tsx scripts/import-model-families.ts [--write]
 
 import "dotenv/config";
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { db, WRITE_TRANSACTION_OPTIONS } from "@/lib/db";
-import { dataRows, headerColumns, readWorkbook, worksheetByName } from "@/lib/excel/read";
 import { FAMILIES_YEAR_FROM } from "@/lib/families/constants";
 import {
   familyLabel, parseReview, planImport, ReviewFileError,
-  type DbState, type FamilyRef, type ImportPlan, type ReviewFile, type TextRow,
+  type DbState, type FamilyRef, type ImportPlan, type ReviewFile,
 } from "@/lib/families/review";
-import { MAKES_HEADERS, MAKES_TAB, MODELS_HEADERS, MODELS_TAB, REVIEW_FILE } from "@/lib/families/words";
+import { REVIEW_FILE } from "@/lib/families/words";
+import { readReviewRows } from "@/lib/sheet/review-file";
 
 const REVIEW_PATH = fileURLToPath(new URL(`../${REVIEW_FILE}`, import.meta.url));
 const IDS_PER_STATEMENT = 1000;
@@ -46,14 +45,7 @@ function log(line = "") {
 
 const list = (a: string[]) => `[${a.map((s) => JSON.stringify(s)).join(", ")}]`;
 
-// ---------------------------------------------------------------- 1. the file
-
-function readTab(wb: Awaited<ReturnType<typeof readWorkbook>>, tab: string, headers: readonly string[]): TextRow[] {
-  const ws = worksheetByName(wb, tab);
-  const columns = headerColumns(ws, 1, headers, "exact");
-  // dataRows skips the rows whose cells are all empty; the cells go in header order, untrimmed.
-  return dataRows(ws, 2, columns).map((r) => ({ row: r.row, cells: headers.map((h) => r.values[h]) }));
-}
+// ---------------------------------------------------------------- 1. the file: src/lib/sheet/review-file.ts
 
 // ---------------------------------------------------------------- 2. the database (four reads)
 
@@ -121,6 +113,10 @@ function printPlan(plan: ImportPlan) {
   }
   log(`delete: ${plan.familyDeletes.length}`);
   for (const d of plan.familyDeletes) {
+    if (d.split) {
+      log(`  ${d.key}: split, see STOPS`);
+      continue;
+    }
     log(d.move === null || d.move.searchesMoved === 0
       ? `  ${d.key}${d.move ? ` -> ${d.move.toKey}` : ""}: no searches`
       : `  ${d.key} -> ${d.move.toKey}: ${d.move.searchesMoved} searches`);
@@ -234,10 +230,7 @@ async function main() {
   const { write: doWrite } = parseArgs(process.argv.slice(2));
 
   // The file is read whole before the database is touched.
-  if (!existsSync(REVIEW_PATH)) throw new Error(`the review file ${REVIEW_PATH} does not exist`);
-  const wb = await readWorkbook(REVIEW_PATH);
-  const modelsRows = readTab(wb, MODELS_TAB, MODELS_HEADERS);
-  const makesRows = readTab(wb, MAKES_TAB, MAKES_HEADERS);
+  const { models: modelsRows, makes: makesRows } = await readReviewRows(REVIEW_PATH);
 
   let file: ReviewFile;
   try {
