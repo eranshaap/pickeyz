@@ -12,8 +12,8 @@
 //
 // Exit 1, with the lists printed, when: the live models carry more than one vehicle class; a
 // catalog row has no make, model or degem_code; the quantities fields cannot be mapped
-// unambiguously; a quantities value is not what its field promises; or one join key appears on two
-// quantities rows. None of these is resolved here — the next launch pins it.
+// unambiguously; a quantities value is not what its field promises; the dataset has sug_degem and no
+// record carries the live class; or one join key appears on two quantities rows. None of these is resolved here — the next launch pins it.
 
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
@@ -118,7 +118,8 @@ type QuantitiesPage = { result?: { records?: QuantitiesRecord[]; total?: number;
 // motGet's body type declares records only; the answer's text carries the whole result, total and
 // fields included, so the page is read from the text.
 async function fetchPage(offset: number): Promise<{ records: QuantitiesRecord[]; total: number; fields: Field[] }> {
-  const url = `${MOT_API}?resource_id=${QUANTITIES_RESOURCE_ID}&limit=${PAGE_LIMIT}&offset=${offset}`;
+  // F1b §9.2: sort=_id gives offset paging a stable order, so each row comes back exactly once.
+  const url = `${MOT_API}?resource_id=${QUANTITIES_RESOURCE_ID}&limit=${PAGE_LIMIT}&offset=${offset}&sort=_id`;
   const { text } = await motGet<QuantitiesRecord>(url);
   const page = JSON.parse(text) as QuantitiesPage;
   const records = page.result?.records;
@@ -250,17 +251,40 @@ async function main() {
   for (const f of q.fields) log(`  ${f.id}  ${f.type}`);
   log("quantities first 3 records:");
   for (const r of q.records.slice(0, 3)) log(`  ${JSON.stringify(r)}`);
-  if (q.fields.some((f) => f.id.toLowerCase() === "sug_degem")) {
-    log("note: the quantities dataset carries sug_degem; the join key (tozeret|degem|year) does not use it");
-  }
-
   const fm = mapFields(q.fields);
   log(`field mapping: tozeret=${fm.tozeret} · degem=${fm.degem} · year=${fm.year} · active=${fm.active}`);
+
+  // F1b §9.1: one tozeret|degem|year key can be both private and commercial, so when the dataset
+  // carries sug_degem only the live class's records are kept — before the year filter, the
+  // duplicate-key check and the join. Without sug_degem every record is kept, as before.
+  const classField = q.fields.find((f) => f.id.toLowerCase() === "sug_degem")?.id;
+  let classRecords = q.records.map((r, i) => ({ r, i }));
+  if (classField !== undefined) {
+    const classOf = (v: unknown, at: number): string => {
+      if (typeof v !== "string" && typeof v !== "number") {
+        throw new Error(`quantities record ${at}: ${classField} = ${JSON.stringify(v)} — not a class value`);
+      }
+      return String(v).trim().toUpperCase();
+    };
+    const byClass = new Map<string, number>();
+    for (const { r, i } of classRecords) {
+      const c = classOf(r[classField], i);
+      byClass.set(c, (byClass.get(c) ?? 0) + 1);
+    }
+    log(`quantities records by ${classField} (all years):`);
+    for (const [c, n] of byClass) log(`  ${JSON.stringify(c)}  ${fmt(n)}`);
+    const want = vehicleClass.trim().toUpperCase();
+    classRecords = classRecords.filter(({ r, i }) => classOf(r[classField], i) === want);
+    if (classRecords.length === 0) {
+      throw new Stop(`no quantities record carries the live vehicle class ${JSON.stringify(want)}`);
+    }
+    log(`kept for class ${want}: ${fmt(classRecords.length)}`);
+  }
 
   // §5.4: rows below year-from are skipped here, not by a server-side filter.
   type QRow = { tozeretCd: string; degemCd: string; year: number; active: number };
   const inScope: QRow[] = [];
-  q.records.forEach((r, i) => {
+  classRecords.forEach(({ r, i }) => {
     const year = intOf(r[fm.year], fm.year, i);
     if (year < yearFrom) return;
     inScope.push({
