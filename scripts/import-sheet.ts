@@ -46,10 +46,21 @@
 // - The manual spec: model_specs mirrors the "manual spec" tab, and models.model_spec_id points at the row
 //   that describes each version (findCar-schema.md §18), in one transaction after the cars.
 // - The end of the run lists the alerts: live versions with no manual spec, and catalog holes.
+//
+// F3d — new names (the F3c library, src/lib/families/new-names.ts):
+// - The review file (REVIEW_FILE) is read before any ministry request; a problem in it stops the run. With
+//   --write, a review file open in Excel stops the run before any write.
+// - The last step of the entry check is the family of the car's catalog row. A car whose row has no family
+//   does not enter (entryReason). With --write its planned version is still created, without a family: the
+//   families import needs a catalog row for every row of the review file.
+// - A name the review file does not know (name_not_in_file) is collected once per catalogKey. After the cars
+//   loop a dry run prints the names; --write keeps a backup of the review file and appends one yellow row per
+//   name to the models tab.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { db, WRITE_TRANSACTION_OPTIONS } from "@/lib/db";
 import { Prisma, type model_specs, type models } from "@/generated/prisma/client";
 import { getVehicleData, isPlateCached, type VehicleData } from "@/lib/mot/vehicle";
@@ -58,6 +69,14 @@ import { fetchCatalogVersion } from "@/lib/mot/catalog-lookup";
 import { canonicalModelNames, nameKey as modelNameKey, translateCatalogRow, type ModelRow } from "@/lib/mot/catalog";
 import { readWorkbook } from "@/lib/excel/read";
 import { buildFamilyIndex, familyForNewRow, type FamilyIndex } from "@/lib/families/new-rows";
+import { entryReason, guessDecision, newNameRow, type Guess } from "@/lib/families/new-names";
+import { catalogKey, parseReview, ReviewFileError, type ReviewFile } from "@/lib/families/review";
+import { canonicalMake } from "@/lib/families/sheet";
+import { MAKE_MERGES, MODELS_HEADERS, MODELS_TAB, REVIEW_FILE } from "@/lib/families/words";
+import type { CatalogRow } from "@/lib/families/distribution";
+import { appendRows, copyToBackup, isOpenInExcel } from "@/lib/excel/write";
+import { fetchActiveCounts } from "@/lib/mot/quantities";
+import { readReviewRows } from "@/lib/sheet/review-file";
 import { loadLocalities } from "@/lib/location/localities";
 import { resolvePlace, type LocalityIndex, type PlaceResolution } from "@/lib/location/place";
 import { normalizeName } from "@/lib/names";
@@ -85,6 +104,9 @@ const SEEN_ARG = ((): string | null => {
 
 // Day 12, in every mode: dry by default, `--write` is the only thing that writes.
 const DRY = !process.argv.includes("--write");
+
+// F3d: the review file, relative to the project root as the families import reads it.
+const REVIEW_PATH = fileURLToPath(new URL(`../${REVIEW_FILE}`, import.meta.url));
 
 // --expect-model "MAZDA 3": the registry's commercial model name every row must carry.
 // The flag may be repeated — `--expect-model "MAZDA 3" --expect-model "IONIQ HYBRID"`
@@ -229,9 +251,11 @@ async function recordTestReading(tx: Tx, car_id: number, test_date: Date | null,
 
 type Place = Extract<PlaceResolution, { ok: true }>;
 type ModelRef = { kind: "stored"; row: models } | { kind: "pending"; key: string };
+// F3d §2: a car that failed on its family carries its catalog row's name and, for a planned version, its key.
+type NoFamily = { make: string; model: string; pendingKey: string | null };
 type EntryResult =
   | { ok: true; v: VehicleData; status: "active" | "inactive"; model: ModelRef; place: Place }
-  | { ok: false; failed: FailedCar }
+  | { ok: false; failed: FailedCar; noFamily?: NoFamily }
   | { ok: false; skipped: "cancelled" };
 
 // Loaded once in main(), read by checkEntry().
@@ -239,6 +263,8 @@ let localities: LocalityIndex = new Map();
 const modelSpellings = new Map<string, string>();
 // F3b §3.2: the families of the stored catalog names, read once in main().
 let familyIndex: FamilyIndex = new Map();
+// F3d §1: the review file, read once in main() before any ministry request.
+let reviewFile: ReviewFile;
 // Set by the first MotUnavailableError: from then on only plates with a raw cache are read, and no
 // catalog lookup is made — the rest are filed as ministry_down, not tried.
 let ministryDown = false;
@@ -261,7 +287,7 @@ function entryCheck(row: CarsRow): Promise<EntryResult> {
 }
 
 async function checkEntry(row: CarsRow): Promise<EntryResult> {
-  const failed = (reason: FailedReason, details: string, v: VehicleData | null, not_tried = false): EntryResult => ({
+  const failed = (reason: FailedReason, details: string, v: VehicleData | null, not_tried = false, noFamily?: NoFamily): EntryResult => ({
     ok: false,
     failed: {
       plate: row.plate, link: row.link,
@@ -269,6 +295,7 @@ async function checkEntry(row: CarsRow): Promise<EntryResult> {
       registry_year: v ? v.year : null,
       reason, details, not_tried,
     },
+    ...(noFamily ? { noFamily } : {}),
   });
 
   // a. the place
@@ -303,8 +330,21 @@ async function checkEntry(row: CarsRow): Promise<EntryResult> {
   }
   if (row.ad_year !== null && row.ad_year !== v.year) return failed("year_mismatch", yearMismatchDetails(row.ad_year, v.year), v);
 
+  // f. F3d §2 — the family, the last step: the family_id of the stored row, or the familyId planned for the
+  // version (F3b). A row without one does not enter; its reason comes from the review file (entryReason).
+  const ok = (model: ModelRef): EntryResult => {
+    const name = model.kind === "stored"
+      ? { make: model.row.make, model: model.row.model, familyId: model.row.family_id, pendingKey: null }
+      : ((p) => ({ make: p.data.make, model: p.data.model, familyId: p.familyId, pendingKey: model.key }))(pendingModels.get(model.key)!);
+    if (name.familyId !== null) return { ok: true, v, status, model, place };
+    if (name.make === null || name.model === null) {
+      fail(row.n, `${row.plate}: the catalog row ${v.vehicle_class} ${v.degem_code} ${v.year} has no family and no make or model — entryReason needs both`);
+    }
+    const reason = entryReason(reviewFile, name.make, name.model);
+    return failed(reason, `${name.make} ${name.model}`, v, false, { make: name.make, model: name.model, pendingKey: name.pendingKey });
+  };
+
   // e. the version: stored, found online earlier in this run, or asked of the online catalog now
-  const ok = (model: ModelRef): EntryResult => ({ ok: true, v, status, model, place });
   const stored = await db.models.findUnique({
     where: { vehicle_class_degem_code_year: { vehicle_class: v.vehicle_class, degem_code: v.degem_code, year: v.year } },
   });
@@ -475,7 +515,7 @@ const LIVE_SELECT = {
 } as const;
 type LiveRow = LiveVersion & { id: number; model_spec_id: number | null };
 
-async function printAlerts(dryNewListings: { carId: number; modelId: number }[], keptIds: Set<number>): Promise<void> {
+async function printAlerts(dryNewListings: { carId: number; modelId: number }[], keptIds: Set<number>, newNameAlerts: string[]): Promise<void> {
   // Live cars per version: cars with at least one listing not delisted, plus (dry) the cars this run would insert.
   const carsOf = new Map<number, Set<number>>();
   const add = (modelId: number, carId: number) => {
@@ -513,6 +553,125 @@ async function printAlerts(dryNewListings: { carId: number; modelId: number }[],
   for (const l of missing.length > 0 ? missing : ["none"]) console.log(`  ${l}`);
   console.log(`\ncatalog holes (${holes.length} versions)`);
   for (const l of holes.length > 0 ? holes : ["none"]) console.log(`  ${l}`);
+  // F3d §4: printed only when there is one, so a run without new names keeps its output.
+  if (newNameAlerts.length > 0) {
+    console.log(`\nnew names (${newNameAlerts.length})`);
+    for (const l of newNameAlerts) console.log(`  ${l}`);
+  }
+}
+
+// ---------- 4b. the new names (F3d §4) ----------
+// A name not in the review file, collected in the cars loop: its catalog row's make and model, the plate of
+// its first car, and the plates of its cars in this run.
+type CollectedName = { make: string; model: string; firstPlate: string; plates: Set<string> };
+
+const [H_CATALOG_MAKE, , H_CATALOG_NAME, H_ACTIVE, H_YEARS, , H_MAKE, H_MODEL, H_NAME_HE] = MODELS_HEADERS;
+const NEW_NAME_FILL = "FFFFF2B3";
+
+type CatalogFields = { make: string | null; model: string | null; vehicle_class: string | null; degem_code: string | null; year: number | null };
+
+// degem-code.ts has no inverse of makeDegemCode: "588-182" -> 588 and 182 here.
+function catalogRowOf(m: CatalogFields, label: string): CatalogRow {
+  const code = /^(\d+)-(\d+)$/.exec(m.degem_code ?? "");
+  if (!code || m.make === null || m.model === null || m.vehicle_class === null || m.year === null) {
+    throw new Error(
+      `new name ${label}: the catalog row ${JSON.stringify([m.make, m.model, m.vehicle_class, m.degem_code, m.year])} ` +
+        "has no make, model, vehicle_class, year or tozeret-degem code — not skipped",
+    );
+  }
+  return { make: m.make, model: m.model, vehicleClass: m.vehicle_class, tozeretCd: code[1], degemCd: code[2], year: m.year };
+}
+
+function guessText(g: Guess): string {
+  if (g.model !== "") return `${g.makeEn} ${g.model} ${g.nameHe}`;
+  return g.makeEn !== "" ? `make only: ${g.makeEn}` : "none";
+}
+
+// Prints the NEW NAMES section; --write appends the rows to the review file. Returns the alert lines, and the
+// error of appendRows for the end of the run (the cars are already written by then).
+async function newNamesSection(names: Map<string, CollectedName>): Promise<{ alerts: string[]; error: Error | null }> {
+  console.log("\n===== NEW NAMES =====");
+  if (names.size === 0) {
+    console.log("new names: 0");
+    return { alerts: [], error: null };
+  }
+  const alerts: string[] = [];
+  const list = [...names.values()];
+
+  // a. Each name's catalog rows: read by the raw makes that fold into its canonical make, kept by catalogKey.
+  // A dry run adds the versions it planned for the key; --write created them already (§3).
+  const rawMakes = (await db.models.findMany({ where: { make: { not: null } }, select: { make: true }, distinct: ["make"] }))
+    .map((m) => m.make!);
+  const rowsOf: CatalogRow[][] = [];
+  for (const n of list) {
+    const label = `${n.make} ${n.model}`;
+    const want = catalogKey(n.make, n.model);
+    const sameName = (make: string | null, model: string | null): boolean => {
+      if (make === null || model === null) return false;
+      const k = catalogKey(make, model);
+      return k.canonicalMake === want.canonicalMake && k.key === want.key;
+    };
+    const stored = await db.models.findMany({
+      where: { make: { in: rawMakes.filter((m) => canonicalMake(m, MAKE_MERGES) === want.canonicalMake) } },
+      select: { make: true, model: true, degem_code: true, year: true, vehicle_class: true },
+      orderBy: { id: "asc" },
+    });
+    const rows = stored.filter((m) => sameName(m.make, m.model)).map((m) => catalogRowOf(m, label));
+    if (DRY) {
+      for (const p of pendingModels.values()) {
+        if (!p.created && sameName(p.data.make, p.data.model)) rows.push(catalogRowOf(p.data, label));
+      }
+    }
+    rowsOf.push(rows);
+  }
+
+  // b. The active vehicles, for every name in one call. A failure leaves every name without a count.
+  let counts: Map<string, number> | null;
+  try {
+    counts = await fetchActiveCounts(rowsOf.flat().map((r) => ({ tozeretCd: r.tozeretCd, degemCd: r.degemCd })));
+  } catch (e) {
+    counts = null;
+    console.log(`quantities: ${(e as Error).message}`);
+    for (const n of list) alerts.push(`מאגר הכמויות לא ענה — ${n.make} ${n.model} נוסף בלי מספר רכבים`);
+  }
+
+  // c, d. The guess and the row.
+  const planned = list.map((n, i) => {
+    const guess = guessDecision(reviewFile, n.make, n.model);
+    if (guess.makeEn === "") {
+      alerts.push(`היצרן ${n.make} לא בלשונית היצרנים — להוסיף לו שורה שם, ואז להשלים את השורה הצהובה`);
+    }
+    return { guess, row: newNameRow({ make: n.make, model: n.model, rows: rowsOf[i], counts, guess }) };
+  });
+
+  let error: Error | null = null;
+  let head: string;
+  if (DRY) head = `would add to the review file: ${planned.length}`;
+  else if (isOpenInExcel(REVIEW_PATH)) {
+    // Not written: the cars of these names fail with the same reason next run, so the names come back.
+    head = "not added — the review file is open in Excel";
+    alerts.push("קובץ הסקירה נפתח באקסל במהלך הייבוא — השמות החדשים לא נוספו; לסגור ולהריץ שוב");
+  } else {
+    copyToBackup(REVIEW_PATH);
+    try {
+      await appendRows(REVIEW_PATH, MODELS_TAB, MODELS_HEADERS, planned.map((p) => p.row), {
+        columns: [H_MAKE, H_MODEL, H_NAME_HE], argb: NEW_NAME_FILL,
+      });
+      head = `added to the review file: ${planned.length}`;
+    } catch (e) {
+      error = e as Error;
+      head = "not added — writing the review file failed (the error is at the end)";
+    }
+  }
+  console.log(head);
+  const cell = (row: (string | number)[], h: (typeof MODELS_HEADERS)[number]): string => {
+    const value = row[MODELS_HEADERS.indexOf(h)];
+    return value === "" ? "-" : String(value);
+  };
+  for (const { guess, row } of planned) {
+    console.log(`  ${cell(row, H_CATALOG_MAKE)} | ${cell(row, H_CATALOG_NAME)} | cars ${cell(row, H_ACTIVE)} | years ${cell(row, H_YEARS)} | guess: ${guessText(guess)}`);
+  }
+  return { alerts, error };
 }
 
 // ---------- 5. the run ----------
@@ -593,6 +752,19 @@ async function main() {
     await db.models.findMany({ where: { family_id: { not: null } }, select: { make: true, model: true, family_id: true } }),
   );
 
+  // ---------- F3d §1: the review file, before any ministry request ----------
+  const { models: reviewModels, makes: reviewMakes } = await readReviewRows(REVIEW_PATH);
+  try {
+    reviewFile = parseReview(reviewModels, reviewMakes);
+  } catch (e) {
+    if (!(e instanceof ReviewFileError)) throw e;
+    console.log(`\n${REVIEW_FILE}: ${e.problems.length} problem(s)`);
+    for (const p of e.problems) console.log(`  ${p}`);
+    throw new Error(`the review file has ${e.problems.length} problem(s) — the import does not start`);
+  }
+  // A dry run never writes the review file, so only --write checks that Excel does not hold it.
+  if (!DRY && isOpenInExcel(REVIEW_PATH)) throw new Error("קובץ הסקירה פתוח באקסל — לסגור אותו ולהריץ שוב");
+
   // ---------- Day 17: G1, every guard before any write ----------
   if (seen) {
     const offending: { row: CarsRow; violation: Violation }[] = [];
@@ -672,6 +844,8 @@ async function main() {
   const seenCars = new Set<string>();
   const failed: FailedCar[] = [];
   const dryNewListings: { carId: number; modelId: number }[] = []; // the alert list's would-be live cars
+  // F3d §2.4: the names not in the review file, by "canonicalMake|key", in the order first seen.
+  const newNames = new Map<string, CollectedName>();
 
   for (const [i, row] of rows.entries()) {
     const tag = `[${i + 1}/${rows.length}] ${row.plate}`;
@@ -732,6 +906,27 @@ async function main() {
         failed.push(f);
         bump(`failed:${f.reason}`);
         if (f.not_tried) bump(`failed:${f.reason}:not_tried`);
+        if (entry.noFamily) {
+          const nf = entry.noFamily;
+          // F3d §3: the version of a car that stays out only because of its family is still created (--write),
+          // as work(tx) does, once; it counts under model:new like any other.
+          if (nf.pendingKey !== null) {
+            const p = pendingModels.get(nf.pendingKey)!;
+            if (!DRY && !p.created) {
+              p.id = (await db.models.create({ data: { ...p.data, family_id: p.familyId } })).id;
+              p.created = true;
+            }
+            if (!p.counted) { p.counted = true; bump("model:new"); }
+          }
+          // F3d §2.4: a name the review file does not know is collected, once per catalogKey.
+          if (f.reason === "name_not_in_file") {
+            const k = catalogKey(nf.make, nf.model);
+            const id = `${k.canonicalMake}|${k.key}`;
+            const name = newNames.get(id) ?? { make: nf.make, model: nf.model, firstPlate: row.plate, plates: new Set<string>() };
+            newNames.set(id, name);
+            name.plates.add(row.plate);
+          }
+        }
         if (seen) skippedLines.push(`  row ${row.n} | ${row.external_id} (${row.plate}) | ירד ${JSON.stringify(row.delisted_cell)} | not entering — ${f.reason}`);
         console.log(`${tag} not entering — ${f.reason}${f.details ? " — " + f.details : ""}`);
         continue;
@@ -870,7 +1065,12 @@ async function main() {
   console.log("\ncars per degem_code × year");
   for (const [k, n] of [...densityCode.entries()].sort()) console.log(`  ${n.toString().padStart(3)}  ${k}`);
 
-  await printAlerts(dryNewListings, keptIds);
+  // F3d §4: after REPORT, before ALERTS, in both modes.
+  const named = await newNamesSection(newNames);
+  await printAlerts(dryNewListings, keptIds, named.alerts);
+  if (named.error) {
+    throw new Error(`the new names were not added to ${REVIEW_FILE}: ${named.error.message} — the cars are written; a re-run collects the names again`);
+  }
 }
 
 main()
