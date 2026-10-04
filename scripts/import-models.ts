@@ -19,6 +19,7 @@ async function main() {
   if (!process.env.DATABASE_URL) loadEnv();
   const { db } = await import("../src/lib/db");
   const { buildModelRows } = await import("../src/lib/mot/catalog");
+  const { buildFamilyIndex, familiesForNewRows, FamilyConflictError } = await import("../src/lib/families/new-rows");
 
   console.log(`${DRY ? "[DRY RUN] " : ""}import-models`);
 
@@ -60,6 +61,27 @@ async function main() {
     console.log("  ", r.vehicle_class, r.degem_code, r.year, "|", r.model, "|", r.sub_model, "|", r.comparison_group);
   }
 
+  // F3b §3.1: a new row takes the family of the stored rows with the same name; an existing row is skipped
+  // by skipDuplicates below, so only a new row takes one. A name with two families stops before any write.
+  const familyIndex = buildFamilyIndex(
+    await db.models.findMany({ where: { family_id: { not: null } }, select: { make: true, model: true, family_id: true } }),
+  );
+  let familyIds: (number | null)[];
+  try {
+    familyIds = familiesForNewRows(familyIndex, rows);
+  } catch (e) {
+    if (!(e instanceof FamilyConflictError)) throw e;
+    console.error(`\nFAMILY CONFLICTS: ${e.conflicts.length} catalog names have more than one family:`);
+    for (const c of e.conflicts) console.error(" ", c.name, "-> families", c.familyIds.join(", "));
+    console.error("\nImport aborted — nothing written.");
+    process.exit(1);
+  }
+  const rowsWithFamily = rows.map((r, i) => ({ ...r, family_id: familyIds[i] }));
+  const newWithFamily = rowsWithFamily.filter(
+    (r) => r.family_id !== null && !present.has(`${r.vehicle_class}|${r.degem_code}|${r.year}`),
+  ).length;
+  console.log("new rows with a family:", newWithFamily, "| without a family:", toAdd.length - newWithFamily);
+
   if (DRY) {
     console.log("\n[DRY RUN] nothing written — run with --write to insert");
     await db.$disconnect();
@@ -69,7 +91,7 @@ async function main() {
   let inserted = 0;
   const CHUNK = 1000;
   for (let i = 0; i < rows.length; i += CHUNK) {
-    const res = await db.models.createMany({ data: rows.slice(i, i + CHUNK), skipDuplicates: true });
+    const res = await db.models.createMany({ data: rowsWithFamily.slice(i, i + CHUNK), skipDuplicates: true });
     inserted += res.count;
     process.stdout.write(`\r  written ${Math.min(i + CHUNK, rows.length)}/${rows.length}`);
   }

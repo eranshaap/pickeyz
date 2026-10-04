@@ -129,11 +129,22 @@ function printPlan(plan: ImportPlan) {
 
 // Read-only: listings with delisted_at null -> their cars -> the cars' models rows -> the planned family.
 async function printLive(plan: ImportPlan) {
-  const live = await db.listings.findMany({ where: { delisted_at: null }, select: { car: { select: { model_id: true } } } });
+  const live = await db.listings.findMany({
+    where: { delisted_at: null },
+    select: { car: { select: { model_id: true, model: { select: { make: true, model: true } } } } },
+  });
   const perFamily = new Map<string, { line: string; n: number }>();
+  // F3b §3.3: the live listings outside every family, per catalog name.
+  const outside = new Map<string, number>();
   for (const l of live) {
     const f = plan.targetOf.get(l.car.model_id) ?? null;
-    if (f === null) continue;
+    if (f === null) {
+      const name = plan.targetOf.has(l.car.model_id)
+        ? `${l.car.model.make ?? "?"} ${l.car.model.model ?? "?"}`
+        : "(no catalog row)";
+      outside.set(name, (outside.get(name) ?? 0) + 1);
+      continue;
+    }
     const k = familyLabel(f.makeEn, f.nameEn);
     const e = perFamily.get(k) ?? { line: `${k} (${f.nameHe})`, n: 0 };
     perFamily.set(k, e);
@@ -141,6 +152,8 @@ async function printLive(plan: ImportPlan) {
   }
   log("=== LIVE ===");
   for (const e of [...perFamily.values()].sort((a, b) => b.n - a.n)) log(`${e.line}: ${e.n} live listings`);
+  log(`live listings outside every family: ${[...outside.values()].reduce((s, n) => s + n, 0)}`);
+  for (const [name, n] of [...outside].sort((a, b) => b[1] - a[1])) log(`  ${name}: ${n}`);
 }
 
 function printStops(stops: string[]) {

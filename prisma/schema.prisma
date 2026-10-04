@@ -340,7 +340,7 @@ model searches {
   session_id     String? // one visit; resets between visits
   user_id        Int? // empty as long as there is no login
   model_searched String // required: a search without a model is not a search (the model is the only mandatory field of the screen)
-  family_id      Int? // Day 18: the family chosen in the bar; null for searches before the table. model_searched stays; it moves to the receiving family when families merge (the families import), model_searched never changes (04/10)
+  family_id      Int? // Day 18: the family chosen in the bar; null for searches before the table. When a family disappears and all its names go to one family, the families import moves this to it (names going to more than one family stop the import); model_searched is frozen text and never changes (04/10)
   filters        Json? // the filters exactly as the action received them; null when the search carried none
   priority       String? // code: price | km | condition. Empty when the user skipped it — not recoverable. No screen writes it yet
   engine_version Int // Stage A's version at that moment

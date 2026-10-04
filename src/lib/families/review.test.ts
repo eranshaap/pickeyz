@@ -321,7 +321,7 @@ describe("planImport", () => {
     assert.deepEqual(plan.familyUpdates.map((u) => [u.key, u.aliases?.after]), [["MAZDA 3", ["MAZDA 3", "MAZDA CX-5", "CX-5", "CX5", "MAZDA3"]]]);
   });
 
-  it("a vanished family whose rows went to two targets in equal numbers is a stop", () => {
+  it("a vanished family whose rows split over two families, one row each, is a stop", () => {
     const file = parseReview(withRows(
       modelRow(3, HYUNDAI, "IONIQ HYBRID", "HYUNDAI", "IONIQ HYBRID", "he:a"),
       modelRow(4, HYUNDAI, "IONIQ EV", "HYUNDAI", "IONIQ EV", "he:b"),
@@ -329,7 +329,40 @@ describe("planImport", () => {
     ), MAKES_ROWS);
     const plan = planImport(file, AFTER_FIRST);
     assert.equal(plan.stops.length, 1);
-    assert.match(plan.stops[0], /^HYUNDAI IONIQ \(id \d+\): .* 2 families in equal numbers/);
+    assert.match(plan.stops[0], /^HYUNDAI IONIQ: its names went to HYUNDAI IONIQ HYBRID \(1 catalog rows\), HYUNDAI IONIQ EV \(1 catalog rows\) — /);
+  });
+
+  it("an unequal split (20 rows to one family, 1 to another) is a stop naming both targets with their counts, with or without searches", () => {
+    const file = parseReview(withRows(
+      modelRow(3, HYUNDAI, "IONIQ HYBRID", "HYUNDAI", "IONIQ HYBRID", "he:a"),
+      modelRow(4, HYUNDAI, "IONIQ EV", "HYUNDAI", "IONIQ EV", "he:b"),
+      modelRow(5, HYUNDAI, "IONIQ", "HYUNDAI", "", ""),
+    ), MAKES_ROWS);
+    const ioniq = idOf(AFTER_FIRST, "HYUNDAI", "IONIQ");
+    const more = Array.from({ length: 19 }, () => cat(HYUNDAI, "IONIQ HYBRID", ioniq));
+    const state: DbState = { ...AFTER_FIRST, catalog: [...AFTER_FIRST.catalog, ...more] };
+    const expected =
+      "HYUNDAI IONIQ: its names went to HYUNDAI IONIQ HYBRID (20 catalog rows), HYUNDAI IONIQ EV (1 catalog rows) — " +
+      "the import does not choose who inherits the searches; keep the old name on the part that should keep them, then run again";
+    assert.deepEqual(planImport(file, state).stops, [expected]);
+    assert.deepEqual(planImport(file, { ...state, searches: new Map([[ioniq, 6]]) }).stops, [expected]);
+  });
+
+  it("a vanished family whose rows went to one family and to null moves its searches to that family", () => {
+    const file = parseReview(withRows(
+      modelRow(3, HYUNDAI, "IONIQ HYBRID", "HYUNDAI", "IONIQ HYBRID", "he:a"),
+      modelRow(4, HYUNDAI, "IONIQ EV", "HYUNDAI", "IONIQ HYBRID", "he:a"),
+      modelRow(5, HYUNDAI, "IONIQ", "HYUNDAI", "", ""),
+    ), MAKES_ROWS);
+    const ioniq = idOf(AFTER_FIRST, "HYUNDAI", "IONIQ");
+    const state: DbState = { ...AFTER_FIRST, searches: new Map([[ioniq, 3]]) };
+    const plan = planImport(file, state);
+    assert.deepEqual(plan.stops, []);
+    assert.deepEqual(plan.familyDeletes, [
+      { id: ioniq, key: "HYUNDAI IONIQ", move: { fromId: ioniq, toId: "new:HYUNDAI IONIQ HYBRID", toKey: "HYUNDAI IONIQ HYBRID", searchesMoved: 3 } },
+    ]);
+    const after = applyPlan(state, plan);
+    assert.equal(after.searches.get(idOf(after, "HYUNDAI", "IONIQ HYBRID")), 3);
   });
 
   it("a family whose rows were all emptied: with searches a stop; without, deleted and its rows cleared", () => {

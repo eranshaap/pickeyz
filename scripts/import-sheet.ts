@@ -57,6 +57,7 @@ import { MotUnavailableError } from "@/lib/mot/fetch";
 import { fetchCatalogVersion } from "@/lib/mot/catalog-lookup";
 import { canonicalModelNames, nameKey as modelNameKey, translateCatalogRow, type ModelRow } from "@/lib/mot/catalog";
 import { readWorkbook } from "@/lib/excel/read";
+import { buildFamilyIndex, familyForNewRow, type FamilyIndex } from "@/lib/families/new-rows";
 import { loadLocalities } from "@/lib/location/localities";
 import { resolvePlace, type LocalityIndex, type PlaceResolution } from "@/lib/location/place";
 import { normalizeName } from "@/lib/names";
@@ -136,7 +137,8 @@ let fakeId = -1;
 
 // Day 19b Run 22 §9.5.e: versions found in the ministry's online catalog during this run, by identity
 // (vehicle_class|degem_code|year). `id` is fake until --write creates the row inside a car's transaction.
-type PendingModel = { id: number; data: ModelRow; created: boolean; counted: boolean };
+// F3b §3.2: familyId is the family of the stored rows with the same name (null = none), set at planning time.
+type PendingModel = { id: number; data: ModelRow; familyId: number | null; created: boolean; counted: boolean };
 const pendingModels = new Map<string, PendingModel>();
 
 function nameKey(s: string): string {
@@ -235,6 +237,8 @@ type EntryResult =
 // Loaded once in main(), read by checkEntry().
 let localities: LocalityIndex = new Map();
 const modelSpellings = new Map<string, string>();
+// F3b §3.2: the families of the stored catalog names, read once in main().
+let familyIndex: FamilyIndex = new Map();
 // Set by the first MotUnavailableError: from then on only plates with a raw cache are read, and no
 // catalog lookup is made — the rest are filed as ministry_down, not tried.
 let ministryDown = false;
@@ -337,7 +341,9 @@ async function checkEntry(row: CarsRow): Promise<EntryResult> {
   }
   const got = `${data.vehicle_class}|${data.degem_code}|${data.year}`;
   if (got !== identity) fail(row.n, `${row.plate}: the catalog answered ${got} for ${identity}`);
-  pendingModels.set(identity, { id: fakeId--, data, created: false, counted: false });
+  // A name with two families throws FamilyConflictError: the run stops before this version is written.
+  const familyId = familyForNewRow(familyIndex, data.make, data.model);
+  pendingModels.set(identity, { id: fakeId--, data, familyId, created: false, counted: false });
   return ok({ kind: "pending", key: identity });
 }
 
@@ -582,6 +588,10 @@ async function main() {
   if (spellingClashes.length > 0) {
     throw new Error(`models.model: two stored spellings under one name key — ${spellingClashes.join("; ")}`);
   }
+  // F3b §3.2: a version asked of the ministry takes the family of its stored siblings (same catalogKey).
+  familyIndex = buildFamilyIndex(
+    await db.models.findMany({ where: { family_id: { not: null } }, select: { make: true, model: true, family_id: true } }),
+  );
 
   // ---------- Day 17: G1, every guard before any write ----------
   if (seen) {
@@ -738,7 +748,7 @@ async function main() {
       if (model.kind === "pending") {
         const p = pendingModels.get(model.key)!;
         if (!DRY && !p.created) {
-          p.id = (await tx.models.create({ data: p.data })).id;
+          p.id = (await tx.models.create({ data: { ...p.data, family_id: p.familyId } })).id;
           p.created = true;
         }
         if (!p.counted) { p.counted = true; bump("model:new"); }
@@ -844,6 +854,10 @@ async function main() {
 
   console.log("\n===== REPORT =====");
   for (const [k, n] of Object.entries(counts).sort()) console.log(`${k.padEnd(28)} ${n}`);
+  // F3b §3.2: the versions this run added (dry: would add) — the ones counted under model:new.
+  const added = [...pendingModels.values()].filter((p) => p.counted);
+  const addedWithFamily = added.filter((p) => p.familyId !== null).length;
+  console.log(`catalog versions added: ${added.length} — with a family ${addedWithFamily}, without ${added.length - addedWithFamily}`);
 
   console.log(`\nhand: declared ≠ official (${handMismatch.length})`);
   for (const c of handMismatch) console.log(`  ${c.plate}: ad ${c.declared}, official ${c.official} | ${c.note}`);

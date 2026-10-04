@@ -414,11 +414,11 @@ export function planImport(file: ReviewFile, db: DbState): ImportPlan {
       familyDeletes.push({ id: f.id, key: label, move: null });
       continue;
     }
-    const top = ranked.filter(([, n]) => n === ranked[0][1]);
-    if (top.length > 1) {
+    // A split — more than one target family, whatever the numbers and the searches — stops (F3b §2).
+    if (ranked.length > 1) {
       stops.push(
-        `${label} (id ${f.id}): its catalog rows went to ${top.length} families in equal numbers ` +
-          `(${top.map(([t, n]) => `${refLabel(t)} ${n}`).join(", ")}) — Eran decides where its ${searches} searches go`,
+        `${label}: its names went to ${ranked.map(([t, n]) => `${refLabel(t)} (${n} catalog rows)`).join(", ")} — ` +
+          "the import does not choose who inherits the searches; keep the old name on the part that should keep them, then run again",
       );
     }
     const [to] = ranked[0];
