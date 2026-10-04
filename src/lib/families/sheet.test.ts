@@ -111,9 +111,9 @@ describe("makeKey / canonicalMake", () => {
 });
 
 describe("words.ts tables", () => {
-  it("hold 8 merges and 59 makes", () => {
+  it("hold 8 merges and 60 makes", () => {
     assert.equal(Object.keys(MAKE_MERGES).length, 8);
-    assert.equal(Object.keys(MAKES).length, 59);
+    assert.equal(Object.keys(MAKES).length, 60);
   });
 
   it("are written in the compared form", () => {

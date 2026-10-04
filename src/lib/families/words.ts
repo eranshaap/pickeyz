@@ -83,6 +83,7 @@ export const MAKES: Record<string, MakeEntry> = {
   "ניאו רכב": { english: "NIO", prefixes: ["NIO"] },
   "יגואר": { english: "JAGUAR", prefixes: ["JAGUAR"] },
   "מיני": { english: "MINI", prefixes: ["MINI"] },
+  "סרס": { english: "SERES", prefixes: ["SERES"] },
 };
 
 // (c) The sheet's words (BRIEF §10.7.4).
