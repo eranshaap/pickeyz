@@ -18,6 +18,11 @@
 // (src/lib/search/run.ts:160-165): assemblePool(model, { now }) — cached per model — then the cut with
 // passes()/storedFilters(), then selectThree() with no options. Nothing else, and no option the site does not pass.
 //
+// S3 §2 — A QUESTION REPLAYS ITS FAMILY. A question with `family_id` is assembled through
+// assembleFamilyPool(family_id, { now }), the site's own path since S2 — cached per family; its
+// `model_searched` ("MAKE NAME" in English since S2) is not a catalog spelling and is only printed. A question
+// without `family_id` (asked before S2) goes through assemblePool(model_searched, { now }) as before.
+//
 // EVERYTHING IS REACHED GENERICALLY, so the script runs unchanged against rules version 7 and version 8:
 // `crowning`, `picks`, `runner_ups`, the eligibility reasons and the invoice rows are printed as plain
 // objects and never through a field that exists in only one version.
@@ -26,7 +31,7 @@ import "dotenv/config";
 import { writeFileSync } from "node:fs";
 import { db } from "@/lib/db";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
-import { assemblePool, modelKey, PoolAssemblyError, type AssembledPool, type PoolItem } from "@/lib/search/assemble";
+import { assembleFamilyPool, assemblePool, modelKey, PoolAssemblyError, type AssembledPool, type PoolItem } from "@/lib/search/assemble";
 import { passes } from "@/lib/search/filters";
 import { storedFilters } from "@/lib/search/load";
 import { isCancelled, RULES_VERSION, selectThree, type ListingResult, type SelectionResult } from "@/lib/selection";
@@ -117,20 +122,21 @@ async function main() {
   const questions = await db.searches.findMany({
     where: { rerun_of: null },
     orderBy: { created_at: "asc" },
-    select: { id: true, public_id: true, visitor_id: true, model_searched: true, filters: true, created_at: true, rules_version: true },
+    select: { id: true, public_id: true, visitor_id: true, model_searched: true, family_id: true, filters: true, created_at: true, rules_version: true },
   });
 
   log(`replay-questions · engine ${ENGINE_VERSION} · rules ${RULES_VERSION} · now=${now.toISOString()} · questions ${questions.length}`);
 
-  // The pool of a model, assembled once — the questions of one model all cut the same pool.
+  // The pool of a family or a model, assembled once — the questions of one target all cut the same pool.
+  // §2: a question with family_id replays its family; one without it, its model_searched.
   const pools = new Map<string, AssembledPool>();
-  const poolOf = async (model: string): Promise<AssembledPool> => {
-    const key = modelKey(model);
+  const poolOf = async (q: { family_id: number | null; model_searched: string }): Promise<AssembledPool> => {
+    const key = q.family_id !== null ? `family ${q.family_id}` : modelKey(q.model_searched);
     const hit = pools.get(key);
     if (hit !== undefined) return hit;
     let assembled: AssembledPool;
     try {
-      assembled = await assemblePool(model, { now });
+      assembled = q.family_id !== null ? await assembleFamilyPool(q.family_id, { now }) : await assemblePool(q.model_searched, { now });
     } catch (e) {
       if (e instanceof PoolAssemblyError) for (const line of e.lines) log(line);
       throw e;
@@ -140,7 +146,7 @@ async function main() {
   };
 
   // ---------- the pools, over the UNFILTERED pool of each model ----------
-  for (const q of questions) await poolOf(q.model_searched);
+  for (const q of questions) await poolOf(q);
   for (const [key, assembled] of pools) {
     const byId = itemsById(assembled.items);
     const res = selectThree({ listings: assembled.items.map((p) => p.candidate) });
@@ -154,7 +160,7 @@ async function main() {
 
   // ---------- the questions ----------
   for (const q of questions) {
-    const assembled = await poolOf(q.model_searched);
+    const assembled = await poolOf(q);
     const filters = storedFilters(q.filters);
     const cut = assembled.items.filter((p) => passes(p, filters));
     const res = selectThree({ listings: cut.map((p) => p.candidate) });
@@ -163,7 +169,7 @@ async function main() {
 
     log();
     log(
-      `Q ${q.public_id} · ${q.model_searched} · ${q.created_at.toISOString()} · visitor=${q.visitor_id ?? "-"} · stored_rules=${q.rules_version} · filters=${JSON.stringify(filters)} · pool ${assembled.items.length} · cut ${cut.length}`,
+      `Q ${q.public_id} · ${q.model_searched} · family=${q.family_id ?? "-"} · ${q.created_at.toISOString()} · visitor=${q.visitor_id ?? "-"} · stored_rules=${q.rules_version} · filters=${JSON.stringify(filters)} · pool ${assembled.items.length} · cut ${cut.length}`,
     );
     log(`crowning ${JSON.stringify(res.crowning)}`);
     log(`picks ${JSON.stringify(res.picks)}`);

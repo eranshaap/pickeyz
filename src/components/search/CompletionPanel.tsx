@@ -130,6 +130,14 @@ export function useFamilyBar(
     setMarked(null);
   }, []);
 
+  // S3 §5 — stable, so the opening screen can put the asked model back in the bar from an effect.
+  const reset = useCallback(
+    (t: string) => {
+      setText(t);
+      closeList();
+    },
+    [closeList],
+  );
   function choose(m: PanelModel) {
     setText(m.fullName);
     closeList();
@@ -161,10 +169,7 @@ export function useFamilyBar(
     submit,
     closeList,
     openList: () => setOpen(true),
-    reset: (t: string) => {
-      setText(t);
-      closeList();
-    },
+    reset,
     input: {
       value: text,
       onChange: (e) => {

@@ -81,6 +81,8 @@ import { ANCHOR_MIN_POINTS, ANCHOR_POINT_MIN_SAMPLE, ENGINE_VERSION, KM_SLOPE_MI
 import { historyRow, kmRow, priceRow, type AnchorPoint, type ScoringInput } from "@/lib/scoring";
 import { ageYears } from "@/lib/scoring/age";
 import { scoringSubject } from "@/lib/scoring-input";
+// S3 §1: the km chips' quantiles, rounding and computation now live in the search library; moved unchanged.
+import { KM_ANCHOR_QUANTILES, KM_ANCHOR_ROUNDING, kmFilterAnchors, quantile } from "@/lib/search/km-anchors";
 import { at, loo, ols, type Fit } from "./measure-constants";
 
 const DRY = !process.argv.includes("--write");
@@ -92,10 +94,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 // M5's column name — at(fit, X_NAME) reads the slope out of the fit.
 const X_NAME = "x (km_dev/1000/yr)";
-// Day 15 (§1.2): the km filter chips are these quantiles of the model's live km_declared, each rounded UP to
-// KM_ANCHOR_ROUNDING. Not constants of the engine - a chip is a UI number, and the pencil book holds no UI numbers.
-const KM_ANCHOR_QUANTILES = [0.25, 0.5, 0.75] as const;
-const KM_ANCHOR_ROUNDING = 10_000;
 // Day 15, Run 1b (§1): the storage precision of every decimal a norms run writes. Not a constant of the
 // engine and not a threshold - it is how many digits of a fitted coefficient we keep, uniform across the
 // two tables that hold one, so that a stored value and a freshly computed one are comparable by ===.
@@ -139,26 +137,9 @@ function median(values: number[]): number {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-// Day 15 (§1.2): the quantile this file uses everywhere it needs one that is not the median - linear
-// interpolation between the two neighbouring order statistics. It agrees with median() at p = 0.5 by
-// construction (checked below), so the P50 chip and the file's medians are the same convention.
-function quantile(values: number[], p: number): number {
-  if (values.length === 0) throw new Error("quantile of an empty set");
-  const s = [...values].sort((a, b) => a - b);
-  const h = (s.length - 1) * p;
-  const lo = Math.floor(h);
-  const hi = Math.ceil(h);
-  return s[lo] + (h - lo) * (s[hi] - s[lo]);
-}
-
-// Day 15 (§1.2): the model's km filter chips. Quartiles of the km values given, each rounded UP to the
-// nearest KM_ANCHOR_ROUNDING, then deduplicated - two quartiles that round to the same number leave fewer
-// chips, never an invented one. Ascending. Empty when no live listing of the model states a km.
-function kmFilterAnchors(kms: number[]): number[] {
-  if (kms.length === 0) return [];
-  const rounded = KM_ANCHOR_QUANTILES.map((p) => Math.ceil(quantile(kms, p) / KM_ANCHOR_ROUNDING) * KM_ANCHOR_ROUNDING);
-  return [...new Set(rounded)].sort((a, b) => a - b);
-}
+// S3 §1: quantile() and kmFilterAnchors() - the quantile this file uses everywhere it needs one that is not
+// the median, and the model's km filter chips - moved unchanged to src/lib/search/km-anchors.ts, where the
+// search screen computes the chips per model family. They are imported above; this file's behaviour is the same.
 
 function mix(pool: PoolListing[]): string {
   const counts = new Map<string, number>();

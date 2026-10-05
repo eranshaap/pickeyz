@@ -88,20 +88,18 @@ import { applyFilters as sentFilters, draftFromQuestion, isUnchanged, release, r
 import { activeFilterNames, noFilters } from "@/lib/search/filters";
 import type { SearchFilters } from "@/lib/search/filters";
 import type { FamilyEntry } from "@/lib/opening/completion";
-import { OPENING_TEXTS } from "@/lib/opening/texts";
 import { ask, type AskResult, type FilterName } from "@/app/actions/search";
 import { BRAND } from "@/lib/brand";
-import { useFamilyBar } from "./CompletionPanel";
-import FilterPanel, { Spinner } from "./FilterPanel";
+import FilterPanel from "./FilterPanel";
 import FiltersWindow from "./FiltersWindow";
-import ModelBar from "./ModelBar";
+import OpeningScreen from "./OpeningScreen";
 import PickCards from "./PickCards";
 import PickCardsSkeleton from "./PickCardsSkeleton";
 import QuestionRow, { type ScreenNav } from "./QuestionRow";
 import ResultsList from "@/components/list/ResultsList";
 import UncrownedResults from "./UncrownedResults";
 import ZeroResults from "./ZeroResults";
-import { useScreenHistory } from "./useHistory";
+import { recordOpeningFamily, useScreenHistory } from "./useHistory";
 import { FILTER_LABEL, num } from "./labels";
 import { countLine } from "@/lib/display/cards";
 import { RESULTS_CONTAINER_CLASS } from "@/lib/display/layout";
@@ -216,13 +214,7 @@ export default function SearchScreen({
   // its bar's choice has searched.
   const activeFamily = asked?.model.familyId ?? null;
 
-  // S2 §5 — THE OPENING SCREEN'S BAR. Its state lives here because the "חפש" button below it reads it (its
-  // colour) and drives it (a press with no model asks for one). A choice searches at once, from zero.
-  const barInput = useRef<HTMLInputElement>(null);
-  const bar = useFamilyBar(families, {
-    onChoose: (familyId) => void doAsk({}, familyId),
-    focus: () => barInput.current?.focus(),
-  });
+  // S2 §5 — the opening screen's bar: S3 §3 moved its state into OpeningScreen, which now holds "חפש" too.
 
   // §3 — THE SHELF: the options with stock in the rows plus the ON-SCREEN question's own values, so a stored
   // value never vanishes from the window. Built by the same pure library, from the rows in hand.
@@ -296,6 +288,9 @@ export default function SearchScreen({
       // them (and the only thing the opening screen's first search has to fill in at all).
       setAsked({ model: { familyId: r.question.family_id, display: r.question.display }, filters });
       setResetToken((n) => n + 1);
+      // S3 §5 — the first question, asked from the opening screen: its entry remembers the family before the
+      // address moves, so the browser's back returns to a bar that shows it.
+      if (before === null) recordOpeningFamily(r.question.family_id);
       history.popOverlay(() => navPush(`/?s=${r.public_id}`));
     } catch (e) {
       fail(e); // §6 — one plain line, nothing retried silently
@@ -420,41 +415,11 @@ export default function SearchScreen({
         {panel}
       </FiltersWindow>
 
-        {/* The opening screen: the bar centred, "חפש" below.
-            The ~200 ms merge of Run 2b is kept: the bar collapses upward and the question row takes its
-            place, and `motion-reduce` turns that off for anyone who asked the system for less motion.
-            Overflow is hidden only while collapsing — the model bar's dropdown hangs out of this box.
-            A fixed-position descendant escapes `overflow: hidden` and `opacity: 0` does not stop pointer
-            events, so the collapsed block must be `invisible` AND carry the attribute below — the platform's
-            own way to take a whole subtree out of interaction — or its pinned "חפש" button stays tappable
-            under the results on the phone (Run 3c, Days 24–25). */}
-        <div
-          className={`transition-all duration-200 ease-out motion-reduce:transition-none ${answered ? "invisible max-h-0 overflow-hidden opacity-0" : "max-h-[80vh] overflow-visible opacity-100"}`}
-          inert={answered}
-        >
-          <div className="flex flex-col items-center gap-4 px-4 pt-[20vh] pb-6">
-            <div className="w-full max-w-md">
-              <ModelBar families={families} bar={bar} inputRef={barInput} />
-            </div>
-
-            {/* S2 §5 — no "פילטרים" button: a choice searches, and the filters come with the results.
-                "חפש" is never disabled for want of a model: black while the bar is not in use, grey while the
-                person is in the bar and the text is not a model, black again once it is. A press with no model
-                asks for one (useFamilyBar). Run 7 §7.3 — disabled with a spinner from the click until the push. */}
-            <button
-              type="button"
-              disabled={pending}
-              aria-busy={pending}
-              onClick={bar.submit}
-              className={`fixed inset-x-4 bottom-4 z-10 flex items-center justify-center gap-2 rounded-2xl px-4 py-3.5 text-lg font-medium text-white disabled:bg-neutral-300 md:static md:inset-auto md:w-full md:max-w-md ${bar.inUse && bar.exact === null ? "bg-neutral-300" : "bg-neutral-900"}`}
-            >
-              {pending && <Spinner />}
-              <span>{OPENING_TEXTS.search}</span>
-            </button>
-
-            {error !== null && <p className="w-full max-w-md text-sm text-neutral-600">{error}</p>}
-          </div>
-        </div>
+        {/* S3 §3 — THE OPENING SCREEN, while there is no question, and NOT RENDERED AT ALL after one: Run 2b's
+            collapsed block (invisible + inert, so its pinned "חפש" could not be tapped under the results) is
+            gone with it — nothing of the opening screen is left in the page to click, focus, or sit fixed over
+            the results. A choice there asks at once, from zero (S2 §5); the switch to the results is as before. */}
+        {!answered && <OpeningScreen families={families} pending={pending} error={error} onAsk={(familyId) => void doAsk({}, familyId)} />}
 
         {answered && (
           <>

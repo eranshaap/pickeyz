@@ -38,6 +38,44 @@ function stamp(entry: HistoryEntry): void {
   window.history.pushState({ ...(window.history.state as Record<string, unknown> | null), [SCREEN_KEY]: entry }, "");
 }
 
+// ---------------------------------------------------------------------------
+// S3 §5 — "BACK" TO THE OPENING SCREEN SHOWS THE MODEL THAT WAS ASKED
+// ---------------------------------------------------------------------------
+//
+// Before the opening screen's first question moves to `/?s=…`, the asked family's id is written onto the
+// CURRENT entry — the opening screen's own — under a second key of ours, beside Next's keys and never over
+// them (the same spread as stamp()). Next keeps it: its patched replaceState copies `__NA` and its tree into
+// the data it is handed, and a back/forward traverse rewrites the entry with `preserveCustomHistoryState: true`
+// (node_modules/next/dist/client/components/segment-cache/navigation.js, completeTraverseNavigation). A push
+// to `/` — the brand link — is a new entry built without custom state, so it carries no id: a fresh screen.
+
+/** The asked family's id sits under this key, on the opening screen's own entry. */
+const OPENING_KEY = "__openingFamily";
+
+function currentState(): Record<string, unknown> | null {
+  return window.history.state as Record<string, unknown> | null;
+}
+
+/** The first question is about to be pushed: the opening screen's entry remembers its family. */
+export function recordOpeningFamily(familyId: number): void {
+  window.history.replaceState({ ...currentState(), [OPENING_KEY]: familyId }, "");
+}
+
+/** The family the entry the opening screen mounted on remembers; null for a fresh entry. */
+export function openingFamily(): number | null {
+  const v = currentState()?.[OPENING_KEY];
+  return typeof v === "number" ? v : null;
+}
+
+/** The brand link on the opening screen itself: the entry forgets its family, so the screen starts fresh. */
+export function forgetOpeningFamily(): void {
+  const state = currentState();
+  if (state === null || !(OPENING_KEY in state)) return;
+  const rest = { ...state };
+  delete rest[OPENING_KEY];
+  window.history.replaceState(rest, "");
+}
+
 export function useScreenHistory({ onCancelOverlay }: { onCancelOverlay: () => void }) {
   const outstanding = useRef(false); // an overlay entry of ours is on the stack
   const ours = useRef(0); // popstate events this hook caused itself, still to arrive

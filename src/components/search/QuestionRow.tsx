@@ -26,7 +26,8 @@
 //   desktop  the bar takes the whole row beside the brand name; the filter chips and the back link LEAVE the
 //            row until it closes (they are not squeezed), the list opens below the bar, and the rest of the
 //            page is dimmed.
-//   phone    a full-screen search: "איזה דגם?" + "ביטול", the input pre-selected, the helper line, the list.
+//   phone    a full-screen search: "איזה דגם?" + "ביטול", the input pre-selected, the helper line, the list —
+//            S3 §4: <FullScreenSearch>, the same component the opening screen opens.
 // Picking ANOTHER model is a new question from zero — all filters drop, the search runs at once (no "עדכן"),
 // a new `searches` row is written, and the address pushes to it (§5). The same model, "ביטול", Esc, a click
 // outside and the browser's back are all CANCEL, and the cancel goes through the Day-15 mechanism
@@ -46,6 +47,7 @@ import { ask } from "@/app/actions/search";
 import type { FamilyEntry } from "@/lib/opening/completion";
 import type { SearchFilters } from "@/lib/search/filters";
 import CompletionPanel, { useFamilyBar } from "./CompletionPanel";
+import FullScreenSearch from "./FullScreenSearch";
 import { FILTER_LABEL, km, num, shekel } from "./labels";
 import { useScreenHistory } from "./useHistory";
 
@@ -321,29 +323,8 @@ function EditableRow({
       {/* the dim over the rest of the page; clicking it is one of the cancels */}
       <button type="button" aria-label={CANCEL} tabIndex={-1} className="fixed inset-0 z-30 hidden cursor-default bg-black/25 md:block" onClick={() => close()} />
 
-      {/* PHONE (§6): a full-screen search. */}
-      <div className="fixed inset-0 z-50 flex flex-col bg-white md:hidden">
-        <div className="flex items-center justify-between border-b border-[#d8d3cb] px-4 py-3">
-          <span className="text-[17px] font-extrabold text-[#221f1c]">{PHONE_TITLE}</span>
-          <button type="button" className="text-[15px] font-semibold text-[#665f58] underline underline-offset-4" onClick={() => close()}>
-            {CANCEL}
-          </button>
-        </div>
-        <div className="px-4 pt-4">
-          <input
-            ref={phoneInput}
-            type="text"
-            disabled={busy}
-            aria-label={PHONE_TITLE}
-            autoComplete="off"
-            className="h-[42px] w-full rounded-lg border-2 border-[#221f1c] bg-white px-3 text-[16px] text-[#221f1c] outline-none"
-            {...bar.input}
-          />
-          <p className="pt-2 text-[13px] text-[#665f58]">{PHONE_HELPER}</p>
-          {error !== null && <p className="pt-2 text-[13px] text-[#665f58]">{error}</p>}
-        </div>
-        {list("mt-2 flex-1 overflow-y-auto")}
-      </div>
+      {/* PHONE (§6): a full-screen search — S3 §4: the one component the opening screen uses too. */}
+      <FullScreenSearch bar={bar} inputRef={phoneInput} disabled={busy} helper={PHONE_HELPER} error={error} onCancel={() => close()} />
     </>
   );
 }
