@@ -8,7 +8,7 @@
 //                 container), without the question row. 52 px high on the phone. It never grows.
 //   the air       40% of the free height above the group, 60% below it (two flex spacers, 2 : 3).
 //   the group     centred: the headline (two lines), the grey line (at most 620 wide), the bar, the three
-//                 categories (a short line in the category's colour, its name, its line; not clickable), on a
+//                 categories (a short line in the category's colour, its name in that colour, its line; not clickable), on a
 //                 soft, very light radial halo.
 //   the tags      the two sentences, each after a green check; centred at the bottom, 24 px from it on the
 //                 computer, one above the other on the phone. A window too low for all of it: the tags follow
@@ -339,7 +339,7 @@ function Opening({ families, pending, leaving, onAsk, onFresh }: Props & { onFre
             {CATEGORIES.map(({ code, line }) => (
               <div key={code} className="flex flex-col items-center">
                 <span aria-hidden className="block h-[calc(3px*var(--s))] w-[calc(44px*var(--s))]" style={{ background: CATEGORY_COLOR[code] }} />
-                <span className="mt-[calc(12px*var(--s))] text-[calc(16px*var(--s))] font-extrabold md:text-[calc(22px*var(--s))]" style={{ color: INK }}>
+                <span className="mt-[calc(12px*var(--s))] text-[calc(16px*var(--s))] font-extrabold md:text-[calc(22px*var(--s))]" style={{ color: CATEGORY_COLOR[code] }}>
                   {CATEGORY_LABEL[code]}
                 </span>
                 <span className="mt-[calc(4px*var(--s))] text-[calc(14px*var(--s))] leading-snug md:text-[calc(17px*var(--s))]" style={{ color: GREY }}>
