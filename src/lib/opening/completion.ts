@@ -38,8 +38,8 @@ export function typedKey(s: string): string {
     .split(RIGHT_DOUBLE_QUOTE).join(QUOTATION_MARK);
 }
 
-/** The name the site shows for a model: "מאזדה 3". */
-export function fullName(f: FamilyEntry): string {
+/** The name the site shows for a model: "מאזדה 3". The one place the full name is put together (S2 §3). */
+export function fullName(f: { make: { nameHe: string }; nameHe: string }): string {
   return `${f.make.nameHe} ${f.nameHe}`;
 }
 
@@ -89,6 +89,22 @@ export function completionPanel(all: FamilyEntry[], typed: string, needModel = f
   const line = notOurs ? OPENING_TEXTS.greyNotOurs : OPENING_TEXTS.greyNotFound;
   if (have !== null) return { kind: "grey", line, haveLine: OPENING_TEXTS.haveLine, groups: have };
   return { kind: "grey", line, haveLine: null, groups: [] };
+}
+
+/** S2 §5 — the rows one can choose, in the order the list shows them: headers and grey lines are not among them. */
+export function panelModels(panel: Panel): PanelModel[] {
+  return panel.kind === "closed" ? [] : panel.groups.flatMap((g) => g.models);
+}
+
+/**
+ * S2 §5 — arrow down (+1) or up (-1): the next mark among the model rows. Nothing marked → down marks the first
+ * row, up the last; the mark stops at either end. A mark that is no longer in the list counts as none.
+ */
+export function moveMark(models: PanelModel[], marked: number | null, step: 1 | -1): number | null {
+  if (models.length === 0) return null;
+  const at = marked === null ? -1 : models.findIndex((m) => m.id === marked);
+  if (at === -1) return (step === 1 ? models[0] : models[models.length - 1]).id;
+  return models[Math.min(models.length - 1, Math.max(0, at + step))].id;
 }
 
 /**

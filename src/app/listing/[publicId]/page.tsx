@@ -43,15 +43,14 @@ import { shownPlace as shownPlaceLine } from "@/lib/location/place";
 import { db } from "@/lib/db";
 import { isPublicId } from "@/lib/public-id";
 import { isCancelled, type Check, type Invoice, type Row } from "@/lib/scoring/types";
-import { modelKey } from "@/lib/search/assemble";
+import { questionDisplay } from "@/lib/search/families";
 import { activeFilterNames } from "@/lib/search/filters";
 // Run 1 §0.3e — photoFor() moved to load.ts, where the recommendations screen's view builder also
 // needs it: ONE resolution of a plate to a file for both screens. §7.3's rule is unchanged.
-import { loadForAddress, photoFor, storedFilters, viewerFromCookies } from "@/lib/search/load";
+import { carDisplayName, loadForAddress, photoFor, storedFilters, viewerFromCookies } from "@/lib/search/load";
 // Days 24–25 Run 1 §1.3 / §4.8 — the ONE function that turns a search's stored rows into the place a reader
 // sees. This page and the bottom list read it, so they cannot show one car two different numbers.
 import { displayedPlaces } from "@/lib/search/places";
-import { liveModels } from "@/lib/search/models";
 import { resolveListing } from "@/lib/search/visibility";
 // Days 22–23 (Run 5 §6) — the "למה" section's lines, recomputed from the displayed run's stored rows.
 import { storedWhyLines } from "@/lib/search/why";
@@ -115,6 +114,8 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
           model: {
             select: {
               model: true,
+              // S2 §3 — the title's name is the family's full Hebrew name, from the two tables
+              family: { select: { name_he: true, make: { select: { name_he: true } } } },
               sub_model: true,
               body_type: true,
               engine_size: true,
@@ -214,13 +215,11 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
         contactWasRecommended = row.recommendation_categories.length > 0;
       }
       const filters = storedFilters(loaded.question.filters);
-      // Run 7c §11.2 — the row is TEXT here, so the live list is read for ONE thing: the model's display
-      // spelling, which is the live list's when the model is still live and the stored string otherwise.
-      // The model as searched and its key went with the sheet Run 7 §1 opened over this page.
-      const models = await liveModels();
-      const key = modelKey(loaded.run.model_searched);
+      // Run 7c §11.2 — the row is TEXT here. S2 §3: its name is the fullName() of the question's family —
+      // its `family_id`, or familyOfModelText(model_searched), as loadForAddress resolved it — else the stored
+      // `model_searched`.
       question = {
-        modelDisplay: models.find((m) => m.key === key)?.display ?? loaded.run.model_searched,
+        modelDisplay: await questionDisplay(loaded.family_id, loaded.run.model_searched),
         filters,
         active: activeFilterNames(filters) as FilterName[],
         publicId: loaded.question.public_id,
@@ -309,8 +308,8 @@ export default async function ListingPage(props: PageProps<"/listing/[publicId]"
     placeWord: cancelled ? CANCELLED_WORD : shownPlace === null ? null : placeWord(shownPlace),
     place: shownPlace,
     // Run 9 §3.1 — THE TWO PARTS, never a joined string: CarTitle puts a 0.4em gap between them and the
-    // comma is gone. The model spelling itself is unchanged — it is the same `models.model` as before.
-    model: car.model.model ?? "",
+    // comma is gone. S2 §3: the name is the family's full Hebrew name; a row with no family keeps `models.model`.
+    model: carDisplayName(car.model.model, car.model.family),
     year: car.year,
     versionLine: versionLine({
       model: car.model.model,

@@ -28,10 +28,9 @@
 
 import SearchScreen from "@/components/search/SearchScreen";
 import { reliefFor, type AskResult, type FilterName } from "@/app/actions/search";
-import { modelKey } from "@/lib/search/assemble";
+import { barFamilies, questionDisplay } from "@/lib/search/families";
 import { activeFilterNames } from "@/lib/search/filters";
 import { loadForAddress, resultsView, storedFilters, viewerFromCookies } from "@/lib/search/load";
-import { liveModels } from "@/lib/search/models";
 import { isPublicId } from "@/lib/public-id";
 
 export const dynamic = "force-dynamic";
@@ -40,10 +39,11 @@ export default async function Home(props: PageProps<"/">) {
   const params = await props.searchParams;
   const s = typeof params.s === "string" ? params.s : null;
 
-  const models = await liveModels();
+  // S2 §5 — both bars read the model families, loaded once here and passed down.
+  const families = await barFamilies();
 
   // §5 — no `s`, or one that cannot be a public id, is the opening screen. No redirect, no error.
-  if (s === null || !isPublicId(s)) return <SearchScreen models={models} />;
+  if (s === null || !isPublicId(s)) return <SearchScreen families={families} />;
 
   // Run 8b §2.1 — THE MODEL'S FILTER ROWS RIDE IN THIS REQUEST, in place of Run 8's resolved window.
   // loadForAddress fetches them concurrently with the stored-results load (the seam sits inside the loader,
@@ -52,9 +52,10 @@ export default async function Home(props: PageProps<"/">) {
   // paint, in the browser for every edit after it (§2.2) — so the window is full from the first frame and a
   // chip click never waits for the network.
   const loaded = await loadForAddress(s, await viewerFromCookies(), { model_rows: true });
-  if (loaded === null) return <SearchScreen models={models} />; // nothing exists behind that name
+  if (loaded === null) return <SearchScreen families={families} />; // nothing exists behind that name
 
-  const { question, run, results, model_rows } = loaded;
+  // S2 §A.3 — `family_id` is the loaded question's family: its own, or familyOfModelText(model_searched).
+  const { question, run, results, model_rows, family_id } = loaded;
   if (model_rows === null) throw new Error(`/?s=${s}: the model's filter rows were asked for and did not come back`);
 
   // §2.1 — the ADDRESS is the question's, whatever run is displayed (§4), so the view is built under the
@@ -67,16 +68,17 @@ export default async function Home(props: PageProps<"/">) {
     search_id: run.id,
     question: {
       model: run.model_searched,
-      model_key: modelKey(run.model_searched),
+      family_id,
+      display: await questionDisplay(family_id, run.model_searched), // S2 §3 — the family's full Hebrew name
       filters,
       active: activeFilterNames(filters) as FilterName[],
     },
     pool_count: run.pool_count ?? 0,
     results_count: run.results_count,
-    relief: (run.pool_count ?? 0) === 0 ? await reliefFor(run.model_searched, filters) : null,
+    relief: (run.pool_count ?? 0) === 0 ? await reliefFor(family_id, filters) : null,
   };
 
   // The key is the address: the browser's back and forward land on a different question, and the screen
   // starts from that question's stored answer rather than from the one it happened to be holding.
-  return <SearchScreen key={question.public_id} models={models} initial={answer} modelRows={model_rows} />;
+  return <SearchScreen key={question.public_id} families={families} initial={answer} modelRows={model_rows} />;
 }

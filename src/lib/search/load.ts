@@ -26,6 +26,7 @@ import { israelDay, percentOfNewLine } from "@/lib/display/texts";
 import { TAG_CHEAPER_THAN_CHEAPEST } from "@/lib/justification";
 import { CROWNING_THRESHOLD } from "@/lib/selection/constants";
 import type { Category, RuleTrace } from "@/lib/selection";
+import { fullName } from "@/lib/opening/completion";
 import type { ModelRows } from "./chip-state";
 import type { SearchFilters } from "./filters";
 // Days 24–25 §2 — the list's one assembly and the row view it returns. Pure modules: they bring no database.
@@ -294,7 +295,7 @@ export type ResultsView = {
 export type ListingFacts = {
   public_id: string;
   car_id: number;
-  /** `models.model` — the very string the car page hands CarTitle. */
+  /** S2 §3 — carDisplayName() of the car's catalog row: the very string the car page hands CarTitle. */
   model: string;
   year: number | null;
   price: number;
@@ -306,6 +307,18 @@ export type ListingFacts = {
   /** The page's `imageSrc`, already resolved (the resolver reads the filesystem and cannot be pure). */
   image: string | null;
 };
+
+/** The catalog row's family names, as the car's display name reads them. */
+export type CatalogFamily = { name_he: string; make: { name_he: string } };
+
+/**
+ * S2 §3 — a car's display name: the full Hebrew name of its catalog row's family ("מאזדה 3"), put together by
+ * fullName(); a row with no family keeps `models.model`, as before.
+ */
+export function carDisplayName(model: string | null, family: CatalogFamily | null): string {
+  if (family === null) return model ?? "";
+  return fullName({ make: { nameHe: family.make.name_he }, nameHe: family.name_he });
+}
 
 /**
  * §0.3f / §1.7 — is this row one the search SHOWS?
@@ -724,23 +737,13 @@ export async function resolveQuestion(publicId: string): Promise<ResolvedQuestio
  * §3.2 — `max(listings.updated_at)` over ALL listings of the searched model, live AND delisted: a delisting
  * is itself a change, and a question whose answer lost a car must be re-run.
  *
- * The model scoping is EXACTLY assemblePool's — `modelKey()` over `models.model`, uppercased and stripped of
- * whitespace — applied in memory for the same reason assemblePool applies it there: it is one definition of
- * "the same model", not two (one in TypeScript and one in SQL).
+ * S2 §2 — the scoping is the pool's own: the listings whose car's catalog row has `family_id` = the question's
+ * family. A plain equality, so SQL can say it exactly as the assembly does.
  */
-export async function maxModelListingUpdatedAt(model_searched: string): Promise<Date | null> {
-  // Both imported on use: src/lib/search/assemble.ts holds the Prisma client at module scope, so importing
-  // modelKey() at the top of this file would drag a database connection into the pure half.
-  const [{ db }, { modelKey }] = await Promise.all([import("@/lib/db"), import("./assemble")]);
-  const key = modelKey(model_searched);
-  const rows = await db.listings.findMany({ select: { updated_at: true, car: { select: { model: { select: { model: true } } } } } });
-  let max: Date | null = null;
-  for (const r of rows) {
-    const m = r.car.model.model;
-    if (m === null || modelKey(m) !== key) continue;
-    if (max === null || r.updated_at.getTime() > max.getTime()) max = r.updated_at;
-  }
-  return max;
+export async function maxModelListingUpdatedAt(familyId: number): Promise<Date | null> {
+  const { db } = await import("@/lib/db");
+  const r = await db.listings.aggregate({ where: { car: { model: { family_id: familyId } } }, _max: { updated_at: true } });
+  return r._max.updated_at ?? null;
 }
 
 /** §3.2 — over the WHOLE dealer_commercial table: the rule is unscoped by design. */
@@ -819,7 +822,7 @@ export async function resultsView(questionPublicId: string, rows: ResultRow[]): 
                 year: true,
                 hand: true,
                 ownership_history: true,
-                model: { select: { model: true } },
+                model: { select: { model: true, family: { select: { name_he: true, make: { select: { name_he: true } } } } } },
               },
             },
           },
@@ -833,7 +836,7 @@ export async function resultsView(questionPublicId: string, rows: ResultRow[]): 
       {
         public_id: l.public_id,
         car_id: l.car_id,
-        model: l.car.model.model ?? "",
+        model: carDisplayName(l.car.model.model, l.car.model.family),
         year: l.car.year,
         price: l.price,
         km_declared: l.km_declared,
@@ -869,13 +872,15 @@ export type LoadedAddress = {
    * only when the caller asked for it; the car page has no filters window and does not pay.
    */
   model_rows: ModelRows | null;
+  /** S2 §A.3 — the question's family: its `family_id`, or familyOfModelText(model_searched) when that is null. */
+  family_id: number;
 };
 
 /** Run 8b §2.1 — the rows, on their own: the page carries the stored filters already, and §3's shelf join
  * and the resolve both happen where the component renders. */
-async function modelRowsFor(model_searched: string): Promise<ModelRows> {
+async function modelRowsFor(familyId: number): Promise<ModelRows> {
   const { modelRows } = await import("./counts");
-  return modelRows(model_searched);
+  return modelRows(familyId);
 }
 
 /**
@@ -892,21 +897,33 @@ export async function loadForAddress(publicId: string, viewer: Viewer, options: 
   const resolved = await resolveQuestion(publicId);
   if (resolved === null) return null;
 
+  // S2 §A.3 — ONE resolution of the question's family, for the update signal, the rows and the re-run alike.
+  // A question whose family cannot be found has no pool to watch, count or re-run: that is a stop.
+  const { familyOfQuestion } = await import("./families");
+  const familyId = await familyOfQuestion(resolved.question);
+  if (familyId === null) {
+    throw new Error(`loadForAddress: question ${resolved.question.id} ('${resolved.question.model_searched}') has no family_id and no catalog row with that model has a family`);
+  }
+
   // §2.1 — THE SEAM, WHERE RUN 8 PUT IT. The question row names the model, so the model's rows can be
   // fetched from here on, CONCURRENTLY with the run's own load: the page's response is delayed by the slower
   // of the two, never by their sum. It is started here and awaited at the bottom, once per path, so the
   // stored-results path and the re-run path get the same rows from the same fetch. The car page passes
   // nothing and fetches nothing — it has no filters window.
-  const rowsLoad = options.model_rows === true ? modelRowsFor(resolved.question.model_searched) : null;
+  const rowsLoad = options.model_rows === true ? modelRowsFor(familyId) : null;
   // A rejection here must not be "unhandled" while the run's own load is still in flight; the await below is
   // what surfaces it, loudly, as every failure in this file does.
   rowsLoad?.catch(() => {});
-  const withRows = async (loaded: Omit<LoadedAddress, "model_rows">): Promise<LoadedAddress> => ({ ...loaded, model_rows: rowsLoad === null ? null : await rowsLoad });
+  const withRows = async (loaded: Omit<LoadedAddress, "model_rows" | "family_id">): Promise<LoadedAddress> => ({
+    ...loaded,
+    model_rows: rowsLoad === null ? null : await rowsLoad,
+    family_id: familyId,
+  });
 
   const run = latestRun(resolved.question, resolved.reruns);
   const [current, modelMax, dealerMax] = await Promise.all([
     currentVersions(),
-    maxModelListingUpdatedAt(run.model_searched),
+    maxModelListingUpdatedAt(familyId),
     maxDealerCommercialUpdatedAt(),
   ]);
   const signals = updateSignals(run, new Date(), current, modelMax, dealerMax);
@@ -917,7 +934,7 @@ export async function loadForAddress(publicId: string, viewer: Viewer, options: 
 
   const { runSearch } = await import("./run");
   const fresh = await runSearch({
-    model: resolved.question.model_searched,
+    familyId, // S2 §2 — the question's family; `model_searched` and `family_id` are still copied as stored
     filters: storedFilters(resolved.question.filters),
     identity: viewer,
     // §4 — rerun_of ALWAYS points at the person's question, never at another re-run.

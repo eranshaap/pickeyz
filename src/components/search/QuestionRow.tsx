@@ -24,15 +24,17 @@
 //
 // THE MODEL IS A CONTROL (§6), on the results screen:
 //   desktop  the bar takes the whole row beside the brand name; the filter chips and the back link LEAVE the
-//            row until it closes (they are not squeezed), the two-level autocomplete opens below the bar with
-//            the current model marked "הדגם הנוכחי", and the rest of the page is dimmed.
+//            row until it closes (they are not squeezed), the list opens below the bar, and the rest of the
+//            page is dimmed.
 //   phone    a full-screen search: "איזה דגם?" + "ביטול", the input pre-selected, the helper line, the list.
 // Picking ANOTHER model is a new question from zero — all filters drop, the search runs at once (no "עדכן"),
 // a new `searches` row is written, and the address pushes to it (§5). The same model, "ביטול", Esc, a click
 // outside and the browser's back are all CANCEL, and the cancel goes through the Day-15 mechanism
 // (useHistory.ts), which is what makes back close the editor and stay on the same address.
 //
-// The completion is ModelBar's own (§6: "reuse ModelBar.tsx's completion") — imported, not copied.
+// S2 §4–§5 — THE LIST AND THE BAR'S BEHAVIOUR ARE THE OPENING SCREEN'S OWN: <CompletionPanel> and
+// useFamilyBar() (CompletionPanel.tsx), over the model families, on the computer and on the phone alike. The
+// asked model is no longer marked in the list; choosing it again is still a cancel.
 //
 // §11.3 — THE PUSH IS NOT THIS ROW'S. A model pick is one of the navigations the results screen starts from
 // its own controls, so it runs through the screen's shared pending state (`nav`): the screen's cards area
@@ -41,10 +43,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { FilterName } from "@/app/actions/search";
 import { ask } from "@/app/actions/search";
+import type { FamilyEntry } from "@/lib/opening/completion";
 import type { SearchFilters } from "@/lib/search/filters";
-import type { LiveModel } from "@/lib/search/models";
+import CompletionPanel, { useFamilyBar } from "./CompletionPanel";
 import { FILTER_LABEL, km, num, shekel } from "./labels";
-import { completion, CompletionList } from "./ModelBar";
 import { useScreenHistory } from "./useHistory";
 
 const ADD_FILTERS = "+ פילטרים";
@@ -111,9 +113,10 @@ type Props =
   | ({ readOnly: true } & RowQuestion)
   | ({
       readOnly?: false;
-      models: LiveModel[];
-      /** The asked question's model key — what makes "the same model" a cancel. */
-      modelKey: string;
+      /** S2 §5 — barFamilies(), what the editor's list offers. */
+      families: FamilyEntry[];
+      /** The asked question's family — what makes "the same model" a cancel. */
+      familyId: number;
       nav: ScreenNav;
       /**
        * The results screen's own filters opener, and the SAME handler on both devices since Run 2 (Days
@@ -128,9 +131,9 @@ export default function QuestionRow(props: Props) {
   if (props.readOnly === true) return <ReadOnlyRow modelDisplay={props.modelDisplay} filters={props.filters} active={props.active} />;
   return (
     <EditableRow
-      models={props.models}
+      families={props.families}
       modelDisplay={props.modelDisplay}
-      modelKey={props.modelKey}
+      familyId={props.familyId}
       filters={props.filters}
       active={props.active}
       nav={props.nav}
@@ -173,38 +176,41 @@ function ReadOnlyRow({ modelDisplay, filters, active }: RowQuestion) {
 // ---------------------------------------------------------------------------
 
 function EditableRow({
-  models,
+  families,
   modelDisplay,
-  modelKey,
+  familyId,
   filters,
   active,
   nav,
   onOpenFilters,
   onEditingChange,
 }: {
-  models: LiveModel[];
-  modelKey: string;
+  families: FamilyEntry[];
+  familyId: number;
   nav: ScreenNav;
   onOpenFilters: (focus: FilterName | null) => void;
   onEditingChange: (editing: boolean) => void;
 } & RowQuestion) {
   const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(modelDisplay);
-  const [openMake, setOpenMake] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Run 8c §1 — THE LIST IS ITS OWN STATE NOW, because a choice must close it AT ONCE while the editor
-  // itself stays where it is. Until now the list was down for exactly as long as `editing`, so a chosen
-  // model left it standing over the dim through the whole round trip to the new question. It opens with the
-  // editor (§6: the editor arrives with its list already down) and closes with it; between the two it closes
-  // on a choice and opens again only on a fresh act of the user in the bar — typing, or a click into it.
-  const [listOpen, setListOpen] = useState(false);
 
   // Two inputs are rendered, one per viewport, and exactly one of them is displayed. focus() on a
   // display:none element does nothing, so both are asked and only the visible one answers.
   const input = useRef<HTMLInputElement>(null);
   const phoneInput = useRef<HTMLInputElement>(null);
+
+  // S2 §5 — the bar's text, its list and its mark: the opening screen's behaviour, shared. Run 8c §1 holds
+  // inside it: a choice closes the list AT ONCE while the editor itself stays where it is, and only typing or
+  // a click into the bar opens it again. Esc closes the list; Esc on a closed list is the editor's cancel.
+  const bar = useFamilyBar(families, {
+    initialText: modelDisplay,
+    onChoose: (id) => void choose(id),
+    onEscape: () => close(),
+    focus: () => {
+      for (const el of [input.current, phoneInput.current]) el?.focus();
+    },
+  });
 
   // §6 — the cancel goes through the Day-15 mechanism: an open overlay is one history entry on the SAME
   // address, and the browser's back closes it as cancel and stays where it is.
@@ -224,33 +230,30 @@ function EditableRow({
   }, [editing]);
 
   function open() {
-    setText(modelDisplay);
-    setOpenMake(null);
     setError(null);
     setEditing(true);
-    setListOpen(true);
+    bar.reset(modelDisplay);
+    bar.openList(); // §6 — the editor arrives with its list already down: the click on the model is the click into the bar
     history.pushOverlay();
   }
 
   /** `popEntry` is false only when the browser's own back is what closed it — its entry is already gone. */
   function close(popEntry = true) {
     setEditing(false);
-    setOpenMake(null);
-    setListOpen(false);
-    setText(modelDisplay);
+    bar.reset(modelDisplay);
     if (popEntry) history.popOverlay();
   }
 
-  async function choose(m: LiveModel) {
-    if (m.key === modelKey) return close(); // §6 / §0.1 — the same model is a cancel, not a search
-    setListOpen(false); // §1 — the list goes AT ONCE, in the same event; the new question below is unchanged
+  // The bar has already closed the list and filled itself with the chosen name, in the same event (§1).
+  async function choose(id: number) {
+    if (id === familyId) return close(); // §6 / §0.1 — the same model is a cancel, not a search
     setBusy(true);
     nav.begin(); // §11.3 — the screen goes pending on the click, not on the push
     setError(null);
     try {
       // A new question from ZERO: no filters at all (§6). The address then pushes to the new question as a
       // NEW history entry, which is what makes back return to the question asked before it (§5).
-      const answer = await ask({ model: m.model });
+      const answer = await ask({ familyId: id });
       history.popOverlay(() => nav.push(`/?s=${answer.public_id}`));
     } catch (e) {
       console.error("[question row]", e);
@@ -260,32 +263,8 @@ function EditableRow({
     }
   }
 
-  const { panel, makeHits, modelHits, isChosenText } = completion(models, text, modelDisplay, openMake);
-
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      return close();
-    }
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    if (isChosenText) return close(); // the asked model's own name is a cancel
-    if (modelHits.length === 1) return void choose(modelHits[0]); // §1 — Enter on a suggestion closes the list
-    if (makeHits.length === 1) {
-      setOpenMake(makeHits[0]); // a manufacturer OPENS its models; it is not a choice
-      setListOpen(true);
-    }
-  }
-
-  const list = (
-    <CompletionList
-      panel={panel}
-      models={models}
-      currentKey={modelKey}
-      onChoose={(m) => void choose(m)}
-      onOpenMake={(make) => setOpenMake(make)}
-    />
-  );
+  // S2 §4 — the one list; each bar gives it its own frame.
+  const list = (frame: string) => <CompletionPanel panel={bar.panel} marked={bar.marked} onChoose={bar.choose} className={frame} />;
 
   if (!editing) {
     return (
@@ -329,22 +308,13 @@ function EditableRow({
         <input
           ref={input}
           type="text"
-          value={text}
           disabled={busy}
           aria-label={PHONE_TITLE}
           autoComplete="off"
           className="h-[42px] w-full rounded-lg border-2 border-[#221f1c] bg-white px-3 text-[17px] text-[#221f1c] outline-none"
-          onChange={(e) => {
-            setText(e.target.value);
-            setOpenMake(null);
-            setListOpen(true); // §1 — typing is one of the two acts that open the list again
-          }}
-          onPointerDown={() => setListOpen(true)} // §1 — and a click or tap into the bar is the other
-          onKeyDown={onKeyDown}
+          {...bar.input}
         />
-        {listOpen && (
-          <div className="absolute inset-x-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-xl border border-[#d8d3cb] bg-white py-1 shadow-lg">{list}</div>
-        )}
+        {list("absolute inset-x-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-xl border border-[#d8d3cb] bg-white py-1 shadow-lg")}
         {error !== null && <p className="absolute inset-x-0 top-full mt-1 text-sm text-[#665f58]">{error}</p>}
       </div>
 
@@ -363,23 +333,16 @@ function EditableRow({
           <input
             ref={phoneInput}
             type="text"
-            value={text}
             disabled={busy}
             aria-label={PHONE_TITLE}
             autoComplete="off"
             className="h-[42px] w-full rounded-lg border-2 border-[#221f1c] bg-white px-3 text-[16px] text-[#221f1c] outline-none"
-            onChange={(e) => {
-              setText(e.target.value);
-              setOpenMake(null);
-              setListOpen(true); // §1 — as on the desktop bar: typing opens the list again
-            }}
-            onPointerDown={() => setListOpen(true)}
-            onKeyDown={onKeyDown}
+            {...bar.input}
           />
           <p className="pt-2 text-[13px] text-[#665f58]">{PHONE_HELPER}</p>
           {error !== null && <p className="pt-2 text-[13px] text-[#665f58]">{error}</p>}
         </div>
-        {listOpen && <div className="mt-2 flex-1 overflow-y-auto">{list}</div>}
+        {list("mt-2 flex-1 overflow-y-auto")}
       </div>
     </>
   );

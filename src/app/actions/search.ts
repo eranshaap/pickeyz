@@ -1,18 +1,13 @@
 "use server";
 
-// The screen's server actions (BRIEF Days 15–16, Run 2b §6). Three of them, and nothing else crosses the wire.
+// The screen's server actions (BRIEF Days 15–16, Run 2b §6). Since S2 there is one, and nothing else crosses the wire.
 //
 //   ask()             one question -> one `searches` row (+ its `search_results` rows) -> the three raw picks
-//   modelFilterRows() Run 8b §2.3 — THE MODEL-ROWS CALL, and the filters window's only call left: one model in,
-//                     its live filter rows and km anchors out. It replaces Run 8's resolving action, which took
-//                     a draft and returned a resolved window — one round trip per settled edit, which is exactly the
-//                     delay Run 8b removes. Called ONLY when the active model changes to a model whose rows
-//                     are not already in hand; the browser resolves every chip itself, from these rows.
-//   liveModels()      the model bar's list; called on the SERVER in page.tsx, and available to the client for a retry
+//   reliefFor()       not called from the browser: page.tsx calls it on the server for a stored empty run
 //
-// Run 8b §2.3 — THE RESULTS SCREEN NEVER CALLS IT AT ALL: the page's own request carries the rows (load.ts,
-// §2.1), and a chip click or a price edit is resolved in the browser. The opening screen's first model pick
-// is what this action is for.
+// S2 §2 / §5 — modelFilterRows() is gone: the opening screen's choice now searches at once and the filters come
+// with the results page's own request (load.ts, §2.1), so nothing in the browser asks for a family's rows. The
+// unused live-models action is gone too: the bars read barFamilies() (src/lib/search/families.ts) in page.tsx.
 //
 // NO FILTER LOGIC LIVES HERE. src/lib/search/filters.ts is the single source (§0.8): these actions pass a
 // SearchFilters through and never decide what it means. Nor is anything re-scored or re-ranked — every verdict
@@ -28,11 +23,10 @@
 // FAILURE IS LOUD (§6): nothing here is retried and nothing is swallowed. An action that throws surfaces as
 // one plain line under the bar.
 
-import type { ModelRows } from "@/lib/search/chip-state";
-import { filterCounts, modelRows } from "@/lib/search/counts";
+import { filterCounts } from "@/lib/search/counts";
+import { questionDisplay } from "@/lib/search/families";
 import { activeFilterNames, type SearchFilters } from "@/lib/search/filters";
 import { resultsOf, resultsView, type ResultsView } from "@/lib/search/load";
-import { liveModels as loadLiveModels, type LiveModel } from "@/lib/search/models";
 import { runSearch } from "@/lib/search/run";
 import { searchIdentity } from "@/lib/search/visitor";
 
@@ -43,8 +37,9 @@ export type Relief = { filter: FilterName; count: number };
 export type FilterName = "price" | "years" | "kmMax" | "regions";
 const FILTER_DISPLAY_ORDER: readonly FilterName[] = ["price", "years", "kmMax", "regions"];
 
-// The question the shown picks answer — never the draft (§5).
-export type Question = { model: string; model_key: string; filters: SearchFilters; active: FilterName[] };
+// The question the shown picks answer — never the draft (§5). S2: `model` is the row's `model_searched`,
+// `family_id` the asked family and `display` what the question row shows — the family's full Hebrew name.
+export type Question = { model: string; family_id: number; display: string; filters: SearchFilters; active: FilterName[] };
 
 /**
  * What the screen renders. `cards`, `runner_up` and `cars_shown` are the §2.1 view, and `public_id` is that
@@ -68,10 +63,10 @@ export type AskResult = ResultsView & {
  * `filters` is stored exactly as received (§6): undefined when the question carries none, which is what makes
  * `searches.filters` null rather than `{}`.
  */
-export async function ask(input: { model: string; filters?: SearchFilters }): Promise<AskResult> {
+export async function ask(input: { familyId: number; filters?: SearchFilters }): Promise<AskResult> {
   const filters = input.filters;
   const identity = await searchIdentity();
-  const search = await runSearch({ model: input.model, filters, identity });
+  const search = await runSearch({ familyId: input.familyId, filters, identity });
 
   // §2.1 — THE SAME ROWS, THE SAME BUILDER. The search has just written its `search_results` rows in one
   // transaction; they are read back and handed to resultsView(), which is the function `/?s=` renders from.
@@ -81,10 +76,16 @@ export async function ask(input: { model: string; filters?: SearchFilters }): Pr
   return {
     ...view,
     search_id: search.search_id,
-    question: { model: search.model, model_key: search.model_key, filters: search.filters, active: activeFilterNames(search.filters) as FilterName[] },
+    question: {
+      model: search.model,
+      family_id: search.family_id,
+      display: await questionDisplay(search.family_id, search.model),
+      filters: search.filters,
+      active: activeFilterNames(search.filters) as FilterName[],
+    },
     pool_count: search.pool_cut,
     results_count: search.results_count,
-    relief: search.pool_cut === 0 ? await reliefFor(input.model, search.filters) : null,
+    relief: search.pool_cut === 0 ? await reliefFor(input.familyId, search.filters) : null,
   };
 }
 
@@ -99,7 +100,7 @@ export async function ask(input: { model: string; filters?: SearchFilters }): Pr
  * Run 6b §9: exported so that the stored-run render of `/?s=` can offer the same suggestion the search
  * itself offered. It is a read-only measurement — it writes nothing and runs no search.
  */
-export async function reliefFor(model: string, filters: SearchFilters): Promise<Relief | null> {
+export async function reliefFor(familyId: number, filters: SearchFilters): Promise<Relief | null> {
   const active = activeFilterNames(filters) as FilterName[];
   let best: Relief | null = null;
   for (const name of FILTER_DISPLAY_ORDER) {
@@ -111,25 +112,8 @@ export async function reliefFor(model: string, filters: SearchFilters): Promise<
     } else if (name === "years") delete without.years;
     else if (name === "kmMax") delete without.kmMax;
     else delete without.regions;
-    const { pool_now } = await filterCounts({ model, draft: without });
+    const { pool_now } = await filterCounts({ familyId, draft: without });
     if (pool_now > 0 && (best === null || pool_now > best.count)) best = { filter: name, count: pool_now };
   }
   return best;
-}
-
-/**
- * Run 8b §2.3 — THE MODEL-ROWS CALL. One model goes out, its live filter rows and km anchors come back; the
- * browser holds them for the page's life and resolves every chip and every number from them, in render, with
- * no further call. NO DRAFT CROSSES THE WIRE and nothing about a chip is decided here.
- *
- * It is the same modelRows() the results page calls (load.ts §2.1), so the rows a model change brings in and
- * the rows an arrival brings in come out of one piece of code.
- */
-export async function modelFilterRows(input: { model: string }): Promise<ModelRows> {
-  return modelRows(input.model);
-}
-
-/** §5 — the model bar's list: LIVE models only, never the catalog. */
-export async function liveModels(): Promise<LiveModel[]> {
-  return loadLiveModels();
 }

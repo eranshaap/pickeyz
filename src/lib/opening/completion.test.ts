@@ -2,7 +2,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { completionPanel, exactModel, fullName, hintText, type FamilyEntry, type MakeEntry, type PanelGroup } from "./completion";
+import { completionPanel, exactModel, fullName, hintText, moveMark, panelModels, type FamilyEntry, type MakeEntry, type PanelGroup } from "./completion";
 
 const MAZDA: MakeEntry = { id: 1, nameHe: "מאזדה", nameEn: "MAZDA", aliases: ["מזדה", "mazda"] };
 const HYUNDAI: MakeEntry = { id: 2, nameHe: "יונדאי", nameEn: "HYUNDAI", aliases: [] };
@@ -135,5 +135,48 @@ describe("hintText", () => {
     const live = new Set([MAZDA_3, IONIQ, CHEROKEE].map((f) => `איזה דגם? למשל ${fullName(f)}`));
     for (let r = 0; r < 1; r += 0.05) assert.ok(live.has(hintText(ALL, 100, () => r)));
     assert.equal(hintText([CX_5, TUCSON], 100, () => 0), "איזה דגם?");
+  });
+});
+
+describe("fullName — S2 §3", () => {
+  it("takes any make-and-name pair, not only a FamilyEntry", () => {
+    assert.equal(fullName({ make: { nameHe: "מאזדה" }, nameHe: "3" }), "מאזדה 3");
+    assert.equal(fullName(MAZDA_3), "מאזדה 3");
+  });
+});
+
+describe("panelModels — S2 §5", () => {
+  it("is the model rows in list order, without headers", () => {
+    assert.deepEqual(panelModels(completionPanel(ALL, "")).map((m) => m.id), [CHEROKEE.id, IONIQ.id, MAZDA_3.id]);
+  });
+
+  it("is the grey panel's models under its lines", () => {
+    assert.deepEqual(panelModels(completionPanel(ALL, "סובארו")).map((m) => m.id), [CHEROKEE.id, IONIQ.id, MAZDA_3.id]);
+  });
+
+  it("is empty for a closed panel and for the notice alone", () => {
+    assert.deepEqual(panelModels({ kind: "closed" }), []);
+    assert.deepEqual(panelModels(completionPanel(THIRTEEN_LIVE, "", true)), []);
+  });
+});
+
+describe("moveMark — S2 §5", () => {
+  const rows = panelModels(completionPanel(ALL, ""));
+
+  it("down from nothing marks the first row, up from nothing the last", () => {
+    assert.equal(moveMark(rows, null, 1), CHEROKEE.id);
+    assert.equal(moveMark(rows, null, -1), MAZDA_3.id);
+  });
+
+  it("moves one row at a time and stops at either end", () => {
+    assert.equal(moveMark(rows, CHEROKEE.id, 1), IONIQ.id);
+    assert.equal(moveMark(rows, IONIQ.id, -1), CHEROKEE.id);
+    assert.equal(moveMark(rows, MAZDA_3.id, 1), MAZDA_3.id);
+    assert.equal(moveMark(rows, CHEROKEE.id, -1), CHEROKEE.id);
+  });
+
+  it("a mark no longer in the list counts as none; no rows, no mark", () => {
+    assert.equal(moveMark(rows, 999, 1), CHEROKEE.id);
+    assert.equal(moveMark([], null, 1), null);
   });
 });

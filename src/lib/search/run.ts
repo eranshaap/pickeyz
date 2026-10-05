@@ -2,7 +2,7 @@
 
 // The search (BRIEF Days 15–16, §3). One question in, one verdict out — and one `searches` row per invocation.
 //
-//   assemblePool(model)   the model's whole live pool (src/lib/search/assemble.ts)
+//   assembleFamilyPool()  the family's whole live pool (src/lib/search/assemble.ts; S2 §2)
 //   cut by the filters    BEFORE selectThree(); the filters define the question and never touch a score (§3.2)
 //   selectThree()         the Stage B library, unchanged: nothing here recomputes a score or a rule
 //   the `searches` row    written on every invocation, even when the answer is empty (§3.4)
@@ -41,7 +41,7 @@ import {
   type MissingReason,
 } from "@/lib/selection";
 import { carsFromSelection, checkOutput, crownedOf, justify, type JustificationSearch } from "@/lib/justification";
-import { assemblePool } from "./assemble";
+import { assembleFamilyPool } from "./assemble";
 import { passes, type SearchFilters } from "./filters";
 import { latestScoreIdByListing, toSearchResultRows, type ResultSnapshot } from "./results";
 import { searchIdentity, type SearchIdentity } from "./visitor";
@@ -122,8 +122,8 @@ export type RecordedIdentity = { visitor_id: string | null; session_id: string |
 export type SearchView = {
   search_id: number;
   public_id: string; // Run 6b §5: the address this run is displayed at (a re-run's is never shown)
-  model: string; // the display spelling, as models.model holds it
-  model_key: string;
+  model: string; // S2 §2 — the row's `model_searched`, as written
+  family_id: number; // S2 §2 — the family the pool was cut by
   filters: SearchFilters;
   engine_version: number;
   rules_version: number;
@@ -142,12 +142,13 @@ export type SearchView = {
 };
 
 export async function runSearch(input: {
-  model: string;
+  /** S2 §2 — a search is a search of one family. On a re-run, the question's family (load.ts resolves it). */
+  familyId: number;
   filters?: SearchFilters;
   /**
    * The anonymous identity to record. Omitted in a request — the cookie helper mints and sets it. A caller
-   * with no request (scripts/oneoff/verify-search-layer.ts) passes its own, which is why this exists: reading
-   * cookies outside a request scope throws, and that throw must never be swallowed.
+   * with no request (the re-run in load.ts) passes its own, which is why this exists: reading cookies outside
+   * a request scope throws, and that throw must never be swallowed.
    */
   identity?: SearchIdentity | RecordedIdentity;
   /**
@@ -158,7 +159,7 @@ export async function runSearch(input: {
   rerun?: RerunOf;
 }): Promise<SearchView> {
   const filters = input.filters ?? {};
-  const assembled = await assemblePool(input.model);
+  const assembled = await assembleFamilyPool(input.familyId);
 
   // §3.2 — the cut, before selectThree()
   const cut = assembled.items.filter((p) => passes(p, filters));
@@ -308,14 +309,17 @@ export async function runSearch(input: {
     // comes from the column default (§3.1: this create has never sent it, so the DB clock stamps both the
     // search and the `updated_at` values the update signals compare against).
     const rerun = input.rerun;
+    // S2 §2 — a fresh search records its family, and `model_searched` is the family's English full name
+    // ("MAZDA 3"): frozen text, as the schema says. A re-run copies both from the question as stored.
+    const modelSearched = rerun === undefined ? `${assembled.family.make_en} ${assembled.family.name_en}` : rerun.model_searched;
     const created = await tx.searches.create({
       data: {
         public_id: newPublicId(), // minted like any row; a re-run's is never shown and never appears in an address
         visitor_id: identity.visitor_id,
         session_id: identity.session_id,
         user_id: null, // no login this month
-        model_searched: rerun === undefined ? assembled.model_display : rerun.model_searched,
-        family_id: rerun === undefined ? undefined : (rerun.family_id ?? undefined),
+        model_searched: modelSearched,
+        family_id: rerun === undefined ? assembled.family.id : (rerun.family_id ?? undefined),
         filters: rerun === undefined ? (input.filters === undefined ? undefined : (filters as object)) : rerun.filters, // as received / as stored
         priority: rerun === undefined ? null : rerun.priority, // no screen writes it yet
         rerun_of: rerun === undefined ? undefined : rerun.question_id,
@@ -337,14 +341,14 @@ export async function runSearch(input: {
       });
       if (written.count !== rows.length) throw new Error(`runSearch: createMany wrote ${written.count} of ${rows.length} search_results rows`);
     }
-    return created;
+    return { ...created, model_searched: modelSearched };
   });
 
   return {
     search_id: row.id,
     public_id: row.public_id,
-    model: assembled.model_display,
-    model_key: assembled.model_key,
+    model: row.model_searched,
+    family_id: assembled.family.id,
     filters,
     engine_version: ENGINE_VERSION,
     rules_version: RULES_VERSION,

@@ -37,6 +37,14 @@
 //   3. a live listing with no score on that side is left out of the pool and reported in `without_score`,
 //      instead of stopping the load — a never-scored listing is a legitimate state in a dry run.
 // Every other validation throws exactly as it does today.
+//
+// S2 §2 — A SEARCH IS A SEARCH OF ONE FAMILY. The pool is cut by family: a live listing is in it when its car's
+// catalog row has `family_id` = the asked family. Every door goes through that one cut:
+//   assembleFamilyPool(familyId)   the site's path — the family the bar chose
+//   assemblePool(model)            the scripts' path, same signature and same --model meaning as before: the
+//                                  text is matched by modelKey() over the live listings exactly as it was, and
+//                                  then resolves to the family behind those listings; the pool is that family's
+//   assemblePoolPreview(model)     score-listings.ts's door, resolved from its text the same way
 
 import { db } from "@/lib/db";
 import { ENGINE_VERSION } from "@/lib/scoring/constants";
@@ -100,7 +108,8 @@ export type AssembledPool = {
   models_present_text: string;
   model_key: string;
   model_display: string;
-  model_listings: number; // live listings of this model — the pool before any filter
+  model_listings: number; // live listings of this family — the pool before any filter
+  family: { id: number; make_en: string; name_en: string }; // S2 §2 — the family the pool is cut by
   items: PoolItem[];
 };
 
@@ -129,7 +138,15 @@ export function modelKey(s: string): string {
  *               live (the script's convenience when --model is omitted); with more than one it stops.
  */
 export async function assemblePool(model: string | null, opts: { now?: Date } = {}): Promise<AssembledPool> {
-  return assemble(model, { now: opts.now, checkVersion: true, scores: "stored", onMissingScore: "throw" });
+  return assemble({ model }, { now: opts.now, checkVersion: true, scores: "stored", onMissingScore: "throw" });
+}
+
+/**
+ * S2 §2 — the live pool of one family: the site's path. The same assembly, validations and version check as
+ * assemblePool(); only the target is named by family id instead of by text.
+ */
+export async function assembleFamilyPool(familyId: number, opts: { now?: Date } = {}): Promise<AssembledPool> {
+  return assemble({ family_id: familyId }, { now: opts.now, checkVersion: true, scores: "stored", onMissingScore: "throw" });
 }
 
 /**
@@ -147,7 +164,7 @@ export async function assemblePoolPreview(
   model: string | null,
   opts: { now?: Date; scores: PoolScoreSource },
 ): Promise<AssembledPoolPreview> {
-  return assemble(model, { now: opts.now, checkVersion: false, scores: opts.scores, onMissingScore: "collect" });
+  return assemble({ model }, { now: opts.now, checkVersion: false, scores: opts.scores, onMissingScore: "collect" });
 }
 
 type AssembleOpts = {
@@ -157,7 +174,10 @@ type AssembleOpts = {
   onMissingScore: "throw" | "collect"; // switch 3
 };
 
-async function assemble(model: string | null, opts: AssembleOpts): Promise<AssembledPoolPreview> {
+// S2 §2 — what the pool is asked for: a family by id, or a text that resolves to one.
+type AssembleTarget = { family_id: number } | { model: string | null };
+
+async function assemble(target: AssembleTarget, opts: AssembleOpts): Promise<AssembledPoolPreview> {
   const now = opts.now ?? new Date();
   // §13.3: open = agreement_end is null or later than this run's now. agreement_status plays no part.
   const isOpen = (end: Date | null) => end === null || end > now;
@@ -165,7 +185,7 @@ async function assemble(model: string | null, opts: AssembleOpts): Promise<Assem
   const rows = await db.listings.findMany({
     where: { delisted_at: null },
     include: {
-      car: { select: { id: true, license_plate: true, year: true, model: { select: { model: true, sub_model: true, comparison_group: true, degem_code: true, vehicle_class: true } } } },
+      car: { select: { id: true, license_plate: true, year: true, model: { select: { model: true, sub_model: true, comparison_group: true, degem_code: true, vehicle_class: true, family_id: true } } } },
       market_stats: { select: { id: true, median_price: true, engine_version: true } },
       dealer: { select: { id: true, name: true, dealer_type: true, commercial: { select: { id: true, agreement_status: true, agreement_end: true } } } },
     },
@@ -198,13 +218,46 @@ async function assemble(model: string | null, opts: AssembleOpts): Promise<Assem
   const models_present_text = models_present.map((e) => `${e.display} (${e.listings} listing${e.listings === 1 ? "" : "s"})`).join(", ");
   const presentLine = [`models among the ${rows.length} live listings: ${models_present_text}`];
 
-  if (model === null && present.size > 1) {
-    throw new PoolAssemblyError(`--model=<value> is required: the live listings span ${present.size} models — see the list above; no search was run`, presentLine);
+  // S2 §2 — the target resolves to ONE family, and the pool is that family's.
+  let familyId: number;
+  let resolved: { key: string; display: string } | null = null; // the text's own match, on the scripts' path
+  if ("family_id" in target) {
+    familyId = target.family_id;
+    if (!rows.some((l) => l.car.model.family_id === familyId)) {
+      throw new PoolAssemblyError(`no live listing is of family ${familyId} — see the list above; no search was run`, presentLine);
+    }
+  } else {
+    const model = target.model;
+    if (model === null && present.size > 1) {
+      throw new PoolAssemblyError(`--model=<value> is required: the live listings span ${present.size} models — see the list above; no search was run`, presentLine);
+    }
+    if (model !== null && !present.has(modelKey(model))) {
+      throw new PoolAssemblyError(`--model: no live listing has model '${model}' — see the list above; no search was run`, presentLine);
+    }
+    const text = model === null ? models_present[0] : (models_present.find((e) => e.key === modelKey(model)) as ModelPresence);
+    resolved = text;
+    // the family of the live listings behind the key — exactly one, and every one of them has it
+    const behind = rows.filter((l) => modelKey(l.car.model.model as string) === text.key);
+    const noFamily = behind.filter((l) => l.car.model.family_id === null);
+    if (noFamily.length > 0) {
+      throw new PoolAssemblyError(
+        `--model: ${noFamily.length} live listing(s) of '${text.display}' have a catalog row with no family — the pool is cut by family; no search was run`,
+        noFamily.map((l) => `  listing ${l.id} (${l.car.license_plate ?? "?"})`),
+      );
+    }
+    const families = [...new Set(behind.map((l) => l.car.model.family_id as number))].sort((a, b) => a - b);
+    if (families.length > 1) {
+      throw new PoolAssemblyError(`--model: '${text.display}' resolves to ${families.length} families (${families.join(", ")}) — no search was run`, presentLine);
+    }
+    familyId = families[0];
   }
-  if (model !== null && !present.has(modelKey(model))) {
-    throw new PoolAssemblyError(`--model: no live listing has model '${model}' — see the list above; no search was run`, presentLine);
-  }
-  const resolved = model === null ? models_present[0] : (models_present.find((e) => e.key === modelKey(model)) as ModelPresence);
+  const familyRow = await db.model_families.findUnique({ where: { id: familyId }, include: { make: { select: { name_en: true } } } });
+  if (familyRow === null) throw new Error(`family ${familyId}: live listings point at it but model_families has no such row`);
+  const family = { id: familyId, make_en: familyRow.make.name_en, name_en: familyRow.name_en };
+  // the scripts keep the text they asked for; the site's path names the family in English, as model_searched does
+  const familyText = `${family.make_en} ${family.name_en}`;
+  const target_key = resolved?.key ?? modelKey(familyText);
+  const target_display = resolved?.display ?? familyText;
 
   // Switch 2, the norm side of it: with a map, median_price comes from the market_stats row the MAP's score
   // points at, not from the listing's included relation. One query for every id the map carries.
@@ -231,10 +284,10 @@ async function assemble(model: string | null, opts: AssembleOpts): Promise<Assem
     if (!/^\d+-\d+$/.test(l.car.model.degem_code)) throw new Error(`listing ${l.id} (${plate}): models.degem_code '${l.car.model.degem_code}' is not 'tozeret_cd-degem_cd'`);
     if (l.car.model.vehicle_class === null) throw new Error(`listing ${l.id} (${plate}): models.vehicle_class is null`);
     // Switch 3: assemblePool stops here, as it always has. The preview defers the question until after the
-    // model cut, so `without_score` names the listings of THIS model and nothing else.
+    // family cut, so `without_score` names the listings of THIS family and nothing else.
     if (l.score_breakdown === null && opts.onMissingScore === "throw") throw new Error(`listing ${l.id} (${plate}): score_breakdown is null`);
     if (l.car.model.model === null) throw new Error(`listing ${l.id} (${plate}): models.model is null`);
-    if (modelKey(l.car.model.model) !== resolved.key) continue;
+    if (l.car.model.family_id !== familyId) continue; // S2 §2 — THE CUT: the asked family, and nothing else
     // Switch 2: the five score fields — the listing's own columns, or the map's entry for it.
     const scored = poolScoreOf(l, opts.scores);
     if (scored === null) {
@@ -322,9 +375,10 @@ async function assemble(model: string | null, opts: AssembleOpts): Promise<Assem
     live_listings: rows.length,
     models_present,
     models_present_text,
-    model_key: resolved.key,
-    model_display: resolved.display,
-    model_listings: resolved.listings,
+    model_key: target_key,
+    model_display: target_display,
+    model_listings: rows.filter((l) => l.car.model.family_id === familyId).length,
+    family,
     items,
     without_score,
   };

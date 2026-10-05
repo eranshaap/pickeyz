@@ -15,8 +15,8 @@
 // ad whose page is per listing. Visibility does not depend on whether a search id is in the address.
 //
 // NO RULE IS RE-IMPLEMENTED HERE. The three "out of results entirely" verdicts are taken from the selection
-// library itself: the current UNFILTERED pool of the listing's model is assembled through the existing path
-// (assemblePool + pool scores) and run through selectThree(), and this listing's verdicts are read off its
+// library itself: the current UNFILTERED pool of the listing's family is assembled through the existing path
+// (assembleFamilyPool + pool scores; S2 §2) and run through selectThree(), and this listing's verdicts are read off its
 // own result. That is the same gate, the same rules and the same constants the search uses — if a threshold
 // moves, this file moves with it because it never knew the threshold.
 //
@@ -97,24 +97,25 @@ export async function resolveListing(publicId: string): Promise<ResolvedListing>
   const { db } = await import("@/lib/db");
   const listing = await db.listings.findUnique({
     where: { public_id: publicId },
-    select: { id: true, delisted_at: true, car: { select: { model: { select: { model: true } } } } },
+    select: { id: true, delisted_at: true, car: { select: { model: { select: { family_id: true } } } } },
   });
   if (listing === null) return { visibility: decideVisibility({ exists: false, delisted: false, dealer_not_visible: false, sold_strong: false, below_threshold: false, above_new_price: false }), listing_id: null, item: null, result: null };
   if (listing.delisted_at !== null) {
     return { visibility: { shown: false, reason: "delisted" }, listing_id: listing.id, item: null, result: null };
   }
-  const model = listing.car.model.model;
-  if (model === null) throw new Error(`resolveListing: listing ${listing.id} has a models.model of null — the pool cannot be assembled for it`);
+  // S2 §2 — the pool is the listing's own FAMILY's, through the site's path.
+  const familyId = listing.car.model.family_id;
+  if (familyId === null) throw new Error(`resolveListing: listing ${listing.id}'s catalog row has no family — the pool is cut by family and cannot be assembled for it`);
 
-  const { assemblePool } = await import("./assemble");
+  const { assembleFamilyPool } = await import("./assemble");
   const { selectThree } = await import("@/lib/selection");
-  const pool = await assemblePool(model);
+  const pool = await assembleFamilyPool(familyId);
   const res = selectThree({ listings: pool.items.map((p) => p.candidate) });
 
   const item = pool.items.find((p) => p.listing_id === listing.id) ?? null;
   const result = res.results.find((r) => r.listing_id === listing.id) ?? null;
   if (item === null || result === null) {
-    throw new Error(`resolveListing: live listing ${listing.id} is not in the current unfiltered pool of ${model} — the pool assembly and the listings table disagree`);
+    throw new Error(`resolveListing: live listing ${listing.id} is not in the current unfiltered pool of family ${familyId} — the pool assembly and the listings table disagree`);
   }
 
   return {

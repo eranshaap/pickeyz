@@ -7,6 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  carDisplayName,
   drawnListingIds,
   isShownRow,
   isUpdate,
@@ -987,5 +988,16 @@ describe("§6.4 — the uncrowned headlines with a cancelled car on the screen",
     assert.equal(v.cancelled.length, 1);
     assert.equal(v.group, null); // the zero-scored screen's own head already says it
     assert.deepEqual(v.list.cancelledGroup, cancelledGroupHead(1));
+  });
+});
+
+describe("carDisplayName — S2 §3", () => {
+  it("is the family's full Hebrew name, make then model", () => {
+    assert.equal(carDisplayName("MAZDA 3", { name_he: "3", make: { name_he: "מאזדה" } }), "מאזדה 3");
+  });
+
+  it("a catalog row with no family keeps models.model, as before", () => {
+    assert.equal(carDisplayName("MAZDA 3", null), "MAZDA 3");
+    assert.equal(carDisplayName(null, null), "");
   });
 });

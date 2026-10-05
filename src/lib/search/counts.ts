@@ -61,14 +61,13 @@ export type FilterCountsView = {
 // and no other listing data) and the way to keep that true is not to carry it in the first place.
 type ModelPool = { display: string; key: string; make: string; rows: Filterable[] };
 
-// One fetch of the model's live listings, shared by the counters and the shelf. The model is matched on
-// modelKey() (uppercased, whitespace stripped), which is a normalisation SQL cannot do for us, so the cut is
-// in memory on the same field the assembly cuts on. make comes along because model_stats is keyed on
-// (make, model).
-async function loadModelPool(model: string): Promise<ModelPool> {
-  const key = modelKey(model);
+// One fetch of the family's live listings, shared by the counters and the shelf. S2 §2: the cut is the
+// assembly's own — a live listing whose car's catalog row has `family_id` = the family. make and model come
+// along because model_stats is keyed on (make, model): the km anchors are read for the ONE catalog name the
+// family's live listings carry, and a family live under more than one name is a stop (whose anchors would it be?).
+async function loadModelPool(familyId: number): Promise<ModelPool> {
   const live = await db.listings.findMany({
-    where: { delisted_at: null },
+    where: { delisted_at: null, car: { model: { family_id: familyId } } },
     select: {
       id: true,
       price: true,
@@ -79,22 +78,24 @@ async function loadModelPool(model: string): Promise<ModelPool> {
     orderBy: { id: "asc" },
   });
 
-  let display: string | null = null;
-  const makes = new Set<string>();
+  const names = new Map<string, { make: string; display: string }>(); // (make, modelKey(model)) → the first spelling
   const rows: Filterable[] = [];
   for (const l of live) {
     const name = l.car.model.model;
     if (name === null) throw new Error(`listing ${l.id}: models.model is null`);
-    if (modelKey(name) !== key) continue;
     if (l.car.year === null) throw new Error(`listing ${l.id}: cars.year is null — it cannot be placed on a year chip`);
     if (l.car.model.make === null) throw new Error(`listing ${l.id}: models.make is null — model_stats is keyed on (make, model)`);
-    display = display ?? name;
-    makes.add(l.car.model.make);
+    const k = `${l.car.model.make}|${modelKey(name)}`;
+    if (!names.has(k)) names.set(k, { make: l.car.model.make, display: name });
     rows.push({ price: l.price, year: l.car.year, km_declared: l.km_declared, region: l.region });
   }
-  if (display === null) throw new Error(`filterCounts: no live listing has model '${model}'`);
-  if (makes.size > 1) throw new Error(`filterCounts: model '${display}' spans ${makes.size} makes (${[...makes].sort().join(", ")}) — model_stats cannot be read for it`);
-  return { display, key, make: [...makes][0], rows };
+  if (names.size === 0) throw new Error(`filterCounts: no live listing is of family ${familyId}`);
+  if (names.size > 1) {
+    const list = [...names.values()].map((n) => `${n.make} ${n.display}`).sort().join(", ");
+    throw new Error(`filterCounts: family ${familyId} is live under ${names.size} catalog names (${list}) — model_stats is keyed on (make, model) and cannot be read for it`);
+  }
+  const [{ make, display }] = [...names.values()];
+  return { display, key: modelKey(display), make, rows };
 }
 
 // The km chips of one model: the anchors the norms run wrote (§1), never computed here. Shared by the
@@ -131,15 +132,15 @@ async function loadKmAnchors(make: string, model: string): Promise<{ anchors: nu
  * The rows are the counters' own rows — the same `Filterable` the search cuts with — so the window's numbers
  * and the search's pool can never be measured differently.
  */
-export async function modelRows(model: string): Promise<ModelRows> {
-  const loaded = await loadModelPool(model);
+export async function modelRows(familyId: number): Promise<ModelRows> {
+  const loaded = await loadModelPool(familyId);
   const km = await loadKmAnchors(loaded.make, loaded.display);
   return { model: loaded.display, model_key: loaded.key, rows: loaded.rows, km_anchors: km.anchors, km_note: km.note };
 }
 
-export async function filterCounts(input: { model: string; draft?: SearchFilters }): Promise<FilterCountsView> {
+export async function filterCounts(input: { familyId: number; draft?: SearchFilters }): Promise<FilterCountsView> {
   const draft = input.draft ?? {};
-  const { display, key, make, rows } = await loadModelPool(input.model);
+  const { display, key, make, rows } = await loadModelPool(input.familyId);
 
   const pool_total = rows.length;
   const pool_now = countPassing(rows, draft); // the "עדכן · N" number: the WHOLE draft, every group applied
