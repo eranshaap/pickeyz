@@ -311,7 +311,7 @@ export default function FilterPanel({
           </div>
         </Block>
 
-        {/* ק"מ — ceiling only, single-select, chips = the latest model_stats.km_filter_anchors. No anchors, no block. */}
+        {/* ק"מ — ceiling only, single-select, chips = the family's km quartiles, computed from its live listings' km when the rows load (S3: src/lib/search/km-anchors.ts, through counts.ts). No anchors, no block. */}
         {resolved.km.length > 0 && (
           <Block name="kmMax">
             <h3 className="font-medium text-neutral-900">{FILTER_LABEL.kmMax}</h3>

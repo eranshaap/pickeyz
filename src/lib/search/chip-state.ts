@@ -65,8 +65,9 @@ export type ResolvedFilters = {
 /**
  * §2.1 — ONE MODEL'S LIVE FILTER ROWS, as the page carries them to the browser and as the model-rows action
  * returns them. `rows` holds only the fields countPassing() reads (filters.ts's Filterable): no listing id
- * and no other listing data. `km_anchors` is `model_stats.km_filter_anchors` as the norms run wrote it —
- * null means the model has no km group at all, and `km_note` says why.
+ * and no other listing data. `km_anchors` are the family's km chips, computed per family from its live listings'
+ * km when the rows load (S3: src/lib/search/km-anchors.ts, through counts.ts) — null means the model has no km
+ * group at all, and `km_note` says why.
  */
 export type ModelRows = {
   model: string; // the display spelling, as models.model holds it

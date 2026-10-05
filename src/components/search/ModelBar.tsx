@@ -16,6 +16,9 @@
 //
 // THE HINT is not picked here any more: the opening screen picks it once on mount and puts it on both its
 // fields (this one and the phone's), so the two never disagree.
+//
+// S4 §2 — the pill and "חפש" hand their elements to the opening screen, which measures them when a search
+// starts: the search moment's rise starts from exactly where they are drawn.
 
 import { useEffect, useRef } from "react";
 import { OPENING_TEXTS } from "@/lib/opening/texts";
@@ -26,12 +29,17 @@ export default function ModelBar({
   bar,
   input,
   inputRef,
+  pillRef,
+  buttonRef,
   pending,
 }: {
   bar: FamilyBar;
   /** What is spread on the input — the bar's own handlers, as the opening screen wraps them (S3 §5). */
   input: FamilyBar["input"];
   inputRef: React.RefObject<HTMLInputElement | null>;
+  /** S4 §2 — the pill and "חפש", measured where the search moment's rise starts. */
+  pillRef: React.RefObject<HTMLDivElement | null>;
+  buttonRef: React.RefObject<HTMLButtonElement | null>;
   /** A question is on its way: "חפש" is disabled and carries a spinner. */
   pending: boolean;
 }) {
@@ -57,7 +65,7 @@ export default function ModelBar({
 
   return (
     <div ref={root} className="relative w-[calc(720px*var(--s))]">
-      <div className="flex h-[calc(68px*var(--s))] items-center gap-[calc(8px*var(--s))] rounded-full bg-white ps-[calc(28px*var(--s))] pe-[calc(8px*var(--s))] shadow-[0_6px_28px_rgba(34,31,28,0.12),0_1px_3px_rgba(34,31,28,0.08)]">
+      <div ref={pillRef} className="flex h-[calc(68px*var(--s))] items-center gap-[calc(8px*var(--s))] rounded-full bg-white ps-[calc(28px*var(--s))] pe-[calc(8px*var(--s))] shadow-[0_6px_28px_rgba(34,31,28,0.12),0_1px_3px_rgba(34,31,28,0.08)]">
         <input
           ref={inputRef}
           type="text"
@@ -68,6 +76,7 @@ export default function ModelBar({
           {...input}
         />
         <button
+          ref={buttonRef}
           type="button"
           disabled={pending}
           aria-busy={pending}

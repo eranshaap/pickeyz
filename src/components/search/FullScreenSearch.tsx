@@ -5,8 +5,8 @@
 // QuestionRow; it moved here whole, its look unchanged.
 //
 // Top to bottom: the strip with "איזה דגם?" and "ביטול", the field, the helper line when the host has one (the
-// question row's "a new search" line; the opening screen has none), an error line when there is one, and the
-// list (<CompletionPanel>). The host owns the bar's behaviour (useFamilyBar) and whether this is open; the
+// question row's "a new search" line; the opening screen has none), and the list (<CompletionPanel>). S4 §4:
+// the error line is gone — a failed search is shown in the results area (SearchFailed.tsx), not here. The host owns the bar's behaviour (useFamilyBar) and whether this is open; the
 // component is phone-only (`md:hidden`) and draws nothing else.
 
 import { OPENING_TEXTS } from "@/lib/opening/texts";
@@ -17,7 +17,6 @@ export default function FullScreenSearch({
   inputRef,
   disabled = false,
   helper = null,
-  error = null,
   onCancel,
 }: {
   /** The host's bar: its text, list and handlers. */
@@ -26,7 +25,6 @@ export default function FullScreenSearch({
   disabled?: boolean;
   /** The line under the field; null = none. */
   helper?: string | null;
-  error?: string | null;
   onCancel: () => void;
 }) {
   return (
@@ -47,9 +45,7 @@ export default function FullScreenSearch({
           className="h-[42px] w-full rounded-lg border-2 border-[#221f1c] bg-white px-3 text-[16px] text-[#221f1c] outline-none"
           {...bar.input}
         />
-        {helper !== null && <p className="pt-2 text-[13px] text-[#665f58]">{helper}</p>}
-        {error !== null && <p className="pt-2 text-[13px] text-[#665f58]">{error}</p>}
-      </div>
+        {helper !== null && <p className="pt-2 text-[13px] text-[#665f58]">{helper}</p>}      </div>
       <CompletionPanel panel={bar.panel} marked={bar.marked} onChoose={bar.choose} className="mt-2 flex-1 overflow-y-auto" />
     </div>
   );

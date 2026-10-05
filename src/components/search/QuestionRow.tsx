@@ -40,10 +40,17 @@
 // §11.3 — THE PUSH IS NOT THIS ROW'S. A model pick is one of the navigations the results screen starts from
 // its own controls, so it runs through the screen's shared pending state (`nav`): the screen's cards area
 // shows its placeholders and its controls stay busy from the click until the new screen commits.
+//
+// S4 §4 — AND NEITHER IS THE SEARCH. A pick of another model closes the editor at once and hands the family to
+// the screen (`nav.ask`), which runs the load: the row shows the new model from that moment, through the wait
+// and through a failure, and a failure is shown in the results area (SearchFailed.tsx) — the editor's own
+// error line is gone. S4 §2: during the search moment the screen hides the hairline and "+ פילטרים"
+// (`filtersHidden`, which keeps their place so the bar does not change height) and they come in with the
+// results; `modelRef` is the name the rising bar lands on.
 
 import { useEffect, useRef, useState } from "react";
 import type { FilterName } from "@/app/actions/search";
-import { ask } from "@/app/actions/search";
+import { RESULTS_ENTER_MS } from "@/lib/display/timing";
 import type { FamilyEntry } from "@/lib/opening/completion";
 import type { SearchFilters } from "@/lib/search/filters";
 import CompletionPanel, { useFamilyBar } from "./CompletionPanel";
@@ -55,7 +62,14 @@ const ADD_FILTERS = "+ פילטרים";
 const PHONE_TITLE = "איזה דגם?";
 const CANCEL = "ביטול";
 const PHONE_HELPER = "בחירת דגם אחר מתחילה חיפוש חדש, בלי הפילטרים הנוכחיים.";
-const FAILED = "משהו נפל בדרך. נסו שוב.";
+
+/**
+ * S4 §2.4 — the hairline and "+ פילטרים" come in with the results, over RESULTS_ENTER_MS. Tailwind reads a class
+ * name as a literal, so the duration is spelled here too; the map is indexed BY the constant, so changing it
+ * without a class to match stops the compile (FiltersWindow.tsx's rule).
+ */
+const ENTER_DURATION: Record<typeof RESULTS_ENTER_MS, string> = { 150: "duration-150" };
+const ENTER = `transition-opacity ease-out ${ENTER_DURATION[RESULTS_ENTER_MS]} motion-reduce:transition-none`;
 
 /**
  * §5's rubric formats, one per filter — moved here whole from QuestionLine.tsx, unchanged. §6: the chips use
@@ -103,12 +117,8 @@ type RowQuestion = {
  * controls go on at the click and come off when the new screen is on.
  */
 export type ScreenNav = {
-  /** The click: the screen goes pending. */
-  begin: () => void;
-  /** The navigation, run inside the screen's transition so the pending state lasts until it commits. */
-  push: (href: string) => void;
-  /** Nothing was navigated after all (the call failed): the screen comes back. */
-  end: () => void;
+  /** S4 §4 — another model was picked: the screen asks it, from zero, and shows the wait and its outcome. */
+  ask: (familyId: number) => void;
 };
 
 type Props =
@@ -127,6 +137,12 @@ type Props =
       onOpenFilters: (focus: FilterName | null) => void;
       /** §6 — while the editor is open the host dims the page and drops the back link from the row. */
       onEditingChange: (editing: boolean) => void;
+      /** S4 §2 — the model's name, where the search moment's rising bar lands. */
+      modelRef?: React.Ref<HTMLButtonElement>;
+      /** S4 §2 — the hairline and "+ פילטרים" are not shown yet (their place is kept). */
+      filtersHidden?: boolean;
+      /** S4 — false while the screen holds no filter rows for the asked family: "+ פילטרים" is disabled. */
+      canAddFilters?: boolean;
     } & RowQuestion);
 
 export default function QuestionRow(props: Props) {
@@ -141,6 +157,9 @@ export default function QuestionRow(props: Props) {
       nav={props.nav}
       onOpenFilters={props.onOpenFilters}
       onEditingChange={props.onEditingChange}
+      modelRef={props.modelRef}
+      filtersHidden={props.filtersHidden ?? false}
+      canAddFilters={props.canAddFilters ?? true}
     />
   );
 }
@@ -186,16 +205,20 @@ function EditableRow({
   nav,
   onOpenFilters,
   onEditingChange,
+  modelRef,
+  filtersHidden,
+  canAddFilters,
 }: {
   families: FamilyEntry[];
   familyId: number;
   nav: ScreenNav;
   onOpenFilters: (focus: FilterName | null) => void;
   onEditingChange: (editing: boolean) => void;
+  modelRef?: React.Ref<HTMLButtonElement>;
+  filtersHidden: boolean;
+  canAddFilters: boolean;
 } & RowQuestion) {
   const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Two inputs are rendered, one per viewport, and exactly one of them is displayed. focus() on a
   // display:none element does nothing, so both are asked and only the visible one answers.
@@ -232,7 +255,6 @@ function EditableRow({
   }, [editing]);
 
   function open() {
-    setError(null);
     setEditing(true);
     bar.reset(modelDisplay);
     bar.openList(); // §6 — the editor arrives with its list already down: the click on the model is the click into the bar
@@ -247,22 +269,13 @@ function EditableRow({
   }
 
   // The bar has already closed the list and filled itself with the chosen name, in the same event (§1).
-  async function choose(id: number) {
+  function choose(id: number) {
     if (id === familyId) return close(); // §6 / §0.1 — the same model is a cancel, not a search
-    setBusy(true);
-    nav.begin(); // §11.3 — the screen goes pending on the click, not on the push
-    setError(null);
-    try {
-      // A new question from ZERO: no filters at all (§6). The address then pushes to the new question as a
-      // NEW history entry, which is what makes back return to the question asked before it (§5).
-      const answer = await ask({ familyId: id });
-      history.popOverlay(() => nav.push(`/?s=${answer.public_id}`));
-    } catch (e) {
-      console.error("[question row]", e);
-      setError(e instanceof Error ? e.message : FAILED);
-      setBusy(false);
-      nav.end();
-    }
+    // S4 §4 — the editor closes at once and its entry is popped first, so the new question's address is pushed
+    // onto the results' own entry; then the screen asks the new model from ZERO (§6) and pushes a NEW history
+    // entry when the answer lands, which is what makes back return to the question asked before it (§5).
+    setEditing(false);
+    history.popOverlay(() => nav.ask(id));
   }
 
   // S2 §4 — the one list; each bar gives it its own frame.
@@ -275,11 +288,13 @@ function EditableRow({
             control", and on a screen where every other control says so by being a chip it said "this is a
             link" instead. The desktop's hover underline is untouched, and so is the car page's caption row,
             which has never had either. */}
-        <button type="button" onClick={open} className={`${MODEL} text-[#221f1c] decoration-1 underline-offset-4 md:hover:underline`}>
+        <button ref={modelRef} type="button" onClick={open} className={`${MODEL} text-[#221f1c] decoration-1 underline-offset-4 md:hover:underline`}>
           {modelDisplay}
         </button>
 
-        <Hairline />
+        <span className={`${ENTER} flex shrink-0 ${filtersHidden ? "invisible opacity-0" : "opacity-100"}`}>
+          <Hairline />
+        </span>
 
         {active.map((name) => {
           const value = rubric(name, filters);
@@ -292,7 +307,12 @@ function EditableRow({
           );
         })}
 
-        <button type="button" className={ADD_CHIP} onClick={() => onOpenFilters(null)}>
+        <button
+          type="button"
+          disabled={!canAddFilters}
+          className={`${ADD_CHIP} ${ENTER} disabled:cursor-default disabled:opacity-50 ${filtersHidden ? "invisible opacity-0" : "opacity-100"}`}
+          onClick={() => onOpenFilters(null)}
+        >
           {ADD_FILTERS}
         </button>
       </div>
@@ -310,21 +330,19 @@ function EditableRow({
         <input
           ref={input}
           type="text"
-          disabled={busy}
           aria-label={PHONE_TITLE}
           autoComplete="off"
           className="h-[42px] w-full rounded-lg border-2 border-[#221f1c] bg-white px-3 text-[17px] text-[#221f1c] outline-none"
           {...bar.input}
         />
         {list("absolute inset-x-0 top-full z-50 mt-2 max-h-80 overflow-y-auto rounded-xl border border-[#d8d3cb] bg-white py-1 shadow-lg")}
-        {error !== null && <p className="absolute inset-x-0 top-full mt-1 text-sm text-[#665f58]">{error}</p>}
       </div>
 
       {/* the dim over the rest of the page; clicking it is one of the cancels */}
       <button type="button" aria-label={CANCEL} tabIndex={-1} className="fixed inset-0 z-30 hidden cursor-default bg-black/25 md:block" onClick={() => close()} />
 
       {/* PHONE (§6): a full-screen search — S3 §4: the one component the opening screen uses too. */}
-      <FullScreenSearch bar={bar} inputRef={phoneInput} disabled={busy} helper={PHONE_HELPER} error={error} onCancel={() => close()} />
+      <FullScreenSearch bar={bar} inputRef={phoneInput} helper={PHONE_HELPER} onCancel={() => close()} />
     </>
   );
 }

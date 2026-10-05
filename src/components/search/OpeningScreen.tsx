@@ -32,6 +32,14 @@
 // the person typed is never erased. The brand link leads to a fresh screen: a new entry carries no family, and
 // on this screen itself (the same address) the link also forgets the family and starts the screen over, with
 // an empty bar and a newly picked hint.
+//
+// S4 §2–§3 — THE SEARCH MOMENT STARTS HERE. A choice measures where the rise starts — on the computer the pill,
+// its text and "חפש" (after the page is put back at its top, so the measure is the place the rise starts from);
+// on the phone the full-screen search's field (or this screen's own pill, for "חפש" on a bar a "back" filled),
+// before it loses the focus and the keyboard goes down — and hands that `Origin` to SearchScreen with the
+// family. From then on SearchScreen runs the moment: it sets `leaving`, and this screen's headline, grey line,
+// categories and tags (and the phone's "חפש") fade out over OPENING_FADE_MS, while the bar itself (the
+// computer's pill, the phone's) is hidden at once, because the moment draws its own copy of the bar. The error line under the bar is gone (S4 §4): a failed search is shown on the results frame.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -42,6 +50,7 @@ import { fullName, hintText, type FamilyEntry } from "@/lib/opening/completion";
 import { HINT_NAME_MAX_CHARS } from "@/lib/opening/constants";
 import { openingScale, phoneOpeningScale } from "@/lib/opening/layout";
 import { OPENING_TEXTS } from "@/lib/opening/texts";
+import { OPENING_FADE_MS } from "@/lib/display/timing";
 import { useFamilyBar, type FamilyBar } from "./CompletionPanel";
 import { Spinner } from "./FilterPanel";
 import FullScreenSearch from "./FullScreenSearch";
@@ -60,14 +69,56 @@ const CATEGORIES = [
 
 const isDesktop = () => window.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH_PX}px)`).matches;
 
+/**
+ * S4 §2 — the fade's length is spelled twice OF NECESSITY (FiltersWindow.tsx's rule): the map is indexed BY
+ * OPENING_FADE_MS, so changing it without a class to match stops the compile.
+ */
+const FADE_DURATION: Record<typeof OPENING_FADE_MS, string> = { 150: "duration-150" };
+const FADE = `transition-opacity ease-out ${FADE_DURATION[OPENING_FADE_MS]} motion-reduce:transition-none`;
+
+/** A box in the window's coordinates, as getBoundingClientRect() gives it. */
+export type Box = { left: number; top: number; width: number; height: number };
+
+/** Where a line of text sits and how it is drawn: its inline-start edge (the right, in RTL) and its middle. */
+export type TextMark = { right: number; midY: number; fontSize: number; fontWeight: string; lineHeight: string };
+
+/** S4 §2 / §3 — where the search moment's rise starts: the bar (or the phone's field), its text, and "חפש". */
+export type Origin = {
+  /** "pill": white, round, a soft shadow (the computer's bar, the phone's opening field); "field": the full-screen search's bordered field */
+  look: "pill" | "field";
+  box: Box;
+  text: TextMark;
+  /** the computer's "חפש", inside the pill; the phone's field has none */
+  button: { box: Box; fontSize: number } | null;
+};
+
+export function boxOf(el: Element): Box {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+}
+
+/** The text's start edge is the box's right less its right padding and border (the page is RTL). */
+export function textMarkOf(el: HTMLElement): TextMark {
+  const r = el.getBoundingClientRect();
+  const cs = window.getComputedStyle(el);
+  return {
+    right: r.right - parseFloat(cs.paddingRight) - parseFloat(cs.borderRightWidth),
+    midY: r.top + r.height / 2,
+    fontSize: parseFloat(cs.fontSize),
+    fontWeight: cs.fontWeight,
+    lineHeight: cs.lineHeight,
+  };
+}
+
 type Props = {
   /** S2 §5 — barFamilies(): what the bar offers. */
   families: FamilyEntry[];
   /** A question is on its way (SearchScreen's commit state). */
   pending: boolean;
-  error: string | null;
-  /** A model was chosen: ask it, from zero. */
-  onAsk: (familyId: number) => void;
+  /** S4 §2 — the search moment is running: the screen fades out and the computer's bar is hidden. */
+  leaving: boolean;
+  /** A model was chosen: ask it, from zero. `origin` is where the rise starts. */
+  onAsk: (familyId: number, origin: Origin) => void;
 };
 
 export default function OpeningScreen(props: Props) {
@@ -85,9 +136,11 @@ export default function OpeningScreen(props: Props) {
   );
 }
 
-function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh: () => void }) {
+function Opening({ families, pending, leaving, onAsk, onFresh }: Props & { onFresh: () => void }) {
   const root = useRef<HTMLDivElement>(null);
   const topBar = useRef<HTMLDivElement>(null);
+  const desktopPill = useRef<HTMLDivElement>(null);
+  const desktopButton = useRef<HTMLButtonElement>(null);
   const desktopInput = useRef<HTMLInputElement>(null);
   const phoneField = useRef<HTMLInputElement>(null);
   const phoneInput = useRef<HTMLInputElement>(null);
@@ -100,12 +153,24 @@ function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh
   // §5 — the bar holds the asked model, put there by a "back"; the first click into it empties it.
   const prefilled = useRef(false);
 
+  // One choice asks once: a second tap while the full screen's entry is still being popped is not a second search.
+  const asking = useRef(false);
+
   const bar = useFamilyBar(families, {
     // A choice asks at once. The full screen's entry is popped first, so the question's address is pushed
     // onto the opening screen's own entry (useHistory.ts: popOverlay runs `after` once the pop has landed).
+    // S4 §2 / §3 — the rise's start is measured first; on the phone the field then loses the focus (the
+    // keyboard goes down) and the full screen closes in the same batch the moment starts, so the name is never
+    // off the screen between the two.
     onChoose: (id) => {
-      setFull(false);
-      history.popOverlay(() => onAsk(id));
+      if (asking.current) return;
+      asking.current = true;
+      const origin = originNow();
+      phoneInput.current?.blur();
+      history.popOverlay(() => {
+        setFull(false);
+        onAsk(id, origin);
+      });
     },
     // "חפש" / Enter with no model: the bar takes the focus — on the phone, that is the full-screen search.
     focus: () => {
@@ -114,6 +179,25 @@ function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh
     },
   });
   const { reset } = bar;
+
+  /** S4 §2 / §3 — the rise's start, as drawn right now. Every element named here is mounted when a choice is made. */
+  function originNow(): Origin {
+    if (isDesktop()) {
+      window.scrollTo(0, 0); // the page goes to its top at the search (as SearchScreen's commit does) — first, so the measure is the start
+      const pill = desktopPill.current;
+      const input = desktopInput.current;
+      const button = desktopButton.current;
+      if (pill === null || input === null || button === null) throw new Error("[opening screen] a choice on the computer with the bar not mounted");
+      return { look: "pill", box: boxOf(pill), text: textMarkOf(input), button: { box: boxOf(button), fontSize: parseFloat(window.getComputedStyle(button).fontSize) } };
+    }
+    // The phone: the full-screen search's field — or, for "חפש" pressed on a bar that a "back" filled (§5), the
+    // opening screen's own pill, where the name is then drawn.
+    const field = phoneInput.current;
+    if (field !== null) return { look: "field", box: boxOf(field), text: textMarkOf(field), button: null };
+    const pill = phoneField.current;
+    if (pill === null) throw new Error("[opening screen] a choice on the phone with neither field mounted");
+    return { look: "pill", box: boxOf(pill), text: textMarkOf(pill), button: null };
+  }
 
   function clearPrefill() {
     if (!prefilled.current) return;
@@ -192,7 +276,7 @@ function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh
   const dark = !(bar.inUse && bar.exact === null);
 
   return (
-    <div ref={root} className="flex min-h-[100dvh] flex-col bg-white [--s:1]">
+    <div ref={root} inert={leaving} className="flex min-h-[100dvh] flex-col bg-white [--s:1]">
       {/* §3 — the results screen's top bar, the same markup, without the question row. */}
       <div ref={topBar} className="sticky top-0 z-30 border-b border-[#d8d3cb] bg-white">
         <div className={`${RESULTS_CONTAINER_CLASS} flex h-[52px] items-center gap-4 px-4 md:h-auto md:py-3`}>
@@ -202,7 +286,8 @@ function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh
         </div>
       </div>
 
-      <div className="flex flex-1 flex-col items-center overflow-x-clip px-[calc(16px*var(--s))] pb-[calc(16px_+_72px*var(--s))] md:px-[calc(48px*var(--s))] md:pb-0">
+      {/* S4 §2 — everything under the top bar fades out when the search moment starts */}
+      <div className={`${FADE} ${leaving ? "opacity-0" : "opacity-100"} flex flex-1 flex-col items-center overflow-x-clip px-[calc(16px*var(--s))] pb-[calc(16px_+_72px*var(--s))] md:px-[calc(48px*var(--s))] md:pb-0`}>
         {/* the air above: 40% of the free height */}
         <div aria-hidden className="min-h-[calc(16px*var(--s))] w-full grow-2 md:min-h-[calc(24px*var(--s))]" />
 
@@ -228,8 +313,9 @@ function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh
 
           <div className="mt-[calc(24px*var(--s))] flex w-full justify-center md:mt-[calc(36px*var(--s))]">
             {/* the computer: the pill with "חפש" inside */}
-            <div className="hidden md:block">
-              <ModelBar bar={bar} input={desktopInputProps} inputRef={desktopInput} pending={pending} />
+            {/* S4 §2 — hidden at once when the moment starts: the moment draws its copy in this very place */}
+            <div className={`hidden md:block ${leaving ? "invisible" : ""}`}>
+              <ModelBar bar={bar} input={desktopInputProps} inputRef={desktopInput} pillRef={desktopPill} buttonRef={desktopButton} pending={pending} />
             </div>
 
             {/* the phone: a pill with no button; a touch opens the full-screen search */}
@@ -244,15 +330,9 @@ function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh
                 openFull();
                 bar.openList();
               }}
-              className="h-[calc(56px*var(--s))] w-full cursor-pointer rounded-full bg-white px-[calc(22px*var(--s))] text-[calc(18px*var(--s))] text-[#221f1c] shadow-[0_4px_20px_rgba(34,31,28,0.12),0_1px_3px_rgba(34,31,28,0.08)] outline-none placeholder:text-[#8a837b] md:hidden"
+              className={`${leaving ? "invisible" : ""} h-[calc(56px*var(--s))] w-full cursor-pointer rounded-full bg-white px-[calc(22px*var(--s))] text-[calc(18px*var(--s))] text-[#221f1c] shadow-[0_4px_20px_rgba(34,31,28,0.12),0_1px_3px_rgba(34,31,28,0.08)] outline-none placeholder:text-[#8a837b] md:hidden`}
             />
           </div>
-
-          {error !== null && (
-            <p className="m-0 mt-[calc(12px*var(--s))] text-[calc(14px*var(--s))]" style={{ color: GREY }}>
-              {error}
-            </p>
-          )}
 
           {/* the three categories — not clickable */}
           <div className="mt-[calc(32px*var(--s))] grid w-full grid-cols-3 gap-[calc(8px*var(--s))] md:mt-[calc(40px*var(--s))] md:max-w-[calc(880px*var(--s))] md:gap-[calc(24px*var(--s))]">
@@ -290,7 +370,7 @@ function Opening({ families, pending, error, onAsk, onFresh }: Props & { onFresh
         disabled={pending}
         aria-busy={pending}
         onClick={bar.submit}
-        className={`fixed bottom-4 left-1/2 z-10 flex h-[calc(56px*var(--s))] -translate-x-1/2 items-center justify-center gap-2 rounded-full text-[calc(18px*var(--s))] font-bold text-white disabled:bg-neutral-300 md:hidden ${dark ? "bg-[#221f1c]" : "bg-neutral-300"}`}
+        className={`${FADE} ${leaving ? "opacity-0" : "opacity-100"} fixed bottom-4 left-1/2 z-10 flex h-[calc(56px*var(--s))] -translate-x-1/2 items-center justify-center gap-2 rounded-full text-[calc(18px*var(--s))] font-bold text-white disabled:bg-neutral-300 md:hidden ${dark ? "bg-[#221f1c]" : "bg-neutral-300"}`}
         style={{ width: "calc(min(100vw, 390px * var(--s)) - 32px * var(--s))" }}
       >
         {pending && <Spinner />}

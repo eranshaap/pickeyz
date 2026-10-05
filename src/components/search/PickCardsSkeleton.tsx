@@ -3,7 +3,8 @@
 //
 // These are the three grey cards Run 7 §7.2 drew in a route-level `loading.tsx`, which is gone: this is a
 // pending state of the results screen ITSELF, in the browser, shown only for a navigation that screen started
-// from its own controls ("עדכן", a model picked from the search bar). A cold arrival gets no placeholder at all.
+// from its own controls ("עדכן", a model picked from the search bar) — and, since S4 §2.5, at the end of the
+// search moment from the opening screen when the results are not there yet. A cold arrival gets no placeholder.
 //
 // §6 — THE POINT IS THAT THE SCREEN DOES NOT JUMP, so the placeholders take the NEW card's frame and not a
 // rectangle of their own: the §3.0 row, a card at the three-card width with the same border and radius, the
@@ -49,6 +50,19 @@ const FULL_ROW = "pick-compact:col-span-2";
 
 /** §6 / Run 3b §3.1 — the card's TITLE_PRICE_BLOCK, copied as every other measurement of this file is. */
 const TITLE_PRICE_BLOCK = "flex flex-col gap-3 md:gap-[10px] pick-compact:self-center";
+
+/**
+ * S4 §2.5 — the count line's placeholder: a grey strip in the line's own box (the count line is 14 px on the
+ * phone and 16 px on the computer, at the page's 1.5 line height — 21 and 24), so the cards under it do not
+ * move when the real line replaces it.
+ */
+export function CountLineSkeleton() {
+  return (
+    <div aria-hidden className="flex h-[21px] items-center md:h-6">
+      <Block className="h-3.5 w-[160px] rounded-sm md:h-4 md:w-[180px]" />
+    </div>
+  );
+}
 
 export default function PickCardsSkeleton() {
   return (

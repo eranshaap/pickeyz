@@ -13,3 +13,11 @@ export const PLACEHOLDER_DELAY_MS = 400;
  * together. The close path waits this long before `close()`, so the fade finishes before the window goes.
  */
 export const WINDOW_FADE_MS = 150;
+
+// findCar-constants.md — RESULTS_LOAD_TIMEOUT_MS: how long a results load may take before the placeholders give way
+// to "לא הצלחנו לטעון את התוצאות." and "נסה שוב". Eran, 01/10 (15 rejected).
+export const RESULTS_LOAD_TIMEOUT_MS = 10_000;
+// The search moment (findCar-now.md, "רגע החיפוש"): about 0.15 s, about 0.4 s, about 0.7 s in all.
+export const OPENING_FADE_MS = 150;
+export const BAR_RISE_MS = 400;
+export const RESULTS_ENTER_MS = 150;
