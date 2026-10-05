@@ -56,6 +56,12 @@
 // - A name the review file does not know (name_not_in_file) is collected once per catalogKey. After the cars
 //   loop a dry run prints the names; --write keeps a backup of the review file and appends one yellow row per
 //   name to the models tab.
+//
+// F3e — a broken catalog row never stops the run:
+// - A new car whose catalog row has no family and no make or model (or whose online answer is another version)
+//   does not enter (catalog_row_broken). Its version is not created: the next import asks the ministry again.
+// - In the new-names count a row with no class, no year or no tozeret-degem code is skipped with an alert line;
+//   a row with no make or model belongs to no name.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
@@ -258,6 +264,17 @@ type EntryResult =
   | { ok: false; failed: FailedCar; noFamily?: NoFamily }
   | { ok: false; skipped: "cancelled" };
 
+// F3e: a catalog row belongs to a name only when its make and model are both non-blank.
+type Named<T> = T & { make: string; model: string };
+function isNamed<T extends { make: string | null; model: string | null }>(m: T): m is Named<T> {
+  return m.make !== null && m.make.trim() !== "" && m.model !== null && m.model.trim() !== "";
+}
+
+// F3e §2: the details of a catalog_row_broken car — the row's degem_code and year, a null as "-".
+function brokenRowDetails(m: { degem_code: string | null; year: number | null }): string {
+  return `${m.degem_code ?? "-"} ${m.year ?? "-"}`;
+}
+
 // Loaded once in main(), read by checkEntry().
 let localities: LocalityIndex = new Map();
 const modelSpellings = new Map<string, string>();
@@ -334,12 +351,12 @@ async function checkEntry(row: CarsRow): Promise<EntryResult> {
   // version (F3b). A row without one does not enter; its reason comes from the review file (entryReason).
   const ok = (model: ModelRef): EntryResult => {
     const name = model.kind === "stored"
-      ? { make: model.row.make, model: model.row.model, familyId: model.row.family_id, pendingKey: null }
-      : ((p) => ({ make: p.data.make, model: p.data.model, familyId: p.familyId, pendingKey: model.key }))(pendingModels.get(model.key)!);
+      ? { make: model.row.make, model: model.row.model, degem_code: model.row.degem_code, year: model.row.year, familyId: model.row.family_id, pendingKey: null }
+      : ((p) => ({ make: p.data.make, model: p.data.model, degem_code: p.data.degem_code, year: p.data.year, familyId: p.familyId, pendingKey: model.key }))(pendingModels.get(model.key)!);
     if (name.familyId !== null) return { ok: true, v, status, model, place };
-    if (name.make === null || name.model === null) {
-      fail(row.n, `${row.plate}: the catalog row ${v.vehicle_class} ${v.degem_code} ${v.year} has no family and no make or model — entryReason needs both`);
-    }
+    // F3e §2: no family and no make or model — the car is out and the run goes on. No noFamily, so its planned
+    // version is not created: the next import asks the ministry again.
+    if (!isNamed(name)) return failed("catalog_row_broken", brokenRowDetails(name), v, false);
     const reason = entryReason(reviewFile, name.make, name.model);
     return failed(reason, `${name.make} ${name.model}`, v, false, { make: name.make, model: name.model, pendingKey: name.pendingKey });
   };
@@ -380,7 +397,8 @@ async function checkEntry(row: CarsRow): Promise<EntryResult> {
     return failed("catalog_translation", (e as Error).message, v);
   }
   const got = `${data.vehicle_class}|${data.degem_code}|${data.year}`;
-  if (got !== identity) fail(row.n, `${row.plate}: the catalog answered ${got} for ${identity}`);
+  // F3e §2: an answer for another version is a broken catalog row too — out, not a stop, nothing planned.
+  if (got !== identity) return failed("catalog_row_broken", brokenRowDetails(data), v, false);
   // A name with two families throws FamilyConflictError: the run stops before this version is written.
   const familyId = familyForNewRow(familyIndex, data.make, data.model);
   pendingModels.set(identity, { id: fakeId--, data, familyId, created: false, counted: false });
@@ -571,13 +589,13 @@ const NEW_NAME_FILL = "FFFFF2B3";
 type CatalogFields = { make: string | null; model: string | null; vehicle_class: string | null; degem_code: string | null; year: number | null };
 
 // degem-code.ts has no inverse of makeDegemCode: "588-182" -> 588 and 182 here.
-function catalogRowOf(m: CatalogFields, label: string): CatalogRow {
+// F3e §3: a row the count cannot read is skipped with an alert line, never a stop.
+function catalogRowOf(m: Named<CatalogFields>, alerts: string[]): CatalogRow | null {
   const code = /^(\d+)-(\d+)$/.exec(m.degem_code ?? "");
-  if (!code || m.make === null || m.model === null || m.vehicle_class === null || m.year === null) {
-    throw new Error(
-      `new name ${label}: the catalog row ${JSON.stringify([m.make, m.model, m.vehicle_class, m.degem_code, m.year])} ` +
-        "has no make, model, vehicle_class, year or tozeret-degem code — not skipped",
-    );
+  if (!code || m.vehicle_class === null || m.year === null) {
+    const shown = (x: string | number | null) => (x === null ? "-" : String(x));
+    alerts.push(`שורת קטלוג פגומה של ${m.make} ${m.model} דולגה בספירה — קוד ${shown(m.degem_code)}, שנה ${shown(m.year)}, סוג ${shown(m.vehicle_class)}`);
+    return null;
   }
   return { make: m.make, model: m.model, vehicleClass: m.vehicle_class, tozeretCd: code[1], degemCd: code[2], year: m.year };
 }
@@ -604,22 +622,25 @@ async function newNamesSection(names: Map<string, CollectedName>): Promise<{ ale
     .map((m) => m.make!);
   const rowsOf: CatalogRow[][] = [];
   for (const n of list) {
-    const label = `${n.make} ${n.model}`;
     const want = catalogKey(n.make, n.model);
-    const sameName = (make: string | null, model: string | null): boolean => {
-      if (make === null || model === null) return false;
-      const k = catalogKey(make, model);
-      return k.canonicalMake === want.canonicalMake && k.key === want.key;
+    const rows: CatalogRow[] = [];
+    // F3e §3(b): a row with a null or blank make or model belongs to no name and is ignored, with no alert.
+    const add = (m: CatalogFields): void => {
+      if (!isNamed(m)) return;
+      const k = catalogKey(m.make, m.model);
+      if (k.canonicalMake !== want.canonicalMake || k.key !== want.key) return;
+      const r = catalogRowOf(m, alerts);
+      if (r !== null) rows.push(r);
     };
     const stored = await db.models.findMany({
       where: { make: { in: rawMakes.filter((m) => canonicalMake(m, MAKE_MERGES) === want.canonicalMake) } },
       select: { make: true, model: true, degem_code: true, year: true, vehicle_class: true },
       orderBy: { id: "asc" },
     });
-    const rows = stored.filter((m) => sameName(m.make, m.model)).map((m) => catalogRowOf(m, label));
+    for (const m of stored) add(m);
     if (DRY) {
       for (const p of pendingModels.values()) {
-        if (!p.created && sameName(p.data.make, p.data.model)) rows.push(catalogRowOf(p.data, label));
+        if (!p.created) add(p.data);
       }
     }
     rowsOf.push(rows);

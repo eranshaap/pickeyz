@@ -50,10 +50,10 @@ describe("failedCarsCsv (§5.4)", () => {
     assert.equal(text.replace(/\r\n/g, "").includes("\n"), false);
   });
 
-  it("the twelve reasons", () => {
+  it("the thirteen reasons", () => {
     assert.deepEqual(Object.keys(FAILED_REASON), [
       "area_empty", "city_unknown", "plate_not_in_registry", "no_degem_code", "unexpected_model",
-      "year_mismatch", "version_not_in_catalog", "catalog_translation", "ministry_down",
+      "year_mismatch", "version_not_in_catalog", "catalog_translation", "catalog_row_broken", "ministry_down",
       "name_not_in_file", "name_without_model", "name_not_imported",
     ]);
   });

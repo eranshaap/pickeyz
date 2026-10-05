@@ -56,6 +56,11 @@ const HEADERS: (string | null)[] = [
   null,
 ];
 
+// F3e: plain letters only, no marks, so written as text.
+const KIRYAT_TIVON_LONG = "קריית טבעון"; // the file's spelling
+const KIRYAT_TIVON_SHORT = "קרית טבעון"; // one yod
+const D_HAIFA = "חיפה";
+
 const COL_CODE = 2;
 const COL_NAME = 4;
 const COL_DISTRICT = 7;
@@ -165,6 +170,14 @@ describe("parseLocalities, the errors that stop the import (§3)", () => {
     assert.throws(
       () => parseLocalities(workbookOf(rows)),
       (e: Error) => e.message.includes(SAKHNIN) && e.message.includes(SAKHNIN_GERESH) && e.message.includes("row 14") && e.message.includes("row 13"),
+    );
+  });
+
+  it("KIRYAT_TIVON_LONG and KIRYAT_TIVON_SHORT collide under the yod fold (F3e), naming both", () => {
+    const rows: Row[] = [{ code: "2300", name: KIRYAT_TIVON_LONG, district: D_HAIFA }, { code: "2301", name: KIRYAT_TIVON_SHORT, district: D_HAIFA }];
+    assert.throws(
+      () => parseLocalities(workbookOf(rows)),
+      (e: Error) => e.message.includes(KIRYAT_TIVON_LONG) && e.message.includes(KIRYAT_TIVON_SHORT),
     );
   });
 });

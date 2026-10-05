@@ -6,6 +6,7 @@
 import type { FailedReason } from "@/lib/sheet/failed-cars";
 import { FAMILIES_YEAR_FROM } from "./constants";
 import { quantityKey, type CatalogRow } from "./distribution";
+import { groupKey } from "./group";
 import { stripMake } from "./merge";
 import { catalogKey, type ReviewFile, type ReviewRow } from "./review";
 import { canonicalMake, familyMakes, type SheetInput } from "./sheet";
@@ -78,13 +79,30 @@ function oneName(input: SheetInput, label: string) {
 /** The models-tab row of a new name, in MODELS_HEADERS order. */
 export function newNameRow(input: NewNameInput): (string | number)[] {
   const label = `${input.make} ${input.model}`;
-  if (input.rows.length === 0) throw new Error(`${label}: no catalog rows`);
   const want = catalogKey(input.make, input.model);
   for (const r of input.rows) {
     const k = catalogKey(r.make, r.model);
     if (k.canonicalMake !== want.canonicalMake || k.key !== want.key) {
       throw new Error(`${label}: the catalog row ${JSON.stringify([r.make, r.model])} has another catalogKey`);
     }
+  }
+
+  const [CATALOG_MAKE, GROUP, CATALOG_NAME, ACTIVE, YEARS, LIVE, MAKE, MODEL, NAME_HE] = MODELS_HEADERS;
+  // F3e §4: a name whose catalog rows were all skipped still gets its row — its own make and name, the group of
+  // its name as the sheet builder computes it, the data cells empty.
+  if (input.rows.length === 0) {
+    const empty: Record<(typeof MODELS_HEADERS)[number], string | number> = {
+      [CATALOG_MAKE]: input.make,
+      [GROUP]: groupKey(stripMake(input.model, prefixesOf(canonicalMake(input.make, MAKE_MERGES)))),
+      [CATALOG_NAME]: input.model,
+      [ACTIVE]: "",
+      [YEARS]: "",
+      [LIVE]: "",
+      [MAKE]: input.guess.makeEn,
+      [MODEL]: input.guess.model,
+      [NAME_HE]: input.guess.nameHe,
+    };
+    return MODELS_HEADERS.map((h) => empty[h]);
   }
 
   const inScope = (r: CatalogRow) => r.vehicleClass === IN_SCOPE_CLASS && r.year >= FAMILIES_YEAR_FROM;
@@ -102,7 +120,6 @@ export function newNameRow(input: NewNameInput): (string | number)[] {
   const all = oneName(sheetInput(input.rows), label)!;
   const scoped = oneName(sheetInput(input.rows.filter(inScope)), label);
 
-  const [CATALOG_MAKE, GROUP, CATALOG_NAME, ACTIVE, YEARS, LIVE, MAKE, MODEL, NAME_HE] = MODELS_HEADERS;
   const cells: Record<(typeof MODELS_HEADERS)[number], string | number> = {
     [CATALOG_MAKE]: all.make.spellings.join(SPELLING_SEPARATOR),
     [GROUP]: all.group.key,

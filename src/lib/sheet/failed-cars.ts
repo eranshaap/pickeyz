@@ -15,6 +15,7 @@ export const FAILED_REASON = {
   year_mismatch: "השנתון במודעה שונה מהרישוי",
   version_not_in_catalog: "הגרסה אינה בקטלוג של המשרד",
   catalog_translation: "תרגום שורת הקטלוג נכשל",
+  catalog_row_broken: "בעיה בשורת הקטלוג של המשרד",
   ministry_down: "המשרד לא ענה",
   name_not_in_file: "השם לא בקובץ",
   name_without_model: "השם בקובץ בלי דגם",

@@ -176,8 +176,18 @@ describe("newNameRow", () => {
     assert.equal(at(cells, M_CATALOG_NAME), join("COROLLA CROSS H.E.V", "COROLLA CROSS HEV", "TOYOTA COROLLA CROSS HEV", "COROLLA-CROSS HEV"));
   });
 
-  it("no catalog rows, or a row of another catalogKey, throws", () => {
-    assert.throws(() => newNameRow({ make: TOYOTA, model: "COROLLA CROSS HEV", rows: [], counts: COUNTS, guess: GUESS }), /no catalog rows/);
+  it("no catalog rows: the name's own make and name, its group, the data cells empty (F3e); a row of another catalogKey throws", () => {
+    assert.deepEqual(newNameRow({ make: TOYOTA, model: "COROLLA CROSS HEV", rows: [], counts: COUNTS, guess: GUESS }), [
+      TOYOTA,
+      "COROLLA",
+      "COROLLA CROSS HEV",
+      "",
+      "",
+      "",
+      "TOYOTA",
+      "COROLLA CROSS",
+      "he:corolla-cross",
+    ]);
     assert.throws(
       () => newNameRow({ make: TOYOTA, model: "COROLLA CROSS HEV", rows: [...ROWS, row("COROLLA", "P", "103", 2020)], counts: COUNTS, guess: GUESS }),
       /another catalogKey/,

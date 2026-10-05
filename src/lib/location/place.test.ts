@@ -89,8 +89,8 @@ describe("lookupKey (§2)", () => {
     assert.equal(lookupKey(`${NETANYA}*`), NETANYA);
   });
 
-  it("leaves the LETTERS alone: no final-letter folding, no \u05E7\u05E8\u05D9\u05D9\u05EA / \u05E7\u05E8\u05D9\u05EA folding", () => {
-    assert.notEqual(lookupKey(KIRYAT_LONG), lookupKey(KIRYAT_SHORT)); // קריית is not קרית
+  it("leaves the other LETTERS alone: no final-letter folding; F3e folds only yod and vav runs (KIRYAT_LONG = KIRYAT_SHORT)", () => {
+    assert.equal(lookupKey(KIRYAT_LONG), lookupKey(KIRYAT_SHORT)); // קריית = קרית (F3e)
     assert.notEqual(lookupKey("\u05E0\u05D9\u05DF"), lookupKey("\u05E0\u05D9\u05E0")); // נין is not נינ
     assert.equal(lookupKey(NETANYA), NETANYA);
   });
@@ -192,6 +192,11 @@ describe("resolvePlace (§2)", () => {
   it("neither a locality nor an area is unknown_city, with the cell as written", () => {
     assert.deepEqual(resolvePlace(SHARON, INDEX), { ok: false, reason: "unknown_city", written: SHARON });
     assert.deepEqual(resolvePlace(`  ${SHARON} `, INDEX), { ok: false, reason: "unknown_city", written: SHARON });
+  });
+
+  it("קרית in the cell finds the file's קריית, and the file's spelling comes back (F3e)", () => {
+    const index = indexOf([{ name: "קריית טבעון", code: "2300", city: "קריית טבעון", region: HAIFA_REGION }]);
+    assert.deepEqual(resolvePlace("קרית טבעון", index), { ok: true, city: "קריית טבעון", region: HAIFA_REGION });
   });
 
   it("an empty cell is empty, however it is empty", () => {

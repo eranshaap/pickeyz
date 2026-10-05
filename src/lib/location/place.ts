@@ -39,6 +39,12 @@ const DASHES = ["\u002D", "\u05BE", "\u2010", "\u2011", "\u2013", "\u2014", "\u2
  */
 const QUOTES = ["\u0027", "\u05F3", "\u2018", "\u2019", "\u0060", "\u00B4", "\u0022", "\u05F4", "\u201C", "\u201D"];
 
+/** F3e: yod and vav, built from their code points; a run of either counts as one in lookupKey(). */
+const YOD = String.fromCharCode(0x5d9);
+const VAV = String.fromCharCode(0x5d5);
+const YOD_RUN = new RegExp(`${YOD}+`, "g");
+const VAV_RUN = new RegExp(`${VAV}+`, "g");
+
 /**
  * THE FLEXIBLE SEARCH KEY — what a locality name is matched by, on both sides: the file's names are indexed
  * by it, and a collection-tool cell is looked up by it.
@@ -47,9 +53,9 @@ const QUOTES = ["\u0027", "\u05F3", "\u2018", "\u2019", "\u0060", "\u00B4", "\u0
  * right-to-left spreadsheet is full of); every hyphen or dash form; every geresh or gershayim form; and the
  * asterisk the ministry's file marks some names with.
  *
- * LETTERS ARE UNTOUCHED. No final-letter folding, and no קריית/קרית folding: the file spells קריית, the
- * collection tool sometimes spells קרית, and whether those are one place is a product decision taken at the
- * first import against the real data — not here.
+ * Folded (F3e): a run of yod becomes one yod and a run of vav one vav, so the file's קריית and the collection
+ * tool's קרית are one key, as are תקווה and תקוה. EVERY OTHER LETTER IS UNTOUCHED: no final-letter folding,
+ * and no other doubled letter is folded.
  */
 export function lookupKey(name: string): string {
   let out = "";
@@ -61,7 +67,7 @@ export function lookupKey(name: string): string {
     if (ch === "*") continue;
     out += ch;
   }
-  return out;
+  return out.replace(YOD_RUN, YOD).replace(VAV_RUN, VAV);
 }
 
 /**
