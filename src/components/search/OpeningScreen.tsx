@@ -40,6 +40,13 @@
 // family. From then on SearchScreen runs the moment: it sets `leaving`, and this screen's headline, grey line,
 // categories and tags (and the phone's "חפש") fade out over OPENING_FADE_MS, while the bar itself (the
 // computer's pill, the phone's) is hidden at once, because the moment draws its own copy of the bar. The error line under the bar is gone (S4 §4): a failed search is shown on the results frame.
+//
+// S6 — ON THE PHONE, A CHOICE IN THE FULL-SCREEN SEARCH NEVER BRINGS THIS SCREEN BACK ON VIEW. The moment starts
+// at the choice itself, with the full-screen search still open: this screen is hidden at once under it (the
+// whole root, its white included, so what lies beneath is the page's background and the invisible results
+// frame), and the full-screen search fades out around its field (FullScreenSearch.tsx, `leaving`) until the
+// moment lands and this screen, the full-screen search with it, is removed. Its history entry is popped at the
+// choice and nothing waits for the pop but the question's push (`popped`, below).
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -117,8 +124,11 @@ type Props = {
   pending: boolean;
   /** S4 §2 — the search moment is running: the screen fades out and the computer's bar is hidden. */
   leaving: boolean;
-  /** A model was chosen: ask it, from zero. `origin` is where the rise starts. */
-  onAsk: (familyId: number, origin: Origin) => void;
+  /**
+   * A model was chosen: ask it, from zero. `origin` is where the rise starts; `popped` resolves once the
+   * full-screen search's history entry is gone — the question's address may not be pushed before it (S6).
+   */
+  onAsk: (familyId: number, origin: Origin, popped: Promise<void>) => void;
 };
 
 export default function OpeningScreen(props: Props) {
@@ -167,9 +177,15 @@ function Opening({ families, pending, leaving, onAsk, onFresh }: Props & { onFre
       asking.current = true;
       const origin = originNow();
       phoneInput.current?.blur();
+      // S6 — the phone's full-screen search: the moment starts now, from it, and it stays open until the moment
+      // lands; its entry is popped beside the moment, and only the question's push waits for that.
+      if (origin.look === "field") {
+        onAsk(id, origin, new Promise((resolve) => history.popOverlay(resolve)));
+        return;
+      }
       history.popOverlay(() => {
         setFull(false);
-        onAsk(id, origin);
+        onAsk(id, origin, Promise.resolve());
       });
     },
     // "חפש" / Enter with no model: the bar takes the focus — on the phone, that is the full-screen search.
@@ -275,8 +291,12 @@ function Opening({ families, pending, leaving, onAsk, onFresh }: Props & { onFre
 
   const dark = !(bar.inUse && bar.exact === null);
 
+  // S6 — the moment started from the full-screen search (only the phone's choice there leaves it open while the
+  // moment runs): this screen is hidden at once under it, and never on view again.
+  const underFull = leaving && full;
+
   return (
-    <div ref={root} inert={leaving} className="flex min-h-[100dvh] flex-col bg-white [--s:1]">
+    <div ref={root} inert={leaving} className={`flex min-h-[100dvh] flex-col bg-white [--s:1] ${underFull ? "invisible" : ""}`}>
       {/* §3 — the results screen's top bar, the same markup, without the question row. */}
       <div ref={topBar} className="sticky top-0 z-30 border-b border-[#d8d3cb] bg-white">
         <div className={`${RESULTS_CONTAINER_CLASS} flex h-[52px] items-center gap-4 px-4 md:h-auto md:py-3`}>
@@ -378,7 +398,7 @@ function Opening({ families, pending, leaving, onAsk, onFresh }: Props & { onFre
       </button>
 
       {/* §4 — the full-screen search: no "new search" helper line here */}
-      {full && <FullScreenSearch bar={bar} inputRef={phoneInput} disabled={pending} onCancel={cancelFull} />}
+      {full && <FullScreenSearch bar={bar} inputRef={phoneInput} disabled={pending} leaving={underFull} onCancel={cancelFull} />}
     </div>
   );
 }

@@ -98,6 +98,11 @@
 // three cards — in the area, with no PLACEHOLDER_DELAY_MS wait. A device that asks for less motion gets none:
 // the opening screen is replaced by the frame and its placeholders. "Back" to the opening screen is a plain swap.
 //
+// S6 — ON THE PHONE, A CHOICE IN THE FULL-SCREEN SEARCH starts the moment from that screen, still open: the
+// opening screen is hidden under it at once, the full-screen search fades out around its field over
+// OPENING_FADE_MS, and <Flight> draws only the field's text (no copy of the field). The opening screen's
+// history entry is popped beside the moment; the push waits for it as it waits for the motion.
+//
 // S4 §4 — EVERY LOAD OF THE RESULTS SCREEN CAN FAIL, and fails the same way: from the opening screen, from another
 // model chosen in the question row (whose search now runs here, `nav.ask`), and from "עדכן". A load that throws,
 // or has no answer RESULTS_LOAD_TIMEOUT_MS after it started, puts <SearchFailed> in the results area; the row
@@ -326,6 +331,8 @@ export default function SearchScreen({
    * S4 — every load goes through here: the opening screen's (with `motion`, the search moment's end), the
    * question row's model pick, "עדכן", the relief control and "נסה שוב". With `motion` there is no
    * PLACEHOLDER_DELAY_MS timer: the placeholders are what the area holds at the motion's end if nothing came.
+   * S6 — from the opening screen `motion` also covers its full-screen search's history entry being gone, and with
+   * reduced motion it is that alone (the frame holds no old results there, so the timer has nothing to cover).
    */
   async function doAsk(filters: SearchFilters, model: AskedModel, motion: Promise<void> | null = null) {
     const id = ++loadSeq.current;
@@ -416,14 +423,16 @@ export default function SearchScreen({
    * S4 §2 / §3 — a model chosen on the opening screen. The request starts at once; the motion runs beside it,
    * unless the device asks for less motion (§2.7), when the opening screen simply gives way to the frame.
    */
-  function askFromOpening(familyId: number, origin: Origin) {
+  function askFromOpening(familyId: number, origin: Origin, popped: Promise<void>) {
     const model = modelOf(familyId);
+    // S6 — the phone's full-screen search starts the moment before its history entry is gone: the question's
+    // push waits for `popped` too, so the address is still pushed onto the opening screen's own entry.
     if (window.matchMedia(REDUCED_MOTION).matches) {
-      void doAsk({}, model);
+      void doAsk({}, model, popped);
       return;
     }
     setMoment({ origin, stage: "fade" });
-    void doAsk({}, model, runMotion());
+    void doAsk({}, model, Promise.all([runMotion(), popped]).then(() => undefined));
   }
 
   /**
@@ -710,14 +719,13 @@ function Flight({ origin, display, rising, landOn }: { origin: Origin; display: 
     return () => runs.forEach((a) => a.cancel());
   }, [rising, origin]);
 
-  const look =
-    origin.look === "pill"
-      ? "rounded-full bg-white shadow-[0_6px_28px_rgba(34,31,28,0.12),0_1px_3px_rgba(34,31,28,0.08)]"
-      : "rounded-lg border-2 border-[#221f1c] bg-white";
-
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 z-50">
-      <div ref={pill} className={`absolute ${look}`} style={px(origin.box)} />
+      {/* S6 — the phone's full-screen field draws no copy: the field itself stays on view and its border fades
+          out there (FullScreenSearch.tsx, `leaving`); only its text is the moment's. */}
+      {origin.look === "pill" && (
+        <div ref={pill} className="absolute rounded-full bg-white shadow-[0_6px_28px_rgba(34,31,28,0.12),0_1px_3px_rgba(34,31,28,0.08)]" style={px(origin.box)} />
+      )}
       {origin.button !== null && (
         <div ref={go} className="absolute flex items-center justify-center rounded-full font-bold text-white" style={{ ...px(origin.button.box), fontSize: `${origin.button.fontSize}px`, background: INK }}>
           {OPENING_TEXTS.search}
