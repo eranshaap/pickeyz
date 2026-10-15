@@ -62,6 +62,9 @@
 //   does not enter (catalog_row_broken). Its version is not created: the next import asks the ministry again.
 // - In the new-names count a row with no class, no year or no tozeret-degem code is skipped with an alert line;
 //   a row with no make or model belongs to no name.
+//
+// F3f — a version the online catalog answers with more than one row does not enter either (catalog_row_broken,
+// the asked degem_code and year and the row count). Nothing is planned for it; the import goes on.
 
 import "dotenv/config";
 import { writeFileSync } from "node:fs";
@@ -383,6 +386,11 @@ async function checkEntry(row: CarsRow): Promise<EntryResult> {
       return failed("ministry_down", "", v);
     }
     throw e;
+  }
+  // F3f: the ministry answered more than one catalog row for this version — out like F3e's broken row, not a
+  // stop, nothing planned: the next car of this version asks the ministry again.
+  if (answer.kind === "ambiguous") {
+    return failed("catalog_row_broken", `${brokenRowDetails(v)} · ${answer.rows} rows at the Ministry`, v, false);
   }
   if (answer.kind === "absent") return failed("version_not_in_catalog", `${v.vehicle_class} ${v.degem_code} ${v.year}`, v);
 

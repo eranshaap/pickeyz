@@ -34,14 +34,7 @@
 // Model and pool rows were measured on LIVE listings (delisted_at is null), as M5 / M8 measure them — until Day 18,
 // which measures them on the 90-day market (below).
 //
-// Day 15 (BRIEF §1): model_stats.km_filter_anchors - the km filter chips of the search screen. They are
-// quartiles (P25/P50/P75) of km_declared over ALL LIVE listings of the model - the model's full pool, with
-// nulls ignored and no other filter applied - each rounded UP to the nearest 10,000 and then deduplicated,
-// so two quartiles that round to the same number give fewer chips and never an invented value. Written here
-// and nowhere else: the chips are measured in the norms run and stay put until the next one (the cross-cutting
-// rule of days 15-16 - a measurement of the market only on the norms beat; a derivative of what is already
-// stored is free at request time). They are a UI number, not a norm: no engine or selection code reads them.
-// The quantile is the linear interpolation that agrees with median() at p = 0.5, so P50 IS this file's median.
+// The km chips are computed on the site (src/lib/search/counts.ts) since S3; this run no longer writes them, and the column is dropped in a later run.
 //
 // Day 15 (BRIEF §1.3): the skip rule (§0.1) is now evaluated in BOTH modes. The dry run prints, per table,
 // exactly which rows a --write would append and which column made each of them differ; --write then appends
@@ -62,7 +55,7 @@
 //   and nothing else; sample_size, km_slope_n and anchor_listings count its listings (= cars). This replaces the
 //   Day 9 pool above ("every listing counts - no dedupe"). The 90 -> 180 widening per thin cell is unchanged and
 //   runs on the same function with the wider window. The km slope and the anchor are measured on the 90-day market
-//   (they have no widening of their own). km_filter_anchors and P5 still read ALL live listings, as before.
+//   (they have no widening of their own). P5 still reads ALL live listings, as before.
 // - The anchor is fitted through MODEL-YEAR POINTS keyed (make, model, year); a point enters the fit only with at
 //   least ANCHOR_POINT_MIN_SAMPLE market listings, and the line needs ANCHOR_MIN_POINTS points. The points are
 //   written to pool_stats.anchor_points every run (6 dp) and the skip rule compares them. anchor_age_min/max are
@@ -81,8 +74,6 @@ import { ANCHOR_MIN_POINTS, ANCHOR_POINT_MIN_SAMPLE, ENGINE_VERSION, KM_SLOPE_MI
 import { historyRow, kmRow, priceRow, type AnchorPoint, type ScoringInput } from "@/lib/scoring";
 import { ageYears } from "@/lib/scoring/age";
 import { scoringSubject } from "@/lib/scoring-input";
-// S3 §1: the km chips' quantiles, rounding and computation now live in the search library; moved unchanged.
-import { KM_ANCHOR_QUANTILES, KM_ANCHOR_ROUNDING, kmFilterAnchors, quantile } from "@/lib/search/km-anchors";
 import { at, loo, ols, type Fit } from "./measure-constants";
 
 const DRY = !process.argv.includes("--write");
@@ -137,10 +128,6 @@ function median(values: number[]): number {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-// S3 §1: quantile() and kmFilterAnchors() - the quantile this file uses everywhere it needs one that is not
-// the median, and the model's km filter chips - moved unchanged to src/lib/search/km-anchors.ts, where the
-// search screen computes the chips per model family. They are imported above; this file's behaviour is the same.
-
 function mix(pool: PoolListing[]): string {
   const counts = new Map<string, number>();
   for (const l of pool) counts.set(l.dealer_type, (counts.get(l.dealer_type) ?? 0) + 1);
@@ -186,14 +173,11 @@ type ModelRow = {
   model: string;
   km_slope: number | null;
   km_slope_n: number;
-  km_filter_anchors: number[]; // Day 15 (§1.2): the search screen's km chips; [] when no live listing of the model states a km
   engine_version: number;
   group_version: number;
   computed_at: Date;
   // printed, not stored
   fit_note: string | null;
-  km_listings: number; // live listings of the model whose km_declared is not null - the anchors' own n
-  km_live: number; // live listings of the model, with a km or without
 };
 
 type PoolRow = {
@@ -290,7 +274,7 @@ async function main() {
     for (const l of await marketListings({ modelKey, windowStart: windowStart(90), windowEnd: now })) { marketRaw.push(l); market90.push(toPool(l)); }
     for (const l of await marketListings({ modelKey, windowStart: windowStart(180), windowEnd: now })) { marketRaw.push(l); market180.push(toPool(l)); }
   }
-  // Every live listing, as before: the km filter chips (§1.2), P5, and §11's thin-cell count read these.
+  // Every live listing, as before: P5, the model list and §11's thin-cell count read these.
   const liveRaw = await db.listings.findMany({
     where: { delisted_at: null },
     include: {
@@ -437,27 +421,19 @@ async function main() {
   const modelKeys = [...new Set(live.map((l) => `${l.make}|${l.model}`))].sort();
   const modelRows: ModelRow[] = modelKeys.map((k) => {
     const [make, model] = k.split("|");
-    // Day 15 (§1.2): the chips are measured on the model's FULL LIVE POOL — every live listing of the model,
-    // nulls dropped, no cell, no window, no thin-cell test and no other filter. Not the regression pool below.
-    const modelLive = live.filter((l) => l.make === make && l.model === model);
-    const kms = modelLive.map((l) => l.km).filter((v): v is number => v !== null);
-    if (kms.length > 0 && quantile(kms, 0.5) !== median(kms)) {
-      throw new Error(`${make} ${model}: quantile(p=0.5) ${quantile(kms, 0.5)} != median() ${median(kms)} over ${kms.length} km values - the two conventions must agree (§1.2)`);
-    }
-    const anchors = { km_filter_anchors: kmFilterAnchors(kms), km_listings: kms.length, km_live: modelLive.length };
     const set = m5All.filter((r) => r.l.make === make && r.l.model === model);
     const fit: Fit = ols(set.map((r) => r.y), [{ name: X_NAME, v: set.map((r) => r.x) }]);
     if (!fit.ok) {
-      return { make, model, km_slope: null, km_slope_n: 0, ...anchors, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `fit dropped: ${fit.reason}` };
+      return { make, model, km_slope: null, km_slope_n: 0, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `fit dropped: ${fit.reason}` };
     }
     const c = at(fit, X_NAME);
     if (c === null) {
-      return { make, model, km_slope: null, km_slope_n: 0, ...anchors, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `column dropped: ${fit.dropped.join(", ")}` };
+      return { make, model, km_slope: null, km_slope_n: 0, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: `column dropped: ${fit.dropped.join(", ")}` };
     }
     // §0.3: stored with its real sign — the OLS coefficient as it comes out (more km → negative).
     // M5's tables print minus this number, which is why Day 13 reads 0.64 / 1.19 there and -0.64 / -1.19 here.
     // Run 1b (§1): at DECIMALS places, like the anchor values.
-    return { make, model, km_slope: stored(c.coef), km_slope_n: fit.n, ...anchors, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: null };
+    return { make, model, km_slope: stored(c.coef), km_slope_n: fit.n, engine_version: ENGINE_VERSION, group_version: GROUP_VERSION, computed_at: now, fit_note: null };
   });
 
   // ---------- 5. the pool row (§5.3, Day 18 §5) ----------
@@ -538,15 +514,6 @@ async function main() {
   for (const r of modelRows) {
     const uses = r.km_slope !== null && r.km_slope_n >= KM_SLOPE_MIN_SAMPLE;
     console.log(`${r.make} | ${r.model} | ${f(r.km_slope, DECIMALS)} | ${r.km_slope_n} | ${uses ? "yes" : `no - the default (n < ${KM_SLOPE_MIN_SAMPLE})`} | ${r.fit_note ?? "-"}`);
-  }
-  // Day 15 (§1.2 / §1.3): the km filter chips, per model, with the raw quartiles beside the stored (rounded,
-  // deduplicated) array so the rounding is visible.
-  console.log(`\nkm filter anchors (quartiles ${KM_ANCHOR_QUANTILES.join(" / ")} of km_declared over the model's FULL live pool, each rounded UP to ${KM_ANCHOR_ROUNDING}, deduplicated):`);
-  console.log("make | model | live listings | with km | raw P25 / P50 / P75 | stored km_filter_anchors");
-  for (const r of modelRows) {
-    const kms = live.filter((l) => l.make === r.make && l.model === r.model).map((l) => l.km).filter((v): v is number => v !== null);
-    const rawText = kms.length === 0 ? "-" : KM_ANCHOR_QUANTILES.map((p) => Math.round(quantile(kms, p))).join(" / ");
-    console.log(`${r.make} | ${r.model} | ${r.km_live} | ${r.km_listings} | ${rawText} | [${r.km_filter_anchors.join(", ")}]${r.km_filter_anchors.length < KM_ANCHOR_QUANTILES.length ? `  (${KM_ANCHOR_QUANTILES.length - r.km_filter_anchors.length} chip(s) lost to deduplication)` : ""}`);
   }
   console.log(`P5 (one vehicle_class per make+model): passed - ${classesByModel.size} model(s) checked`);
 
@@ -718,20 +685,12 @@ async function main() {
     const k = `${r.make}|${r.model}`;
     if (!latestModelOf.has(k)) latestModelOf.set(k, r);
   }
-  // Day 15 (§1.2): km_filter_anchors joins the comparison — "a row is written only if any column differs
-  // from the model's last row at the same versions". The stored value is Json; equality is element-wise on
-  // the array, and a previous null (a row from before the column existed) always differs.
-  const sameAnchors = (prev: unknown, next: number[]): boolean =>
-    Array.isArray(prev) && prev.length === next.length && prev.every((v, i) => v === next[i]);
   const modelDiff = (r: ModelRow): string[] => {
     const prev = latestModelOf.get(`${r.make}|${r.model}`);
     if (prev === undefined) return ["no previous row"];
     const changed: string[] = [];
     if (prev.km_slope !== r.km_slope) changed.push(`km_slope ${prev.km_slope === null ? "null" : prev.km_slope} -> ${r.km_slope === null ? "null" : r.km_slope}`);
     if (prev.km_slope_n !== r.km_slope_n) changed.push(`km_slope_n ${prev.km_slope_n} -> ${r.km_slope_n}`);
-    if (!sameAnchors(prev.km_filter_anchors, r.km_filter_anchors)) {
-      changed.push(`km_filter_anchors ${prev.km_filter_anchors === null ? "null" : JSON.stringify(prev.km_filter_anchors)} -> ${JSON.stringify(r.km_filter_anchors)}`);
-    }
     return changed;
   };
   const modelsToWrite = modelRows.filter((r) => modelDiff(r).length > 0);
@@ -777,7 +736,7 @@ async function main() {
       : null;
     const modelWritten = modelsToWrite.length
       ? (await tx.model_stats.createMany({
-          data: modelsToWrite.map((r) => ({ make: r.make, model: r.model, km_slope: r.km_slope, km_slope_n: r.km_slope_n, km_filter_anchors: r.km_filter_anchors, engine_version: r.engine_version, group_version: r.group_version, computed_at: r.computed_at })),
+          data: modelsToWrite.map((r) => ({ make: r.make, model: r.model, km_slope: r.km_slope, km_slope_n: r.km_slope_n, engine_version: r.engine_version, group_version: r.group_version, computed_at: r.computed_at })),
         })).count
       : 0;
     const cellWritten = cellsToWrite.length

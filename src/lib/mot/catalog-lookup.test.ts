@@ -90,17 +90,16 @@ describe("fetchCatalogVersion — the answers (§4)", () => {
     assert.deepEqual(await fetchCatalogVersion(MAZDA, { ...deps, fetchImpl: impl }), { kind: "absent" });
   });
 
-  it("two records: a plain Error naming the identity — not MotUnavailableError", async () => {
+  it("two records: ambiguous, with the count — not a rejection (F3f)", async () => {
     const { impl } = fakeFetch([records([MAZDA_RECORD, { ...MAZDA_RECORD, _id: 4212 }])]);
-    await assert.rejects(
-      () => fetchCatalogVersion(MAZDA, { ...deps, fetchImpl: impl }),
-      (e: Error) => {
-        assert.equal(e instanceof MotUnavailableError, false);
-        assert.equal(e.constructor, Error);
-        assert.ok(e.message.includes("P|00588|00237|2021"), e.message);
-        return true;
-      },
-    );
+    assert.deepEqual(await fetchCatalogVersion(MAZDA, { ...deps, fetchImpl: impl }), { kind: "ambiguous", rows: 2 });
+  });
+
+  it("three records: ambiguous, with the count (F3f)", async () => {
+    const { impl } = fakeFetch([
+      records([MAZDA_RECORD, { ...MAZDA_RECORD, _id: 4212 }, { ...MAZDA_RECORD, _id: 4213 }]),
+    ]);
+    assert.deepEqual(await fetchCatalogVersion(MAZDA, { ...deps, fetchImpl: impl }), { kind: "ambiguous", rows: 3 });
   });
 
   it("a ministry that does not answer twice: MotUnavailableError, untouched", async () => {

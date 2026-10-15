@@ -5,6 +5,9 @@
 // through the very same translateCatalogRow as a file row (catalogRowFromApi, §2.5).
 // It writes nothing to disk — there is no cache here, by design: the caller asks for one version
 // when it needs it, and the answer belongs in the database, not in data/raw.
+// Three answers: one record → found (the row); no records → absent (the version is not in the catalog);
+// more than one record → ambiguous, with how many came back (F3f) — the caller keeps that car out, as it
+// does a broken catalog row. A ministry that does not answer is MotUnavailableError, which passes through.
 
 import { catalogRowFromApi, type CatalogRow } from "./catalog";
 import { motGet, type MotDeps } from "./fetch";
@@ -19,7 +22,10 @@ export type CatalogVersionKey = {
   year: string | number;
 };
 
-export type CatalogVersionAnswer = { kind: "found"; row: CatalogRow } | { kind: "absent" };
+export type CatalogVersionAnswer =
+  | { kind: "found"; row: CatalogRow }
+  | { kind: "absent" }
+  | { kind: "ambiguous"; rows: number };
 
 export async function fetchCatalogVersion(
   key: CatalogVersionKey,
@@ -31,7 +37,6 @@ export async function fetchCatalogVersion(
     degem_cd: String(key.degemCd),
     shnat_yitzur: String(key.year),
   };
-  const identity = `${filters.sug_degem}|${filters.tozeret_cd}|${filters.degem_cd}|${filters.shnat_yitzur}`;
   const url = `${MOT_API}?resource_id=${CATALOG_RESOURCE_ID}&filters=${encodeURIComponent(JSON.stringify(filters))}`;
 
   // A ministry that does not answer twice raises MotUnavailableError, which passes through: a lookup
@@ -40,10 +45,7 @@ export async function fetchCatalogVersion(
   const records = body.result?.records ?? [];
 
   if (records.length === 0) return { kind: "absent" }; // success: true, 0 records — this version is not in the catalog
-  if (records.length > 1) {
-    throw new Error(
-      `catalog lookup ${identity}: the catalog answered with ${records.length} records for one version — the identity is supposed to be unique`,
-    );
-  }
+  // F3f: more than one record for one identity — not a stop; the caller keeps the car out.
+  if (records.length > 1) return { kind: "ambiguous", rows: records.length };
   return { kind: "found", row: catalogRowFromApi(records[0]) };
 }
