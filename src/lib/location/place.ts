@@ -53,21 +53,31 @@ const VAV_RUN = new RegExp(`${VAV}+`, "g");
  * right-to-left spreadsheet is full of); every hyphen or dash form; every geresh or gershayim form; and the
  * asterisk the ministry's file marks some names with.
  *
- * Folded (F3e): a run of yod becomes one yod and a run of vav one vav, so the file's קריית and the collection
- * tool's קרית are one key, as are תקווה and תקוה. EVERY OTHER LETTER IS UNTOUCHED: no final-letter folding,
- * and no other doubled letter is folded.
+ * Word boundaries (Run 1b): whitespace and every hyphen or dash form split the name into words. The other
+ * removed characters (Cf, geresh/gershayim, asterisk) are not boundaries: they vanish inside their word.
+ *
+ * Folded (F3e), INSIDE EACH WORD ONLY: a run of yod becomes one yod and a run of vav one vav, so the file's
+ * קריית and the collection tool's קרית are one key, as are תקווה and תקוה. A yod that ends one word and a yod
+ * that starts the next are not a doubled letter: צוקי ים and צוקים are two keys. EVERY OTHER LETTER IS
+ * UNTOUCHED: no final-letter folding, and no other doubled letter is folded. The words are then joined with
+ * nothing between them.
  */
 export function lookupKey(name: string): string {
-  let out = "";
+  const words: string[] = [];
+  let word = "";
   for (const ch of name) {
-    if (/\s/u.test(ch)) continue;
+    if (/\s/u.test(ch) || DASHES.includes(ch)) {
+      words.push(word);
+      word = "";
+      continue;
+    }
     if (/\p{Cf}/u.test(ch)) continue;
-    if (DASHES.includes(ch)) continue;
     if (QUOTES.includes(ch)) continue;
     if (ch === "*") continue;
-    out += ch;
+    word += ch;
   }
-  return out.replace(YOD_RUN, YOD).replace(VAV_RUN, VAV);
+  words.push(word);
+  return words.map((w) => w.replace(YOD_RUN, YOD).replace(VAV_RUN, VAV)).join("");
 }
 
 /**

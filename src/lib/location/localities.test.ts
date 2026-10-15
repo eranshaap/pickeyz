@@ -180,4 +180,10 @@ describe("parseLocalities, the errors that stop the import (§3)", () => {
       (e: Error) => e.message.includes(KIRYAT_TIVON_LONG) && e.message.includes(KIRYAT_TIVON_SHORT),
     );
   });
+
+  it("צוקים and צוקי ים do NOT collide: the yod fold is inside a word only (Run 1b)", () => {
+    const rows: Row[] = [{ code: "1001", name: "צוקי ים", district: D_CENTER }, { code: "1002", name: "צוקים", district: D_SOUTH }];
+    const index = parseLocalities(workbookOf(rows));
+    assert.equal(index.size, 2);
+  });
 });

@@ -94,6 +94,27 @@ describe("lookupKey (§2)", () => {
     assert.notEqual(lookupKey("\u05E0\u05D9\u05DF"), lookupKey("\u05E0\u05D9\u05E0")); // נין is not נינ
     assert.equal(lookupKey(NETANYA), NETANYA);
   });
+
+  // Run 1b: the yod/vav fold works inside a word only. Plain letters, so written as text.
+  it("צוקי ים and צוקים are two keys: a yod ending one word and a yod starting the next are not doubled", () => {
+    assert.notEqual(lookupKey("צוקי ים"), lookupKey("צוקים"));
+  });
+
+  it("קריית אתא and קרית אתא are still one key", () => {
+    assert.equal(lookupKey("קריית אתא"), lookupKey("קרית אתא"));
+  });
+
+  it("פתח תקווה and פתח תקוה are still one key", () => {
+    assert.equal(lookupKey("פתח תקווה"), lookupKey("פתח תקוה"));
+  });
+
+  it("נווה ים and נוה ים are one key: a fold inside the first word, next to a word boundary", () => {
+    assert.equal(lookupKey("נווה ים"), lookupKey("נוה ים"));
+  });
+
+  it("תל אביב -יפו and תל אביב-יפו are one key, across a hyphen boundary", () => {
+    assert.equal(lookupKey("תל אביב -יפו"), lookupKey("תל אביב-יפו"));
+  });
 });
 
 describe("cleanCityName (§2)", () => {
