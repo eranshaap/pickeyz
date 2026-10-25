@@ -1,8 +1,8 @@
-# findCar
+# Pickeyz
 
 A used-car search for the Israeli market that ranks every car in a search and puts three picks on top. Every listing is checked against the official vehicle registry, and every pick is explained in plain language.
 
-Built solo, August–October 2026. Not in active development.
+Built solo, August–October 2026, under the working name findCar, which still appears throughout the code. Not in active development.
 
 ## What it does
 
